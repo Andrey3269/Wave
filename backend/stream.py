@@ -139,9 +139,55 @@ class Resolved:
         return time.time() < self.expires_at
 
 
+# Ссылки и «головы» (ниже) — просто данные: они не привязаны к event loop и переживают перезапуск
+# uvicorn сторожем лаунчера, поэтому живут на уровне модуля.
 _cache: dict[str, Resolved] = {}
-_inflight: dict[str, asyncio.Task[Resolved]] = {}
-_resolve_sem = asyncio.Semaphore(MAX_PARALLEL_RESOLVES)
+
+
+class ResolverState:
+    """
+    Асинхронное состояние резолвера на время ОДНОГО запуска приложения (FastAPI lifespan):
+    семафор параллельных резолвов, задачи резолва в работе, фоновые задачи прогрева.
+
+    Всё это принадлежит конкретному event loop. Раньше оно жило на уровне модуля и после перезапуска
+    uvicorn (новый event loop в том же процессе, launcher.py) семафор оставался привязанным к старому
+    циклу: конкурентные резолвы падали с RuntimeError, а задачи старого цикла висели в _inflight
+    (находка M1). Теперь lifespan создаёт новое состояние при запуске (app.state.resolver) и закрывает
+    его при остановке: незавершённые задачи отменяются и дожидаются, наборы очищаются.
+    """
+
+    def __init__(self, max_parallel: int = MAX_PARALLEL_RESOLVES):
+        self.loop = asyncio.get_running_loop()            # создаётся только внутри работающего цикла
+        self.sem = asyncio.Semaphore(max_parallel)
+        self.inflight: dict[str, asyncio.Task[Resolved]] = {}
+        self.prefetching: set[str] = set()
+        self.background: set[asyncio.Task] = set()
+        self.closed = False
+
+    def check(self) -> None:
+        """Использовать состояние можно только в том цикле, где оно создано, и только до закрытия."""
+        if self.closed:
+            raise RuntimeError("Состояние резолвера уже закрыто (приложение остановлено)")
+        if asyncio.get_running_loop() is not self.loop:
+            raise RuntimeError("Состояние резолвера создано в другом event loop")
+
+    def spawn(self, coro) -> asyncio.Task:
+        """Фоновая задача этого запуска: ссылка хранится до завершения, при остановке задача отменяется."""
+        task = asyncio.create_task(coro)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+        return task
+
+    async def aclose(self) -> None:
+        self.closed = True
+        tasks = [t for t in (*self.background, *self.inflight.values()) if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self.inflight.clear()
+        self.prefetching.clear()
+        self.background.clear()
 
 
 def _url_expiry(url: str) -> float:
@@ -212,9 +258,9 @@ def _extract_sync(source: str, track_id: str) -> Resolved:
     return Resolved(url=url, headers=headers, expires_at=_url_expiry(url))
 
 
-async def _resolve_uncached(source: str, track_id: str) -> Resolved:
+async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Resolved:
     key = f"{source}:{track_id}"
-    async with _resolve_sem:
+    async with rs.sem:
         t0 = time.monotonic()
         try:
             res = await asyncio.get_running_loop().run_in_executor(
@@ -243,21 +289,22 @@ async def _resolve_uncached(source: str, track_id: str) -> Resolved:
     return res
 
 
-async def _resolve(source: str, track_id: str) -> Resolved:
+async def _resolve(rs: ResolverState, source: str, track_id: str) -> Resolved:
     """
     Отдаёт ссылку из кэша или резолвит новую. Браузер шлёт несколько параллельных
-    Range-запросов на один трек — _inflight гарантирует ровно один запуск yt-dlp.
+    Range-запросов на один трек — rs.inflight гарантирует ровно один запуск yt-dlp.
     """
     key = f"{source}:{track_id}"
     hit = _cache.get(key)
     if hit and hit.alive():
         return hit
 
-    task = _inflight.get(key)
+    rs.check()
+    task = rs.inflight.get(key)
     if task is None:
-        task = asyncio.create_task(_resolve_uncached(source, track_id))
-        _inflight[key] = task
-        task.add_done_callback(lambda _t: _inflight.pop(key, None))
+        task = asyncio.create_task(_resolve_uncached(rs, source, track_id))
+        rs.inflight[key] = task
+        task.add_done_callback(lambda _t: rs.inflight.pop(key, None))
     # shield: отмена одного клиента не должна убивать резолв для остальных
     return await asyncio.shield(task)
 
@@ -270,14 +317,14 @@ def _invalidate(source: str, track_id: str) -> None:
 # Прокси
 # ---------------------------------------------------------------------------
 async def _connect(
-    client: httpx.AsyncClient, source: str, track_id: str, upstream_range: str
+    client: httpx.AsyncClient, rs: ResolverState, source: str, track_id: str, upstream_range: str
 ) -> httpx.Response:
     """
     Открывает потоковое соединение с CDN. Если ссылка протухла
     (401/403/404/410) или соединение не удалось — один раз перерезолвим и повторим.
     """
     for _attempt in range(2):
-        res = await _resolve(source, track_id)
+        res = await _resolve(rs, source, track_id)
         headers = {**res.headers, "Accept-Encoding": "identity", "Range": upstream_range}
         try:
             upstream = await client.send(
@@ -321,8 +368,6 @@ class Head:
 
 
 _heads: OrderedDict[str, Head] = OrderedDict()   # LRU
-_prefetching: set[str] = set()
-_background: set[asyncio.Task] = set()           # ссылки на фоновые задачи (иначе их соберёт GC)
 
 
 def _head_get(key: str) -> Head | None:
@@ -364,11 +409,11 @@ def _serve_from_head(head: Head, raw_range: str) -> Response | None:
     )
 
 
-async def _prefetch_head(client: httpx.AsyncClient, source: str, track_id: str) -> None:
+async def _prefetch_head(client: httpx.AsyncClient, rs: ResolverState, source: str, track_id: str) -> None:
     key = f"{source}:{track_id}"
     t0 = time.monotonic()
     try:
-        upstream = await _connect(client, source, track_id, f"bytes=0-{STREAM_CHUNK_BYTES - 1}")
+        upstream = await _connect(client, rs, source, track_id, f"bytes=0-{STREAM_CHUNK_BYTES - 1}")
         try:
             m = CONTENT_RANGE_RE.fullmatch(upstream.headers.get("content-range", ""))
             if upstream.status_code != 206 or not m:
@@ -382,10 +427,10 @@ async def _prefetch_head(client: httpx.AsyncClient, source: str, track_id: str) 
     except Exception as exc:
         log.info("Прогрев %s не удался: %r", key, exc)
     finally:
-        _prefetching.discard(key)
+        rs.prefetching.discard(key)
 
 
-def _start_warm(client: httpx.AsyncClient, source: str, track_id: str) -> Response:
+def _start_warm(client: httpx.AsyncClient, rs: ResolverState, source: str, track_id: str) -> Response:
     """
     Ответ на ?warm=1: 204 уже готово, 202 готовится, 503 сервер занят (фронтенд повторит позже).
     Сам ответ уходит сразу, прогрев идёт в фоне.
@@ -393,14 +438,13 @@ def _start_warm(client: httpx.AsyncClient, source: str, track_id: str) -> Respon
     key = f"{source}:{track_id}"
     if _head_get(key) is not None:
         return Response(status_code=204)
-    if key in _prefetching:
+    if key in rs.prefetching:
         return Response(status_code=202)
-    if len(_inflight) >= 2 or len(_prefetching) >= 3:
+    if len(rs.inflight) >= 2 or len(rs.prefetching) >= 3:
         return Response(status_code=503)
-    _prefetching.add(key)
-    task = asyncio.create_task(_prefetch_head(client, source, track_id))
-    _background.add(task)
-    task.add_done_callback(_background.discard)
+    rs.check()
+    rs.prefetching.add(key)
+    rs.spawn(_prefetch_head(client, rs, source, track_id))
     return Response(status_code=202)
 
 
@@ -439,7 +483,7 @@ async def stream_track(source: str, track_id: str, request: Request, warm: int =
 
     # Прогрев (?warm=1): заранее получить ссылку и первую порцию. Ответ уходит сразу.
     if warm:
-        return _start_warm(request.app.state.http, source, track_id)
+        return _start_warm(request.app.state.http, request.app.state.resolver, source, track_id)
 
     # --- Разбираем Range клиента. Поддерживаем один диапазон: bytes=a-b | bytes=a- | bytes=-n
     raw_range = (request.headers.get("range") or "").strip()
@@ -457,7 +501,7 @@ async def stream_track(source: str, track_id: str, request: Request, warm: int =
             if from_memory is not None:
                 return from_memory
 
-    upstream = await _connect(request.app.state.http, source, track_id, upstream_range)
+    upstream = await _connect(request.app.state.http, request.app.state.resolver, source, track_id, upstream_range)
     status = upstream.status_code
 
     # Диапазон за пределами файла: пробрасываем 416 как есть

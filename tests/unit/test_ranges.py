@@ -196,6 +196,13 @@ def test_track_id_patterns(source, good, bad):
 # ---------------------------------------------------------------------------
 # Ошибки резолвера -> HTTP
 # ---------------------------------------------------------------------------
+def _uncached(source: str, track_id: str):
+    """Резолв в отдельном event loop со своим состоянием резолвера (как в одном запуске приложения)."""
+    async def go():
+        return await stream._resolve_uncached(stream.ResolverState(), source, track_id)
+    return asyncio.run(go())
+
+
 @pytest.mark.parametrize("exc, status", [
     (stream.StreamUnavailable("hls only"), 404),
     (DownloadError("ERROR: [youtube] x: Sign in to confirm your age"), 403),
@@ -209,7 +216,7 @@ def test_resolver_error_mapping(monkeypatch, exc, status):
         raise exc
     monkeypatch.setattr(stream, "_extract_sync", boom)
     with pytest.raises(HTTPException) as e:
-        asyncio.run(stream._resolve_uncached("yt", "AAAAAAAAAA1"))
+        _uncached("yt", "AAAAAAAAAA1")
     assert e.value.status_code == status
     assert "yt:AAAAAAAAAA1" not in stream._cache          # неудачный резолв не кэшируется
 
@@ -220,12 +227,12 @@ def test_network_failure_message_is_misleading(monkeypatch):
         raise DownloadError("ERROR: Unable to download webpage: <urlopen error [Errno -3] Temporary failure in name resolution>")
     monkeypatch.setattr(stream, "_extract_sync", boom)
     with pytest.raises(HTTPException) as e:
-        asyncio.run(stream._resolve_uncached("yt", "AAAAAAAAAA1"))
+        _uncached("yt", "AAAAAAAAAA1")
     assert e.value.status_code == 502
     assert "yt-dlp/куки" in e.value.detail
 
 
 def test_successful_resolve_is_cached(monkeypatch):
     monkeypatch.setattr(stream, "_extract_sync", lambda s, i: stream.Resolved("https://cdn.test/x", {}, time.time() + 60))
-    res = asyncio.run(stream._resolve_uncached("yt", "AAAAAAAAAA1"))
+    res = _uncached("yt", "AAAAAAAAAA1")
     assert stream._cache["yt:AAAAAAAAAA1"] is res

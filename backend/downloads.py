@@ -57,12 +57,12 @@ def _ext(content_type: str) -> str:
     return next((e for k, e in EXT.items() if k in content_type), ".m4a")
 
 
-async def _download_audio(client, req: DownloadRequest, dest, job: dict) -> str:
+async def _download_audio(client, rs, req: DownloadRequest, dest, job: dict) -> str:
     """Качает аудио порциями с Range; возвращает расширение файла."""
     pos, total, ext = 0, None, ".m4a"
     with open(dest, "wb") as f:
         while total is None or pos < total:
-            up = await _connect(client, req.source, req.id, f"bytes={pos}-{pos + DL_CHUNK - 1}")
+            up = await _connect(client, rs, req.source, req.id, f"bytes={pos}-{pos + DL_CHUNK - 1}")
             got, whole = 0, False
             try:
                 if up.status_code == 206:
@@ -106,7 +106,7 @@ async def _download_cover(client, url: str | None, folder) -> str | None:
         return None
 
 
-async def _run(client, req: DownloadRequest) -> None:
+async def _run(client, rs, req: DownloadRequest) -> None:
     key = f"{req.source}:{req.id}"
     job = jobs[key]
     name = library.safe_folder(req.artist, req.title, req.source, req.id)
@@ -117,7 +117,7 @@ async def _run(client, req: DownloadRequest) -> None:
         tmp.mkdir(parents=True)
 
         job["state"] = "downloading"
-        ext = await _download_audio(client, req, tmp / "audio.part", job)
+        ext = await _download_audio(client, rs, req, tmp / "audio.part", job)
         audio = f"audio{ext}"
         os.replace(tmp / "audio.part", tmp / audio)
 
@@ -171,7 +171,7 @@ async def start_download(req: DownloadRequest, request: Request):
     if key in jobs and jobs[key]["state"] in ACTIVE:
         return jobs[key]
     jobs[key] = {"state": "preparing", "progress": 0, "error": None}
-    task = asyncio.create_task(_run(request.app.state.http, req))
+    task = asyncio.create_task(_run(request.app.state.http, request.app.state.resolver, req))
     _background.add(task)
     task.add_done_callback(_background.discard)
     return jobs[key]

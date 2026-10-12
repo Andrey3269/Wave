@@ -212,7 +212,7 @@ def test_parallel_requests_same_track_resolve_once(harness, monkeypatch):
     assert [r.status_code for r in rs] == [206] * 5
     assert [r.content for r in rs] == [DATA[i * 1000:(i + 1) * 1000] for i in range(5)]
     assert harness.resolver.calls[f"yt:{YT}"] == 1
-    assert not stream._inflight
+    assert not harness.app.state.resolver.inflight
 
 
 def test_parallel_resolves_are_bounded(harness, monkeypatch):
@@ -254,7 +254,7 @@ def test_warm_then_play_from_memory(harness, monkeypatch):
 
     async def go(c):
         first = await c.get(PATH, params={"warm": 1})
-        await asyncio.gather(*list(stream._background))
+        await asyncio.gather(*list(harness.app.state.resolver.background))
         again = await c.get(PATH, params={"warm": 1})
         before = len(harness.net.cdn_requests())
         play = await c.get(PATH, headers={"Range": "bytes=200-"})
@@ -274,23 +274,26 @@ def test_warm_failure_leaves_no_head(harness):
 
     async def go(c):
         r = await c.get(PATH, params={"warm": 1})
-        await asyncio.gather(*list(stream._background))
-        return r
+        rs = harness.app.state.resolver
+        await asyncio.gather(*list(rs.background))
+        return r, set(rs.prefetching)
 
-    assert harness.run(go).status_code == 202
-    assert not stream._heads and not stream._prefetching
+    r, prefetching = harness.run(go)
+    assert r.status_code == 202
+    assert not stream._heads and not prefetching
 
 
 def test_warm_states(api):
     key = f"yt:{YT}"
-    stream._prefetching.add(key)
+    rs = api.app.state.resolver
+    rs.prefetching.add(key)
     assert api.get(PATH, params={"warm": 1}).status_code == 202          # уже готовится
-    stream._prefetching.clear()
-    stream._inflight.update({"yt:x1": None, "yt:x2": None})              # сервер занят резолвами
+    rs.prefetching.clear()
+    rs.inflight.update({"yt:x1": None, "yt:x2": None})                    # сервер занят резолвами
     try:
         assert api.get(PATH, params={"warm": 1}).status_code == 503
     finally:
-        stream._inflight.clear()
+        rs.inflight.clear()
     assert api.resolver.total() == 0
 
 

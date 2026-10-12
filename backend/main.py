@@ -35,7 +35,7 @@ import userdata
 from downloads import cleanup_partial, router as downloads_router
 from lyrics import router as lyrics_router
 from soundcloud import search_tracks as sc_search_raw
-from stream import make_http_client, router as stream_router
+from stream import ResolverState, make_http_client, router as stream_router
 
 log = logging.getLogger("musicmeta")
 logging.basicConfig(level=logging.INFO)
@@ -278,13 +278,19 @@ async def lifespan(app: FastAPI):
     log.info("YTMusic инициализирован")
     # Один httpx-клиент на всё приложение: пул соединений и keep-alive к googlevideo
     app.state.http = make_http_client()
+    # Асинхронное состояние резолвера (семафор, задачи) принадлежит циклу ЭТОГО запуска: сторож лаунчера
+    # поднимает uvicorn заново в том же процессе с новым event loop (находка M1)
+    app.state.resolver = ResolverState()
     library.init()  # локальный индекс загрузок (SQLite)
     userdata.init()  # избранное, история, настройки
     playlists.init()  # локальные плейлисты
     cleanup_partial()  # недокачанные загрузки прошлого запуска
-    yield
-    await app.state.http.aclose()
-    _cache.clear()
+    try:
+        yield
+    finally:
+        await app.state.resolver.aclose()  # отменяем резолвы и прогрев этого запуска до закрытия клиента
+        await app.state.http.aclose()
+        _cache.clear()
 
 
 app = FastAPI(title="Music Meta Client", version="0.1.0", lifespan=lifespan)

@@ -19,7 +19,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sqlite3
 import sys
@@ -103,15 +102,10 @@ def reset_backend_state() -> None:
     m["main"]._cache.clear()
     m["main"]._down_until.clear()
     st = m["stream"]
+    # Ссылки и «головы» — данные уровня процесса. Асинхронное состояние резолвера (семафор, задачи)
+    # с S2b создаёт и закрывает lifespan (app.state.resolver), сбрасывать его здесь не нужно.
     st._cache.clear()
-    st._inflight.clear()
     st._heads.clear()
-    st._prefetching.clear()
-    st._background.clear()
-    # Семафор резолвера создаётся при импорте и привязывается к первому event loop (находка M1).
-    # Каждый тест получает новый, иначе один тест сломал бы другие. Сам дефект воспроизводит
-    # tests/api/test_stream_lifespan.py, где сброса между перезапусками нет.
-    st._resolve_sem = asyncio.Semaphore(st.MAX_PARALLEL_RESOLVES)
     m["catalog"]._artist_cache.clear()
     m["lyrics"]._cache.clear()
     m["downloads"].jobs.clear()
