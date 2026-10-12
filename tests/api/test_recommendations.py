@@ -45,7 +45,8 @@ def test_cold_start_queries(api, params, queries):
     assert r.status_code == 200
     body = r.json()
     assert sorted(c[1] for c in api.ytm.calls if c[0] == "search") == sorted(queries)
-    assert body["personalized"] is False and body["page"] == params.get("page", 0)
+    assert body["personalized"] is False and body["radio"] is False and body["page"] == params.get("page", 0)
+    assert body["failed_sources"] == [] and body["source_status"] == {"yt": "ok"}
     assert keys(body) == ["yt:CSCSCSCSC01"]                       # дубль из двух запросов — один раз
     assert body["tracks"][0]["reason"] == "Подборка"
     assert body["tracks"][0]["score"] == W["same_source"]
@@ -123,7 +124,8 @@ def test_radio_of_current_track(api):
     assert all(t["reason"] == "Похоже на «Northern Lights»" for t in body["tracks"])
     assert [t["score"] for t in body["tracks"]] == [W["radio"] + W["same_source"]] * 2
     assert ("get_watch_playlist", "AAAAAAAAAA1", 25) in api.ytm.calls
-    assert body["personalized"] is True                               # M13: «персонально» уже при текущем треке
+    # M13/M4: радио трека без истории и избранного — не «персональная» подборка (до S2c здесь было True)
+    assert body["personalized"] is False and body["radio"] is True
 
 
 def test_radio_soundcloud_uses_related_endpoint(api):
@@ -147,26 +149,75 @@ def test_preferred_source_from_settings(api):
 # Сбои источников кандидатов
 # ---------------------------------------------------------------------------
 def test_radio_failure_keeps_other_candidates(api):
+    """Частичный сбой: радио не ответило, поиск по любимому артисту — да. Результат есть, сбой виден."""
     api.ytm.fail("get_watch_playlist")
     api.post("/api/favorites", json=track_payload(id_="FFFFFFFFF00", artist="Fav", artists=["Fav"]))
     api.ytm.songs["Fav"] = [yt("FFFFFFFFF01", "x", "Fav")]
     body = api.get("/api/recommendations", params={"source": "yt", "id": "AAAAAAAAAA1"}).json()
     assert keys(body) == ["yt:FFFFFFFFF01"]
+    assert body["failed_sources"] == ["yt"] and body["source_status"] == {"yt": "partial"}
+    assert body["personalized"] is True and body["radio"] is False
 
 
-def test_all_candidate_sources_failed_returns_empty_200(api):
-    """M4 (фиксируем текущее поведение): сбой всех источников неотличим от «нечего предложить»."""
+def test_all_candidate_sources_failed_is_reported(api):
+    """M4: полный сбой — 200 с пустым списком, но failed_sources/source_status говорят правду."""
     api.ytm.fail("search")
     r = api.get("/api/recommendations")
     assert r.status_code == 200
-    assert r.json() == {"tracks": [], "personalized": False, "page": 0}
+    assert r.json() == {"tracks": [], "personalized": False, "radio": False, "page": 0,
+                        "failed_sources": ["yt"], "source_status": {"yt": "failed"}}
 
 
-@pytest.mark.xfail(strict=True, reason="M4: рекомендации прячут сбой источников (нет failed_sources), план S2c")
-def test_all_candidate_sources_failed_is_reported(api):
-    api.ytm.fail("search")
+def test_success_without_suitable_tracks_is_not_a_failure(api):
+    """Источник ответил, но подходящего нет: пусто, без failed_sources — это «нечего предложить»."""
+    api.ytm.songs["*"] = []
     body = api.get("/api/recommendations").json()
-    assert body.get("failed_sources") == ["yt"]
+    assert body["tracks"] == [] and body["failed_sources"] == [] and body["source_status"] == {"yt": "ok"}
+    assert body["personalized"] is False
+
+
+def test_everything_filtered_out_is_not_a_failure(api):
+    api.ytm.songs["*"] = [yt("XXXXXXXXX01", "a", "A")]
+    body = api.get("/api/recommendations", params={"exclude": "yt:XXXXXXXXX01"}).json()
+    assert body["tracks"] == [] and body["failed_sources"] == []
+
+
+def test_soundcloud_failure_is_named(api):
+    """
+    Все задания одного запроса идут в один источник (радио — в источник трека, поиск — в него же).
+    Сбой SoundCloud называется своим именем, YouTube Music при этом не опрашивается.
+    """
+    api.sc.responses["tracks/1000000001/related"] = RuntimeError("SoundCloud недоступен (тест)")
+    api.sc.responses["search/tracks"] = RuntimeError("SoundCloud недоступен (тест)")
+    api.post("/api/favorites", json=track_payload(id_="FFFFFFFFF00", artist="Fav", artists=["Fav"]))
+    body = api.get("/api/recommendations", params={"source": "sc", "id": "1000000001"}).json()
+    assert body["tracks"] == []
+    assert body["failed_sources"] == ["sc"] and body["source_status"] == {"sc": "failed"}
+    assert not api.ytm.calls
+
+
+def test_personalized_only_when_history_actually_shaped_the_result(api):
+    """
+    История есть, но поиск по её артистам упал, а радио вернуло незнакомых артистов: выдача не персональная.
+    До S2c `personalized` был True при любой истории или текущем треке.
+    """
+    play(api, "HHHHHHHHH01", "Hist Artist")
+    api.ytm.fail("search")
+    api.ytm.watch["AAAAAAAAAA1"] = load_fixture("ytmusic/watch_playlist.json")
+    body = api.get("/api/recommendations", params={"source": "yt", "id": "AAAAAAAAAA1"}).json()
+    assert body["tracks"]
+    assert body["personalized"] is False and body["radio"] is True
+    assert body["source_status"] == {"yt": "partial"}
+
+
+def test_radio_track_by_a_played_artist_counts_as_personal(api):
+    """Трек из радио получил балл за слушанного артиста — значит, история повлияла на выдачу."""
+    api.ytm.watch["AAAAAAAAAA1"] = load_fixture("ytmusic/watch_playlist.json")
+    artist = load_fixture("ytmusic/watch_playlist.json")["tracks"][1]["artists"][0]["name"]
+    play(api, "HHHHHHHHH01", artist)
+    api.ytm.songs["*"] = []
+    body = api.get("/api/recommendations", params={"source": "yt", "id": "AAAAAAAAAA1"}).json()
+    assert body["personalized"] is True and body["radio"] is True
 
 
 def test_deep_pages_stop_artist_searches(api):
@@ -174,3 +225,4 @@ def test_deep_pages_stop_artist_searches(api):
     api.ytm.songs["Fav"] = [yt("FFFFFFFFF01", "x", "Fav")]
     body = api.get("/api/recommendations", params={"page": 9}).json()           # 12 * 9 >= MAX_SEARCH
     assert body["tracks"] == [] and not api.ytm.calls
+    assert body["failed_sources"] == [] and body["source_status"] == {}          # спрашивать было некого

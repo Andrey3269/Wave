@@ -8,6 +8,10 @@
 Затем каждому кандидату считаются баллы (таблица W), дубли и недавно игравшее отбрасываются,
 а итог собирается с ограничением на число треков одного артиста (разнообразие).
 Жанров и тегов у источников нет в единообразном виде, поэтому по ним рейтинг не строится.
+
+Ответ честно сообщает, что произошло (находка M4): поля `failed_sources` и `source_status` отличают
+«источник не ответил» от «подходящих треков нет». `personalized` = в выдаче есть треки, отобранные
+по истории или избранному; `radio` = в выдаче есть треки из «радио» текущего трека.
 """
 from __future__ import annotations
 
@@ -116,9 +120,12 @@ async def recommendations(request: Request, source: str | None = None, id: str |
         drop.add(f"{source}:{id}")
 
     # ---- 1. кандидаты ----
+    # Задание: (корутина, причина, базовый балл, источник, вид). Вид: radio | personal (артист из истории
+    # или избранного) | general (общая подборка при холодном старте).
     jobs: list[tuple] = []
     if source in ("yt", "sc") and id:
-        jobs.append((_radio(request, source, id, 25), f"Похоже на «{title}»" if title else "Похоже на текущий трек", W["radio"]))
+        jobs.append((_radio(request, source, id, 25), f"Похоже на «{title}»" if title else "Похоже на текущий трек",
+                     W["radio"], source, "radio"))
     weight = Counter()
     for a, n in fav_artists.items():
         weight[a] += n * 3
@@ -127,19 +134,32 @@ async def recommendations(request: Request, source: str | None = None, id: str |
     if 12 * page < MAX_SEARCH:                               # страница N: следующие 12 треков каждого любимого артиста
         for a, _ in weight.most_common(3):
             reason = f"Любимый исполнитель: {display[a]}" if a in fav_artists else f"Из твоей истории: {display[a]}"
-            jobs.append((_search(request, pref, display[a], min(12 * (page + 1), MAX_SEARCH), 12 * page), reason, 0))
+            jobs.append((_search(request, pref, display[a], min(12 * (page + 1), MAX_SEARCH), 12 * page), reason, 0,
+                         pref, "personal"))
     if not weight:                                           # истории и избранного ещё нет
         for k in range(2):
             q = COLD_START_QUERIES[(salt + page * 2 + k) % len(COLD_START_QUERIES)]
-            jobs.append((_search(request, pref, q, 15), "Подборка", 0))
+            jobs.append((_search(request, pref, q, 15), "Подборка", 0, pref, "general"))
 
     results = await asyncio.gather(*(asyncio.wait_for(j[0], 12) for j in jobs), return_exceptions=True)
 
+    # ---- состояние источников: ok — все запросы ответили, partial — часть, failed — ни один ----
+    asked: Counter = Counter()
+    failed: Counter = Counter()
+    for res, job in zip(results, jobs):
+        asked[job[3]] += 1
+        if isinstance(res, BaseException):
+            failed[job[3]] += 1
+            log.warning("Источник кандидатов %s не ответил: %r", job[3], res)
+    source_status = {src: "ok" if not failed[src] else "failed" if failed[src] == n else "partial"
+                     for src, n in asked.items()}
+    failed_sources = [src for src, st in source_status.items() if st != "ok"]
+
     # ---- 2. баллы ----
     cands: dict[str, dict] = {}
-    for res, (_, reason, base) in zip(results, jobs):
+    kinds: dict[str, set] = {}                               # ключ трека -> виды заданий, которые его нашли
+    for res, (_, reason, base, _src, kind) in zip(results, jobs):
         if isinstance(res, BaseException):
-            log.info("Источник кандидатов не ответил: %r", res)
             continue
         for t in res:
             d = _as_dict(t)
@@ -159,6 +179,9 @@ async def recommendations(request: Request, source: str | None = None, id: str |
             if k in fav_keys:
                 s += W["liked"]
             d["reason"], d["score"] = reason, s
+            kinds.setdefault(k, set()).add(kind)
+            if a in fav_artists or artist_plays.get(a):      # балл за любимого или слушанного артиста
+                kinds[k].add("personal")
             if k not in cands or s > cands[k]["score"]:
                 cands[k] = d
 
@@ -174,4 +197,6 @@ async def recommendations(request: Request, source: str | None = None, id: str |
         out.append(best)
         per_artist[a] += 1
         sigs.add(_sig(best))
-    return {"tracks": out, "personalized": bool(weight or (source and id)), "page": page}
+    used = set().union(*(kinds[_key(d)] for d in out)) if out else set()
+    return {"tracks": out, "personalized": "personal" in used, "radio": "radio" in used, "page": page,
+            "failed_sources": failed_sources, "source_status": source_status}

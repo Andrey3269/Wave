@@ -105,6 +105,11 @@ def js(route: Route, body, status: int = 200) -> None:
 
 
 # ---------------------------------------------------------------- подмена сетевых эндпоинтов
+# Режим ответа /api/recommendations для ленты главной (раздел «Источник рекомендаций недоступен»):
+# normal | failed (источник не ответил) | empty (ответил, но предложить нечего) | partial (часть запросов упала)
+RECS = {"mode": "normal"}
+
+
 def handle(route: Route) -> None:
     req = route.request
     u = urlparse(req.url)
@@ -126,11 +131,22 @@ def handle(route: Route) -> None:
     if path == "/api/recommendations":
         if q.get("id"):                                               # «радио» трека
             title = q.get("title", "")
-            return js(route, {"tracks": [track(20 + i, f"Похоже на «{title}»") for i in range(14)], "personalized": True, "page": 0})
+            return js(route, {"tracks": [track(20 + i, f"Похоже на «{title}»") for i in range(14)], "personalized": False,
+                              "radio": True, "page": 0, "failed_sources": [], "source_status": {"yt": "ok"}})
         page = int(q.get("page", 0))
+        mode = RECS["mode"]
+        if mode == "failed":
+            return js(route, {"tracks": [], "personalized": False, "radio": False, "page": page,
+                              "failed_sources": ["yt"], "source_status": {"yt": "failed"}})
+        if mode == "empty":
+            return js(route, {"tracks": [], "personalized": False, "radio": False, "page": page,
+                              "failed_sources": [], "source_status": {"yt": "ok"}})
         base = 1 + page * 24
         reasons = ["Подборка"] if not page else ["Любимый исполнитель: GSPD", "Из твоей истории: Vtornik"]
-        return js(route, {"tracks": [track(base + i, reasons[i % len(reasons)]) for i in range(24 if page else 30)], "personalized": False, "page": page})
+        bad = ["yt"] if mode == "partial" else []
+        return js(route, {"tracks": [track(base + i, reasons[i % len(reasons)]) for i in range(24 if page else 30)],
+                          "personalized": bool(page), "radio": False, "page": page,
+                          "failed_sources": bad, "source_status": {"yt": "partial" if bad else "ok"}})
 
     if path == "/api/search":
         return js(route, {"query": q.get("q"), "count": 20, "tracks": [track(40 + i) for i in range(20)], "failed_sources": [], "has_more": False})
@@ -561,6 +577,39 @@ def main() -> int:
         page.wait_for_timeout(500)
         page.screenshot(path=str(SHOTS / "18-now-980.png"))
         check(page.evaluate("document.querySelector('#main').scrollWidth <= document.querySelector('#main').clientWidth + 1"), "страница трека на 980px без горизонтальной прокрутки")
+
+        print("Источник рекомендаций недоступен (M4)")
+        page.set_viewport_size({"width": 1440, "height": 900})
+        home_page = ctx.new_page()                           # новая вкладка: ничего не играет, лента грузится заново
+        home_page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        home_page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        RECS["mode"] = "failed"
+        page.close()
+        home_page.goto(BASE)
+        home_page.wait_for_selector("#home-empty:not([hidden])", timeout=15000)
+        empty_text = home_page.inner_text("#home-empty")
+        check("Источник сейчас недоступен: YouTube Music" in empty_text and "Пока нечего предложить" not in empty_text,
+              "сбой источника не выдан за «нечего предложить»")
+        check(visible(home_page, "#home-empty .empty__retry"), "рядом с сообщением есть «Повторить»")
+        check("Источник сейчас недоступен" in home_page.inner_text("#hero-sub"), "баннер тоже говорит о недоступности источника")
+        home_page.screenshot(path=str(SHOTS / "23-home-source-down.png"))
+        RECS["mode"] = "normal"
+        home_page.click("#home-empty .empty__retry")
+        home_page.wait_for_selector("#new-grid .tcard", timeout=15000)
+        check(home_page.locator("#new-grid .tcard").count() >= 20 and not visible(home_page, "#home-empty"),
+              "«Повторить» загружает ленту, сообщение исчезает")
+        RECS["mode"] = "partial"
+        home_page.reload()
+        home_page.wait_for_selector("#new-grid .tcard", timeout=15000)
+        home_page.wait_for_selector("#home-empty:not([hidden])")
+        check("Подборка неполная" in home_page.inner_text("#home-empty") and home_page.locator("#new-grid .tcard").count() >= 20,
+              "частичный сбой: треки показаны, неполнота подборки названа")
+        RECS["mode"] = "empty"
+        home_page.reload()
+        home_page.wait_for_selector("#home-empty:not([hidden])", timeout=15000)
+        check("Пока нечего предложить" in home_page.inner_text("#home-empty") and not visible(home_page, "#home-empty .empty__retry"),
+              "источник ответил, но предложить нечего: обычное пустое состояние без «Повторить»")
+        RECS["mode"] = "normal"
 
         browser.close()
 

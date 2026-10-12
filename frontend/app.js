@@ -218,6 +218,15 @@
   const getJSON = (url, signal) => api(url, { signal });
   const jsonOpts = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
 
+  /** Ответ /api/recommendations. Сбой источников не выдаём за «нечего предложить» (находка M4):
+   *  пусто + failed_sources = ошибка (её покажут с кнопкой «Повторить»); есть треки + failed_sources = частичный сбой. */
+  function recsResult(d) {
+    const tracks = (d && d.tracks) || [];
+    const names = ((d && d.failed_sources) || []).map((s) => SOURCES[s] || s).join(", ");
+    if (!tracks.length && names) throw new Error(`Источник сейчас недоступен: ${names}`);
+    return { tracks, partial: names };
+  }
+
   // ---------- Сохранение настроек интерфейса в backend ----------
   // Изменения копятся и уходят одним PUT /api/settings через короткую паузу (перетаскивание громкости —
   // одна запись, а не сотня). При закрытии окна несохранённое отправляется с keepalive.
@@ -713,7 +722,7 @@
   const themeMixes = THEMES.map((th) => ({
     id: `theme:${th.id}`, title: th.title, sub: th.sub, tone: th.tone, cover: covers[th.id] || null, fresh: !!th.wave, themeId: th.id,
     async load() {
-      if (th.wave) return (await api(`/api/recommendations?limit=40&page=${rand(3)}&salt=${rand(1e6)}`)).tracks || [];
+      if (th.wave) return recsResult(await api(`/api/recommendations?limit=40&page=${rand(3)}&salt=${rand(1e6)}`)).tracks;
       const q = typeof th.q === "function" ? th.q() : th.q;
       return (await api(`/api/search?q=${enc(q)}&limit=40&sources=${state.source}`)).tracks || [];
     },
@@ -723,7 +732,7 @@
     const id = `radio:${trackKey(t)}`;
     if (!radioMemo.has(id)) {
       radioMemo.set(id, { id, title: `Похоже на «${t.title}»`, sub: `Радио · ${t.artist}`, cover: t.cover, fresh: false,
-        async load() { return (await api(`/api/recommendations?limit=40&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`)).tracks || []; } });
+        async load() { return recsResult(await api(`/api/recommendations?limit=40&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`)).tracks; } });
     }
     return radioMemo.get(id);
   }
@@ -865,7 +874,7 @@
   // ==========================================================================
   // Главная «Моя волна»
   // ==========================================================================
-  const home = { seq: 0, loading: false, error: "", ready: false, at: 0 };
+  const home = { seq: 0, loading: false, error: "", partial: "", ready: false, at: 0 };
   const HOME_TTL = 10 * 60 * 1000;
 
   function goHome(refresh = true) {
@@ -889,20 +898,21 @@
 
   async function loadHome() {
     const my = ++home.seq;
-    home.loading = true; home.error = "";
+    home.loading = true; home.error = ""; home.partial = "";
     state.salt = rand(1e6);
     renderHome();
     const cur = current();
     const qs = new URLSearchParams({ limit: "30", page: "0", salt: String(state.salt) });
     if (cur) { qs.set("source", cur.source); qs.set("id", cur.id); qs.set("title", cur.title); }
-    const [recs] = await Promise.all([api(`/api/recommendations?${qs}`).catch((e) => e), refreshHistory()]);
+    const [recs] = await Promise.all([api(`/api/recommendations?${qs}`).then((d) => ({ d, r: recsResult(d) })).catch((e) => e), refreshHistory()]);
     if (my !== home.seq) return;
     home.loading = false;
     if (recs instanceof Error) {
       home.error = recs.message || "Не удалось подобрать музыку.";
       Object.assign(state, { feed: [], featured: null, more: false });
     } else {
-      Object.assign(state, { feed: recs.tracks || [], featured: (recs.tracks || [])[0] || null, personalized: !!recs.personalized, feedPage: 1 });
+      home.partial = recs.r.partial;
+      Object.assign(state, { feed: recs.r.tracks, featured: recs.r.tracks[0] || null, personalized: !!recs.d.personalized, feedPage: 1 });
       state.more = state.feed.length > 0;
       home.ready = true; home.at = Date.now();
       warmTrack(state.featured);
@@ -959,7 +969,8 @@
     }
     el.newGrid.replaceChildren(...items.map((t, i) => trackCard(t, i + 1)));
     markPlaying();
-    if (home.error) setBlock(el.homeEmpty, `Не удалось подобрать музыку: ${home.error}`, () => loadHome());
+    if (home.error) setBlock(el.homeEmpty, `Не удалось подобрать музыку. ${home.error}.`, () => loadHome());
+    else if (home.partial && state.feed.length) setBlock(el.homeEmpty, `Подборка неполная: ${home.partial} ответил не на все запросы.`, () => loadHome());
     else setBlock(el.homeEmpty, state.feed.length ? "" : "Пока нечего предложить. Найди что-нибудь через поиск.");
     el.homeMore.hidden = !state.more; el.homeMore.textContent = "";
   }
@@ -983,10 +994,10 @@
         const qs = new URLSearchParams({ limit: "24", page: String(state.feedPage++), salt: String(state.salt),
           exclude: state.feed.map(trackKey).slice(-200).join(",") });
         if (last) { qs.set("source", last.source); qs.set("id", last.id); qs.set("title", last.title); }
-        const d = await api(`/api/recommendations?${qs}`);
+        const d = recsResult(await api(`/api/recommendations?${qs}`));   // сбой источника = ошибка, а не «лента кончилась»
         if (my !== home.seq || state.view !== "home") return;
         const have = new Set(state.feed.map(trackKey));
-        const fresh = (d.tracks || []).filter((t) => !have.has(trackKey(t)));
+        const fresh = d.tracks.filter((t) => !have.has(trackKey(t)));
         if (fresh.length) { const from = state.feed.length; state.feed.push(...fresh); appendFeedCards(from); added = true; }
       }
       state.more = added;
@@ -1506,9 +1517,9 @@
     now.similarArtistsSec.hidden = true;
     setBlock(now.similarEmpty, "");
     try {
-      const d = await api(`/api/recommendations?limit=30&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`);
+      const d = recsResult(await api(`/api/recommendations?limit=30&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`));
       if (my !== similar.seq) return;
-      const all = d.tracks || [];
+      const all = d.tracks;
       const radio = all.filter((x) => (x.reason || "").startsWith("Похоже"));   // только настоящее «радио» трека, без подборок по любимым
       similar.tracks = (radio.length >= 3 ? radio : all).slice(0, 12);
       const own = new Set(((t.artists && t.artists.length) ? t.artists : [t.artist]).map((n) => n.toLowerCase()));
@@ -1917,7 +1928,7 @@
     if (!cur) return stopAtEnd();
     try {
       const qs = new URLSearchParams({ limit: "12", source: cur.source, id: cur.id, title: cur.title, exclude: state.queue.map(trackKey).join(",") });
-      const d = await api(`/api/recommendations?${qs}`);
+      const d = recsResult(await api(`/api/recommendations?${qs}`));
       ownQueue();
       const have = new Set(state.queue.map(trackKey));
       const fresh = d.tracks.filter((t) => !have.has(trackKey(t)));
