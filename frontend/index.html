@@ -73,7 +73,7 @@
 
     <div class="side__scroll" id="side-scroll">
       <nav class="nav" id="nav" aria-label="Основная навигация">
-        <button class="nav__item" type="button" data-view="home" aria-current="page" title="Главная («Моя волна»)">
+        <button class="nav__item" type="button" data-view="home" aria-current="page" title="Главная">
           <svg class="icon"><use href="#i-home"/></svg><span class="nav__label">Главная</span>
         </button>
         <button class="nav__item" type="button" data-view="search" title="Поиск">
@@ -138,9 +138,9 @@
 
     <div class="content">
 
-      <!-- ================= Главная: «Моя волна» ================= -->
+      <!-- ================= Главная: лента рекомендаций ================= -->
       <div class="view" id="view-home">
-        <section class="hero" id="hero" aria-label="Моя волна">
+        <section class="hero" id="hero" aria-label="Подборка" data-feed="loading">
           <div class="hero__art" id="hero-art">
             <img id="hero-img" alt="" referrerpolicy="no-referrer" hidden>
           </div>
@@ -150,15 +150,15 @@
             <path d="M0 222C120 132 280 252 440 182S720 82 900 152" fill="none" stroke="#FF654A" stroke-width="1.500" vector-effect="non-scaling-stroke" opacity=".45"/>
           </svg>
           <div class="hero__body">
-            <p class="hero__eyebrow" id="hero-eyebrow"><span class="eq" aria-hidden="true"><i></i><i></i><i></i></span><span id="hero-eyebrow-text">Моя волна</span></p>
-            <h1 class="hero__title" id="hero-title">Моя волна</h1>
+            <p class="hero__eyebrow" id="hero-eyebrow"><span class="eq" aria-hidden="true"><i></i><i></i><i></i></span><span id="hero-eyebrow-text">Подборка</span></p>
+            <h1 class="hero__title" id="hero-title">Подборка</h1>
             <p class="hero__sub" id="hero-sub">Подбираем музыку…</p>
             <p class="hero__meta" id="hero-meta" hidden></p>
             <div class="hero__actions">
               <button class="btn btn--accent btn--lg" id="hero-play" type="button" data-do="play" data-playing="false" disabled>
                 <svg class="icon icon--fill i-play"><use href="#i-play"/></svg>
                 <svg class="icon icon--fill i-pause"><use href="#i-pause"/></svg>
-                <span id="hero-play-label">Слушать волну</span>
+                <span id="hero-play-label">Слушать подборку</span>
               </button>
               <button class="rbtn hero__ctl" type="button" data-do="prev" aria-label="Предыдущий трек" title="Предыдущий" hidden><svg class="icon icon--fill"><use href="#i-prev"/></svg></button>
               <button class="rbtn hero__ctl" type="button" data-do="next" aria-label="Следующий трек" title="Следующий" hidden><svg class="icon icon--fill"><use href="#i-next"/></svg></button>
@@ -180,7 +180,7 @@
 
         <section class="sec" id="sec-mixes" aria-labelledby="h-mixes">
           <header class="sec__head">
-            <h2 class="sec__h" id="h-mixes">Под твою волну</h2>
+            <h2 class="sec__h" id="h-mixes">Миксы</h2>
             <button class="rbtn rbtn--s" type="button" data-scroll="mix-row:-1" aria-label="Назад"><svg class="icon"><use href="#i-chev-l"/></svg></button>
             <button class="rbtn rbtn--s" type="button" data-scroll="mix-row:1" aria-label="Вперёд"><svg class="icon"><use href="#i-chev-r"/></svg></button>
           </header>

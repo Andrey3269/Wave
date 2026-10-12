@@ -95,7 +95,7 @@ _SIZE_RE = re.compile(r"=w\d+-h\d+")
 def _best_cover(thumbnails: list[dict] | None) -> str | None:
     """
     ytmusicapi отдаёт миниатюры в порядке возрастания размера (обычно 60px и 120px).
-    Для крупной обложки ("Моя Волна") берём последнюю и, если это ссылка
+    Для крупной обложки (баннер главной) берём последнюю и, если это ссылка
     googleusercontent, подменяем размер на 544x544.
     """
     if not thumbnails:

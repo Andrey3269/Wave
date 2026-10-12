@@ -116,7 +116,7 @@
     mixes: $("#mixes"), artistMixes: $("#artist-mixes"), artistMore: $("#artist-more"), artistHint: $("#artist-hint"),
     avatar: $("#avatar"), profileName: $("#profile-name"),
     // главная
-    mixRow: $("#mix-row"), secContinue: $("#sec-continue"), continueRow: $("#continue-row"),
+    mixRow: $("#mix-row"), hMixes: $("#h-mixes"), secContinue: $("#sec-continue"), continueRow: $("#continue-row"),
     newGrid: $("#new-grid"), homeEmpty: $("#home-empty"), homeMore: $("#home-more"),
     // списки
     detail: $("#detail"), back: $("#back"), dCover: $("#d-cover"), dCoverWrap: $("#d-cover-wrap"), dKind: $("#d-kind"),
@@ -170,7 +170,7 @@
     queue: [],         // то, что играет (одна очередь на всё приложение)
     queueOwned: false, // true после первой правки очереди: тогда это уже собственная копия
     index: -1,         // позиция в queue
-    queueLabel: "",    // откуда играет очередь («Моя волна», название альбома...)
+    queueLabel: "",    // откуда играет очередь («Подобрано по вашей истории», название альбома...)
     lastQuery: "",
     source: "yt",      // активный источник поиска: yt | sc
     view: "home",
@@ -190,7 +190,7 @@
     shuffle: false, repeat: false, seeking: false, errors: 0,
     searchCtl: null, baseStatus: "",
     // главная
-    feed: [], feedPage: 1, salt: 0, featured: null, personalized: false,
+    feed: [], feedPage: 1, salt: 0, featured: null, personalized: false, feedRadio: false,
     hist: [], mixes: [], mixId: null, artists: [], artistsShown: 4,
     lyricsOn: true,
     lastVol: 1,        // последняя слышимая громкость (для возврата из mute и из нуля)
@@ -531,7 +531,7 @@
       if (state.queue === arr && i === state.index) togglePlay(); else playTracks(arr, i, getLabel());
     });
   }
-  bindTrackGrid(el.newGrid, () => state.feed, () => "Моя волна");
+  bindTrackGrid(el.newGrid, () => state.feed, () => feedLabel());
   bindTrackGrid(el.continueRow, () => state.hist, () => "Недавно слушали");
   bindTrackGrid(now.similarRow, () => similar.tracks, () => `Похожие на «${current()?.title || "трек"}»`);
 
@@ -711,11 +711,14 @@
 
   // ---------- миксы ----------
   // Мини-«рецепты»: список треков собирается по клику существующими API (поиск, рекомендации).
+  // Названия описывают, что подборка делает на самом деле (M13): без фирменных названий чужих сервисов
+  // и без обещаний персонализации там, где её нет. id не меняются: по ним хранятся обложки (mix_covers).
+  const YEAR = new Date().getFullYear();
   const THEMES = [
     { id: "mood", title: "Для настроения", sub: "Спокойная подборка на вечер", tone: 1, q: "chill" },
     { id: "hiphop", title: "Хип-хоп и электроника", sub: "Тяжёлые биты и атмосфера", tone: 2, q: "hip hop electronic" },
-    { id: "discover", title: "Открытия недели", sub: "Новые имена и свежие треки", tone: 3, q: () => `новинки ${new Date().getFullYear()}` },
-    { id: "shake", title: "Встряхнуть мою волну", sub: "Новая подборка по твоей истории", tone: 4, wave: true },
+    { id: "discover", title: `Новинки ${YEAR}`, sub: `Поиск по запросу «новинки ${YEAR}»`, tone: 3, q: `новинки ${YEAR}` },
+    { id: "shake", title: "Другая подборка", sub: "Новая выборка из рекомендаций", tone: 4, wave: true },
     { id: "indie", title: "Инди без границ", sub: "Альтернатива, которая вдохновляет", tone: 5, q: "indie alternative" },
   ];
   const covers = {};                                         // id микса -> обложка; приходит из настроек (mix_covers)
@@ -750,7 +753,7 @@
     }
     return tracks;
   }
-  /** Ряд «Под твою волну»: радио по недавним трекам (если есть история), остальное добираем тематическими подборками. */
+  /** Ряд миксов: радио по недавним трекам (если есть история), остальное добираем тематическими подборками. */
   function buildMixes() {
     const seeds = [], seen = new Set();
     const push = (t) => {
@@ -872,7 +875,7 @@
   });
 
   // ==========================================================================
-  // Главная «Моя волна»
+  // Главная: лента /api/recommendations
   // ==========================================================================
   const home = { seq: 0, loading: false, error: "", partial: "", ready: false, at: 0 };
   const HOME_TTL = 10 * 60 * 1000;
@@ -912,7 +915,8 @@
       Object.assign(state, { feed: [], featured: null, more: false });
     } else {
       home.partial = recs.r.partial;
-      Object.assign(state, { feed: recs.r.tracks, featured: recs.r.tracks[0] || null, personalized: !!recs.d.personalized, feedPage: 1 });
+      Object.assign(state, { feed: recs.r.tracks, featured: recs.r.tracks[0] || null, personalized: !!recs.d.personalized,
+        feedRadio: !!recs.d.radio, feedPage: 1 });
       state.more = state.feed.length > 0;
       home.ready = true; home.at = Date.now();
       warmTrack(state.featured);
@@ -943,6 +947,8 @@
   }
   function renderMixRow() {
     state.mixes = buildMixes();
+    // Заголовок честный: «по вашим трекам» — только когда в ряду есть радио по истории или избранному
+    el.hMixes.textContent = state.mixes.some((m) => m.id.startsWith("radio:")) ? "Миксы по вашим трекам" : "Тематические миксы";
     el.mixRow.replaceChildren(...state.mixes.map(mixCard));
     markMix();
   }
@@ -1008,14 +1014,21 @@
     el.homeMore.hidden = !state.more; el.homeMore.textContent = "";
   }
 
-  /** «Слушать волну»: очередь = персональная лента, старт с трека из баннера. */
+  /** Название ленты главной по тому, как она реально собрана (поля personalized и radio ответа). */
+  function feedLabel() {
+    if (state.personalized) return "Подобрано по вашей истории";
+    if (state.feedRadio) return "Похоже на текущий трек";
+    if (!state.hist.length && !state.favItems.length) return "С чего начать";
+    return "Подборка";
+  }
+  /** «Слушать подборку»: очередь = лента главной, старт с трека из баннера. */
   async function startWave() {
     if (!state.feed.length) {
       if (home.loading) return;
       await loadHome();
     }
     if (!state.feed.length) { toast("Не удалось подобрать музыку. Попробуй позже."); return; }
-    playTracks(state.feed, Math.max(0, state.feed.indexOf(state.featured)), "Моя волна");
+    playTracks(state.feed, Math.max(0, state.feed.indexOf(state.featured)), feedLabel());
   }
 
   // ---------- баннер ----------
@@ -1024,7 +1037,10 @@
     const loading = home.loading && !cur;
     const playing = !!cur && !audio.paused;
     hero.root.dataset.state = cur ? (playing ? "playing" : "paused") : "idle";
-    hero.eyebrow.textContent = cur ? "Сейчас играет" : "Моя волна";
+    hero.root.dataset.feed = home.loading ? "loading" : home.error ? "error" : state.feed.length ? "ready" : "empty";
+    const label = home.loading || home.error || !state.feed.length ? "Подборка" : feedLabel();
+    hero.root.setAttribute("aria-label", label);
+    hero.eyebrow.textContent = cur ? "Сейчас играет" : label;
     if (t) {
       hero.title.textContent = t.title;
       hero.sub.textContent = cur ? (state.queueLabel ? `${t.artist} · из «${state.queueLabel}»` : t.artist)
@@ -1034,13 +1050,13 @@
       hero.meta.hidden = !meta.length;
       setCover(hero.img, t.cover, 544);
     } else {
-      hero.title.textContent = "Моя волна";
+      hero.title.textContent = label;
       hero.sub.textContent = loading ? "Подбираем музыку…" : (home.error || "Пока нечего предложить. Найди что-нибудь через поиск.");
       hero.meta.hidden = true;
       setCover(hero.img, null);
     }
     hero.play.dataset.playing = String(playing);
-    hero.playLabel.textContent = playing ? "Пауза" : cur ? "Продолжить" : "Слушать волну";
+    hero.playLabel.textContent = playing ? "Пауза" : cur ? "Продолжить" : "Слушать подборку";
     hero.play.disabled = !cur && (loading || !state.feed.length);
     hero.like.hidden = !t;
     if (t) paintFav(hero.like, t);

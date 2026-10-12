@@ -104,10 +104,23 @@ def js(route: Route, body, status: int = 200) -> None:
     route.fulfill(status=status, content_type="application/json", body=json.dumps(body, ensure_ascii=False))
 
 
+# Названия фирменных функций других сервисов: в интерфейсе их быть не должно (находка M13)
+FOREIGN_NAMES = ("Моя волна", "Моя Волна", "Открытия недели", "Встряхнуть мою волну", "Под твою волну", "Слушать волну")
+
+
+def foreign_names(page) -> list[str]:
+    """Чужие фирменные названия в видимом тексте, title и aria-label (всё, что читает пользователь или скринридер)."""
+    return page.evaluate("""(names) => {
+        const texts = [document.body.innerText, document.title,
+            ...[...document.querySelectorAll('[title],[aria-label]')].flatMap(n => [n.title || '', n.getAttribute('aria-label') || ''])];
+        return names.filter(x => texts.some(t => t.includes(x)));
+    }""", list(FOREIGN_NAMES))
+
+
 # ---------------------------------------------------------------- подмена сетевых эндпоинтов
 # Режим ответа /api/recommendations для ленты главной (раздел «Источник рекомендаций недоступен»):
 # normal | failed (источник не ответил) | empty (ответил, но предложить нечего) | partial (часть запросов упала)
-RECS = {"mode": "normal"}
+RECS = {"mode": "normal"}             # ещё personal: лента собрана по истории (personalized=true)
 
 
 def handle(route: Route) -> None:
@@ -145,7 +158,7 @@ def handle(route: Route) -> None:
         reasons = ["Подборка"] if not page else ["Любимый исполнитель: GSPD", "Из твоей истории: Vtornik"]
         bad = ["yt"] if mode == "partial" else []
         return js(route, {"tracks": [track(base + i, reasons[i % len(reasons)]) for i in range(24 if page else 30)],
-                          "personalized": bool(page), "radio": False, "page": page,
+                          "personalized": bool(page) or mode == "personal", "radio": False, "page": page,
                           "failed_sources": bad, "source_status": {"yt": "partial" if bad else "ok"}})
 
     if path == "/api/search":
@@ -225,19 +238,28 @@ def main() -> int:
 
         print("Главная")
         page.goto(BASE)
-        page.wait_for_function("document.querySelector('#hero-title').textContent !== 'Моя волна'", timeout=15000)
+        # Явный признак готовности ленты (раньше ждали, пока заголовок перестанет быть «Моя волна»)
+        page.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
         page.wait_for_timeout(500)
         page.screenshot(path=str(SHOTS / "01-home.png"))
+        check(foreign_names(page) == [], "в интерфейсе нет фирменных названий других сервисов")
+        check(page.text_content("#hero-eyebrow-text") == "С чего начать" and page.inner_text("#hero-play-label") == "Слушать подборку",
+              "без истории лента названа «С чего начать», кнопка «Слушать подборку»")
+        check(page.text_content("#h-mixes") == "Тематические миксы", "без истории ряд миксов не называется «по вашим трекам»")
+        year = page.evaluate("new Date().getFullYear()")
+        check(page.locator("#mixes .mix[data-mix='theme:discover'] .mix__title").text_content() == f"Новинки {year}"
+              and page.locator("#mixes .mix[data-mix='theme:shake'] .mix__title").text_content() == "Другая подборка",
+              "тематические миксы названы по содержанию")
         check(page.locator(".side").count() == 1 and page.locator("aside.side + aside, .side ~ .side").count() == 0, "одна боковая панель, второй постоянной колонки нет")
         check(page.locator(".nav__item[aria-current='page']").count() == 1, "ровно один активный пункт меню")
         check(page.locator(".nav__item[aria-current='page']").first.get_attribute("data-view") == "home", "активна «Главная»")
         check(page.locator("#mixes .mix").count() == 5, "в «Твоей музыке» 5 миксов")
         check(not visible(page, "#player"), "на главной нижнего плеера нет (ничего не играет)")
-        check(page.locator("#mix-row .mixcard").count() >= 5, "ряд «Под твою волну» заполнен")
+        check(page.locator("#mix-row .mixcard").count() >= 5, "ряд миксов заполнен")
         check(page.locator("#new-grid .tcard").count() >= 20, "«Новое для тебя» заполнено реальными треками")
         check("Химия" in page.inner_text("#hero-title") or page.inner_text("#hero-title").strip() != "", "заголовок баннера из данных рекомендаций")
 
-        print("«Слушать волну»")
+        print("«Слушать подборку»")
         page.click("#hero-play")
         page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 0.2 })()", timeout=15000)
         check(True, "аудио реально играет (currentTime растёт)")
@@ -287,7 +309,7 @@ def main() -> int:
         page.click("[data-do=queue].rbtn")
         page.wait_for_selector("#queue:not([hidden]) .q")
         page.screenshot(path=str(SHOTS / "04-queue.png"))
-        check(page.locator("#queue .q").count() > 5, "очередь показывает ту же ленту «Моя волна»")
+        check(page.locator("#queue .q").count() > 5, "очередь показывает ту же ленту главной")
         check(page.locator("#queue .q__fav.is-fav").count() == 1, "лайк в очереди синхронизирован со страницей трека")
         page.click("#queue-close")
 
@@ -471,7 +493,8 @@ def main() -> int:
         check(page.locator("#continue-row .minicard").count() >= 1, "«Продолжить слушать» из реальной истории")
         page.wait_for_timeout(600)
         check(page.locator("#artist-mixes .mix").count() >= 1, "«Миксы по артистам» собраны из истории и избранного")
-        check(page.locator("#mix-row .mixcard").first.get_attribute("data-mix").startswith("radio:"), "ряд «Под твою волну» начинается с радио по недавним трекам")
+        check(page.locator("#mix-row .mixcard").first.get_attribute("data-mix").startswith("radio:"), "ряд миксов начинается с радио по недавним трекам")
+        check(page.text_content("#h-mixes") == "Миксы по вашим трекам", "с историей ряд называется «Миксы по вашим трекам»")
         page.screenshot(path=str(SHOTS / "03c-home-with-history.png"))
 
         print("Поиск и мини-плеер")
@@ -609,6 +632,12 @@ def main() -> int:
         home_page.wait_for_selector("#home-empty:not([hidden])", timeout=15000)
         check("Пока нечего предложить" in home_page.inner_text("#home-empty") and not visible(home_page, "#home-empty .empty__retry"),
               "источник ответил, но предложить нечего: обычное пустое состояние без «Повторить»")
+        RECS["mode"] = "personal"
+        home_page.reload()
+        home_page.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+        check(home_page.text_content("#hero-eyebrow-text") == "Подобрано по вашей истории",
+              "«Подобрано по вашей истории» — только когда backend сообщил personalized=true")
+        check(foreign_names(home_page) == [], "после всех сценариев фирменных названий других сервисов нет")
         RECS["mode"] = "normal"
 
         browser.close()
