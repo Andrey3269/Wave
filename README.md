@@ -72,9 +72,19 @@ python backend\launcher.py
 Все проверки одной командой:
 
 ```sh
-python tests/run_checks.py            # гигиена git, compileall, pyflakes, node --check, e2e
+python tests/run_checks.py            # гигиена git, compileall, pyflakes, node --check, pytest, e2e
 python tests/run_checks.py --no-e2e   # без браузерного теста
 ```
+
+Только unit- и API-тесты (pytest, без сети, на временном профиле):
+
+```sh
+python -m pytest                      # живые источники выключены
+python -m pytest tests/api/test_stream_proxy.py -q
+python -m pytest -m live              # живые источники (LIVE-1, LIVE-6): нужен доступ в сеть
+```
+
+Тесты с пометкой `xfail` закрепляют известные дефекты из аудита (идентификатор в причине) и исправляются на своих этапах дорожной карты. Список — в [TEST_STRATEGY.md](docs/engineering/TEST_STRATEGY.md) §11.
 
 Только браузерный тест:
 
@@ -89,14 +99,16 @@ python tests/run_e2e.py --keep --shots shots-out   # оставить профи
 |---|---|
 | `PASS` | шаг выполнен и прошёл |
 | `FAIL` | шаг выполнен и нашёл дефект |
-| `BLOCKED` | нет нужного инструмента: Playwright, Chromium, Node, git |
+| `BLOCKED` | нет нужного инструмента: pytest, Playwright, Chromium, Node, git |
 | `NOT RUN` | шаг пропущен флагом |
 
 Коды выхода: `0` — всё прошло, `1` — есть FAIL, `3` — есть BLOCKED.
 
 Защита данных: e2e-тест меняет избранное, историю, плейлисты и настройки. Поэтому до первого действия он проверяет через `/api/settings`, что backend работает на тестовом профиле: каталоги лежат во временной папке системы или содержат файл `.wave-test-profile`. Иначе тест останавливается с кодом 2 и ничего не меняет. `run_e2e.py` создаёт такой профиль сам. Секреты из окружения (`YTDLP_COOKIES`, `YTDLP_PROXY`) тестовому backend не передаются.
 
-Внешние источники (YouTube Music, SoundCloud, LRCLIB, обложки, аудио) в e2e подменены. Проверки на Windows/WebView2 и на живых источниках описаны в [TEST_STRATEGY.md](docs/engineering/TEST_STRATEGY.md) §7–8 и выполняются отдельно.
+pytest защищён сильнее: до импорта backend каталоги данных, загрузок и «домашний» каталог указывают во временную папку, а аудит-хук Python блокирует запись файлов и SQLite вне временной папки и любые сетевые соединения, кроме loopback. Нарушение роняет тест, даже если код приложения перехватил исключение (`tests/wavetest/guard.py`).
+
+Внешние источники (YouTube Music, SoundCloud, LRCLIB, обложки, аудио) в e2e и pytest подменены. Проверки на Windows/WebView2 и на живых источниках описаны в [TEST_STRATEGY.md](docs/engineering/TEST_STRATEGY.md) §7–8 и выполняются отдельно.
 
 ## Сборка для Windows
 
@@ -144,7 +156,9 @@ build_windows.bat
 ```
 backend/      FastAPI-приложение, лаунчер, провайдеры, стриминг, SQLite
 frontend/     index.html, style.css, app.js, assets/
-tests/        e2e_smoke.py (Playwright), run_e2e.py, run_checks.py
+tests/        unit/, api/ (pytest), live/ (живые источники), fixtures/, wavetest/ (защита и подделки),
+              e2e_smoke.py (Playwright), run_e2e.py, run_checks.py
+.github/      workflows/ci.yml (GitHub Actions: Linux и Windows)
 packaging/    wave.spec (PyInstaller), иконки, зависимости сборки
 docs/         инженерная документация
 ```

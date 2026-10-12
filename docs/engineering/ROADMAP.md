@@ -74,13 +74,16 @@ graph TD
 
 Закрывает H4. Зависит от S0. Окружение: нет; LIVE-1 и LIVE-6 — по возможности.
 
+**Статус: выполнено 2026-10-13, ветка `claude/s1-regression-tests` (от `claude/s0-repository-hygiene`); отчёт — [reports/S1.md](reports/S1.md).** Итог: 395 тестов pytest (379 PASS, 16 strict xfail с ID находок, 0 FAIL), e2e 109/109, CI зелёный на Linux и Windows. Код приложения не менялся. Отклонения от плана: маркер `windows` не заведён (Windows-only автотестов пока нет, Windows-job гоняет весь набор); добавлены тесты, которых не было в плане: `test_isolation`, `test_track_contract`, `test_catalog_api`, `test_local_api_security`, `test_sqlite_schema`, `test_lyrics_api`.
+
 | | |
 |---|---|
 | Изменения | `tests/conftest.py` (изоляция §3 стратегии), фикстуры провайдеров, тесты из TEST_STRATEGY §5 с пометкой «S1». Код приложения **не меняется**. Дефекты, которые обнаружат тесты, фиксируются как `xfail(strict=True, reason="<ID находки>")` и исправляются на своём этапе. **CI (ADR-8)**: GitHub Actions — `ubuntu-latest`: `run_checks.py` (с pytest и e2e); `windows-latest`: `run_checks.py` (с pytest и e2e в Chromium) и сборка `dist\Wave` через PyInstaller как проверка spec. Шаг установщика добавляется в S4. Без секретов и без обращений к живым источникам. |
 | Модули | `tests/**`, `pytest.ini` (маркеры `live`, `windows`), `requirements-dev.txt` (+ pytest), `constraints.txt`, `tests/run_checks.py` (+ шаг pytest), `.github/workflows/ci.yml` (новый) |
 | Тесты | `test_normalize_yt/sc`, `test_catalog_cards`, `test_ranges`, `test_stream_proxy`, `test_stream_local`, `test_stream_lifespan` (xfail M1), `test_search_isolation`, `test_recommendations`, `test_userdata`, `test_settings`, `test_playlists`, `test_downloads`, `test_lyrics` |
+| Результат по критериям | (1) `python -m pytest` → **PASS** на Linux (Python 3.12.3) и в CI на `ubuntu-latest` и `windows-latest`; xfail только с ID: H3, L2, M1, M3, M4, M5, M6, M7, M8. (2) Ветки Range покрыты — **PASS**: `test_ranges`, `test_stream_proxy`, `test_stream_local`. (3) Сеть: аудит-хук блокирует любые не-loopback соединения, нарушение роняет тест даже при перехвате исключения в коде приложения; `FakeNet` роняет тест на неизвестный хост — **PASS** (`test_isolation`). (4) Запись вне временного каталога заблокирована тем же хуком; реальные каталоги сверяются в конце сессии — **PASS**. (5) e2e 109/109 — **PASS** (Linux Chromium; в CI ещё и Windows Chromium, не WebView2). (6) CI — **PASS**: [run 38310405338](https://github.com/Andrey3269/Wave/actions/runs/38310405338) (`checks (ubuntu-latest)`, `checks (windows-latest)`, `windows-build`). LIVE-1, LIVE-6 — **BLOCKED** (сеть среды: прокси отвечает 403 для music.youtube.com и lrclib.net). |
 | Критерии приёмки | (1) `pytest -m "not live"` → PASS на Linux; xfail только с ID находок. (2) Покрыты все ветки Range: 200/206/416, суффикс, открытый конец, битый заголовок, протухшая ссылка, параллельный резолв = один вызов. (3) Тесты не обращаются в сеть: проверяется подменой транспорта, сетевой вызов роняет тест. (4) Ни один тест не пишет вне временного каталога. (5) e2e 109/109. (6) Оба job'а CI зелёные на ветке; ссылка на запуск в отчёте этапа. |
-| Коммиты | по группе: `test: add isolated pytest harness`; `test: track normalization`; `test: range parsing and stream proxy`; `test: sqlite user data and playlists`; `test: provider failure isolation`; `test: downloads and lyrics` |
+| Коммиты | `d230205` test: add isolated pytest harness · `25cbc0c` test: track normalization and Track contract · `334e678` test: range parsing, stream proxy, local playback and restarts · `f5d2471` test: sqlite user data, settings and playlists · `c871d23` test: provider failure isolation, catalog and recommendations · `7f7c49d` test: downloads and lyrics · `83f6c6b` ci: GitHub Actions checks on Linux and Windows, PyInstaller spec build · `0334321` test: default Content-Type when the CDN sends none · документация и отчёт — следующим коммитом |
 
 ### S2. P0-исправления
 
@@ -88,10 +91,10 @@ graph TD
 
 | Пункт | Что | Модули | Тесты и проверки | Критерии приёмки | Окружение |
 |---|---|---|---|---|---|
-| **S2a** (H3) | Настройки UI в SQLite через `/api/settings`: `volume`, `last_volume`, `lyrics_visible`, `profile_name`, `mix_covers`; однократная миграция из localStorage; debounce записи громкости; `GET /api/boot.js` для темы без мигания | `backend/userdata.py`, `backend/main.py` (boot.js), `frontend/app.js` (LS → settings), `frontend/index.html` | `test_settings.py`: новые ключи, валидация, сохранение между двумя запусками backend на одном профиле; **e2e**: выставить настройки на порту A, перезапустить backend на порту B с тем же профилем → значения на месте | API аддитивен, старые ключи и ответы не изменились; e2e-проверка смены порта PASS; WIN-5 PASS на Windows | Windows — WIN-5 |
-| **S2b** (M1) | Асинхронное состояние резолвера в `lifespan` (`app.state.resolver`) | `backend/stream.py`, `backend/main.py` | `test_stream_lifespan` из xfail → PASS; весь `test_stream_proxy` PASS | два lifespan подряд без `RuntimeError`; WIN-12 PASS | Windows — WIN-12 |
-| **S2c** (M4) | `/api/recommendations` возвращает `failed_sources` и `source_status`; при пустом результате из-за сбоя фронтенд пишет «Источник сейчас недоступен» с кнопкой «Повторить»; `personalized` честный | `backend/recs.py`, `frontend/app.js` | `test_recommendations`: сбой → `failed_sources`; e2e: мок 502 от источника → видимое сообщение | пользователь отличает «нет данных» от «источник недоступен»; поле аддитивно | — |
-| **S2d** (L6) | Человеческие тексты ошибок стрима: «нет сети» отдельно от «yt-dlp/куки» | `backend/stream.py` | `test_stream_proxy`: тексты по типам ошибок | нет вводящих в заблуждение сообщений | — |
+| **S2a** (H3) | Настройки UI в SQLite через `/api/settings`: `volume`, `last_volume`, `lyrics_visible`, `profile_name`, `mix_covers`; однократная миграция из localStorage; debounce записи громкости; `GET /api/boot.js` для темы без мигания | `backend/userdata.py`, `backend/main.py` (boot.js), `frontend/app.js` (LS → settings), `frontend/index.html` | `test_settings.py`: снять xfail `test_ui_settings_are_persisted_by_backend` (H3), новые ключи, валидация, сохранение между двумя запусками backend на одном профиле (образец — `test_settings_survive_backend_restart`); **e2e**: выставить настройки на порту A, перезапустить backend на порту B с тем же профилем → значения на месте | API аддитивен, старые ключи и ответы не изменились; e2e-проверка смены порта PASS; WIN-5 PASS на Windows | Windows — WIN-5 |
+| **S2b** (M1) | Асинхронное состояние резолвера в `lifespan` (`app.state.resolver`) | `backend/stream.py`, `backend/main.py` | `test_stream_lifespan.py::test_restart_after_contention_keeps_resolving` из xfail → PASS; убрать сброс `_resolve_sem` в `tests/conftest.py:reset_backend_state`; весь `test_stream_proxy` PASS | два lifespan подряд без `RuntimeError`; WIN-12 PASS | Windows — WIN-12 |
+| **S2c** (M4) | `/api/recommendations` возвращает `failed_sources` и `source_status`; при пустом результате из-за сбоя фронтенд пишет «Источник сейчас недоступен» с кнопкой «Повторить»; `personalized` честный | `backend/recs.py`, `frontend/app.js` | `test_recommendations.py::test_all_candidate_sources_failed_is_reported` из xfail → PASS, `test_all_candidate_sources_failed_returns_empty_200` обновить; e2e: мок 502 от источника → видимое сообщение | пользователь отличает «нет данных» от «источник недоступен»; поле аддитивно | — |
+| **S2d** (L6) | Человеческие тексты ошибок стрима: «нет сети» отдельно от «yt-dlp/куки» | `backend/stream.py` | `test_ranges.py::test_network_failure_message_is_misleading` заменить проверкой новых текстов по типам ошибок | нет вводящих в заблуждение сообщений | — |
 | **S2e** (M13) | Описательные названия вместо «Моя волна», «Открытия недели», «Встряхнуть мою волну», «Под твою волну» (тексты — PRODUCT_GAP_ANALYSIS §3, финал утверждает владелец) | `frontend/index.html`, `frontend/app.js`, `tests/e2e_smoke.py` (условие готовности в строке 176 — в том же коммите, см. PRODUCT_GAP_ANALYSIS §3) | e2e 109/109 с обновлёнными ожиданиями | в UI нет фирменных названий конкурентов; число проверок не уменьшилось | — |
 
 ### S3. YouTube в распространяемой версии: `yt-dlp-ejs` и Deno
@@ -130,13 +133,6 @@ graph TD
 | Критерии приёмки | (1) Ни один API-запрос не запускает загрузку с `yt` или `sc` и не обращается к SoundCloud (проверка подменой транспорта: сетевой вызов `sc` роняет тест). (2) Существующие загрузки не удалены и играют. (3) Импорт и воспроизведение локальных файлов политикой не блокируются. (4) Тексты UI не обещают недоступных функций. (5) Число проверок e2e не уменьшилось: проверки, которые опирались на скачивание или SoundCloud, заменены проверками нового поведения. |
 | Коммиты | `feat(policy): backend source capability policy`; `feat(api): enforce download and source policy on all entry points`; `feat(ui): explain unavailable downloads and disabled SoundCloud` |
 
----|---|
-| Изменения | `providers/policy.py` с матрицей возможностей (TARGET_ARCHITECTURE §6). `POST /api/downloads` → 403 `download_not_allowed` для источников без разрешения. Фронтенд: вместо кнопки «Скачать» — пояснение. Уже скачанные треки играют и удаляются как раньше. SoundCloud: атрибуция (автор и ссылка на SoundCloud) на странице трека и в плеере; режим «без смешивания» или флаг `WAVE_SC_ENABLED` — по решению владельца. Тексты ошибок по типам `ProviderError`. |
-| Модули | `backend/providers/policy.py` (новый), `backend/downloads.py`, `backend/soundcloud.py`, `backend/main.py`, `frontend/app.js`, `frontend/index.html` |
-| Тесты | `test_policy.py`; `test_downloads` (403); e2e: кнопка скачивания показывает пояснение, «Скачанные» с уже существующим файлом воспроизводятся |
-| Критерии приёмки | (1) Ни один путь API и UI не начинает скачивание для источника с `download_allowed=False`. (2) Существующие загрузки не удалены и играют (проверка на фикстуре профиля с загрузкой). (3) Атрибуция SoundCloud видна везде, где играет его трек. (4) Решения ADR-5 и ADR-6 зафиксированы в TARGET_ARCHITECTURE §14. |
-| Коммиты | `feat(policy): source capability matrix`; `feat(downloads): enforce download policy`; `feat(ui): explain unavailable downloads and SoundCloud attribution` |
-
 ---
 
 ## P1 — качество основных сценариев
@@ -161,7 +157,7 @@ graph TD
 
 - **Изменения.** `providers/base.py` (Protocol, ошибки, cooldown для всех, пул потоков на провайдер), `youtube_music.py`, `soundcloud.py`, ограниченные LRU+TTL-кэши, `source_status` в ответах поиска.
 - **Модули.** `backend/main.py`, `backend/catalog.py`, `backend/soundcloud.py`, `backend/recs.py`, `backend/lyrics.py`, новые `backend/providers/*`.
-- **Тесты.** `test_search_isolation` (зависший провайдер не блокирует второй и не исчерпывает общий пул), тесты кэшей (лимит и TTL), прежние тесты нормализации без изменений.
+- **Тесты.** `test_search_isolation` (зависший провайдер не блокирует второй и не исчерпывает общий пул; xfail M3 `test_youtube_failure_enters_cooldown` снимается, `test_youtube_is_not_put_in_cooldown` удаляется вместе с поведением), тесты кэшей (лимит и TTL), прежние тесты нормализации без изменений.
 - **Критерии приёмки.**
   1. Зависание одного источника на 30 с не задерживает ответы другого источника и SQLite-эндпоинтов.
   2. YouTube получает cooldown.
@@ -174,7 +170,7 @@ graph TD
 Закрывает L2 и структуру M1. Зависит от S7.
 
 - **Изменения.** `streaming/ranges.py` (чистые функции), `resolver.py`, `proxy.py`, `local.py`, `router.py`. Поддержка `HEAD`; битый Range → 200.
-- **Тесты.** Все тесты стрима; добавлены `HEAD` и битый Range; LIVE-3.
+- **Тесты.** Все тесты стрима; снимаются xfail L2: `test_stream_proxy.py::test_empty_range_is_not_forwarded`, `test_stream_local.py::test_malformed_range_is_ignored`, `test_stream_local.py::test_head_request_supported`; LIVE-3.
 - **Критерии приёмки.**
   1. Поведение 200/206/416 и перерезолва идентично зафиксированному в S1.
   2. `HEAD` → 200 с заголовками.
@@ -224,7 +220,7 @@ graph TD
 Закрывает M7, M6 (валидация), L1. Зависит от S7 и S6.
 
 - **Изменения.** `OriginGuard`, серверная валидация `TrackIn` (`stream_url` вычисляется сервером, URL обложек из allowlist), маскирование трейсбеков, фильтрация невалидных старых строк при чтении.
-- **Тесты.** `test_origin_guard`, `test_userdata` (валидация), тест маскирования журнала.
+- **Тесты.** `test_origin_guard` (xfail M7 `test_local_api_security.py::test_cross_origin_mutation_is_refused` снимается), `test_userdata` (валидация; xfail M6 `test_saved_favorite_can_always_be_removed`), тест маскирования журнала.
 - **Критерии приёмки.**
   1. Кросс-доменный POST → 403.
   2. Фронтенд и e2e работают без изменений.
@@ -289,5 +285,6 @@ graph TD
 | Этап | Статус | Ветка | Примечание |
 |---|---|---|---|
 | Аудит и документация | согласовано владельцем 2026-10-12 | `claude/engineering-docs` | решения ADR-1…ADR-9 в TARGET_ARCHITECTURE §14 |
-| S0 | **выполнено**, ждёт подтверждения владельца | `claude/s0-repository-hygiene` | [reports/S0.md](reports/S0.md); проверки Windows — NOT RUN |
-| S1–S19 | не начато | — | S1 начинается только после подтверждения S0 |
+| S0 | **выполнено**, подтверждено владельцем 2026-10-12 | `claude/s0-repository-hygiene` | [reports/S0.md](reports/S0.md); Windows-сборка и e2e в Chromium на Windows теперь проверяются CI (S1) |
+| S1 | **выполнено**, ждёт подтверждения владельца | `claude/s1-regression-tests` | [reports/S1.md](reports/S1.md); 379 PASS + 16 xfail, e2e 109/109, CI зелёный; LIVE-1/6 — BLOCKED, WebView2 — NOT RUN |
+| S2–S19 | не начато | — | S2 начинается только после подтверждения S1 |

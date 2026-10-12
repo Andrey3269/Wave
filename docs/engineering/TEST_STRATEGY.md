@@ -21,16 +21,33 @@
 - Unit, API и интеграционных тестов нет.
 - Проверки на Windows и живых источниках — NOT RUN / BLOCKED.
 
+### Состояние после S1 (2026-10-13, ветка `claude/s1-regression-tests`)
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` (unit + API, 20 файлов) | **PASS**: 379 passed, 16 xfailed (strict, ID находок в §11), 0 failed; 4 live-теста не выбираются | Linux, Python 3.12.3; CI `ubuntu-latest` и `windows-latest`, Python 3.12 |
+| `tests/e2e_smoke.py` через `run_e2e.py` | **PASS**: 109 проверок (102 вызова `check()`, файл не менялся), 0 ошибок консоли | Linux Chromium 141; CI Linux и Windows Chromium (не WebView2) |
+| `python tests/run_checks.py` | **PASS** все шаги: hygiene, compileall, pyflakes, node, pytest, e2e, worktree | Linux; CI Linux и Windows |
+| Сборка `dist\Wave` (PyInstaller, `packaging/wave.spec`) | **PASS** в CI `windows-build`: Wave.exe и frontend на месте, баз/журналов/cookies/медиа нет | CI `windows-latest`. Запуск окна, WebView2 и установщик — NOT RUN |
+| `python -m pytest -m live` (LIVE-1, LIVE-6) | **BLOCKED**: прокси среды отвечает 403 для music.youtube.com и lrclib.net | облачная среда |
+
+Запуски CI ветки: https://github.com/Andrey3269/Wave/actions?query=branch%3Aclaude%2Fs1-regression-tests (первый — run 38310405338 на `83f6c6b`, все job'ы зелёные)
+
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
 ## 3. Изоляция данных (обязательно с этапа S0)
 
 Тесты никогда не трогают `%LOCALAPPDATA%\Wave`, `~/.local/share/wave`, `~/Downloads/Wave`.
 
-1. **pytest** (`tests/conftest.py`):
-   - создаёт временные каталоги и выставляет `WAVE_DATA_DIR` и `WAVE_DOWNLOADS_DIR` **до** импорта любого модуля `backend`;
-   - проверяет, что `paths.data_dir()` и `paths.downloads_dir()` лежат внутри временного каталога, иначе прерывает сессию;
-   - каждый тест получает чистую базу (фикстура `fresh_db` переинициализирует `library`, `userdata`, `playlists` во временном каталоге теста).
+1. **pytest** (реализовано в S1: `tests/wavetest/guard.py`, `tests/conftest.py`):
+   - **до** импорта любого модуля `backend` выставляет `WAVE_DATA_DIR`, `WAVE_DOWNLOADS_DIR` и «домашние» переменные `HOME`, `USERPROFILE`, `LOCALAPPDATA`, `APPDATA`, `XDG_*` во временный каталог сессии. Если тест сотрёт `WAVE_DATA_DIR`, запасной путь `paths.data_dir()` всё равно окажется во временном каталоге;
+   - убирает из окружения секреты и прокси (`YTDLP_COOKIES`, `YTDLP_PROXY`, `*_PROXY`); прокси возвращаются только live-тестам;
+   - аудит-хук Python (`sys.addaudithook`) блокирует запись файлов, `mkdir`, `rename`, `remove`, `rmtree` и `sqlite3.connect` вне системного временного каталога, а также любые сетевые соединения, кроме loopback. Нарушение записывается и роняет тест (ошибка в teardown), даже если код приложения перехватил исключение;
+   - перед каждым тестом проверяет, что `paths.data_dir()` и `paths.downloads_dir()` указывают в каталог этого теста, иначе `pytest.exit(returncode=2)`;
+   - каждый тест получает свой профиль (`wave_profile`: свои `data/` и `downloads/`) и сброшенное модульное состояние backend (кэши, задачи загрузок, `_resolve_sem`, соединение SQLite); фикстура `db` инициализирует `library`, `userdata`, `playlists`;
+   - в конце сессии сверяет реальные каталоги пользователя (существование, размер и время изменения `wave.db`) с состоянием до запуска;
+   - `api`/`harness`: приложение с подменёнными `YTMusic`, httpx-клиентом (`FakeNet` на `httpx.MockTransport`), резолвером yt-dlp и SoundCloud API; запрос к неизвестному хосту роняет тест;
+   - самопроверки защиты: `tests/unit/test_isolation.py`.
 2. **e2e** (`tests/e2e_smoke.py`):
    - перед первым действием запрашивает `GET /api/settings`;
    - продолжает только если `paths.data` содержит файл-метку `.wave-test-profile`, созданный раннером, либо лежит внутри `tempfile.gettempdir()`;
@@ -50,7 +67,7 @@
 | Уровень | Инструмент | Где | Новая зависимость |
 |---|---|---|---|
 | Статика | `python -m compileall`, `pyflakes`, `node --check` для каждого JS-модуля | любая ОС | `pyflakes` (dev) |
-| Unit backend | `pytest` | любая ОС | `pytest` (dev) |
+| Unit backend | `pytest` 9.1.1 | любая ОС | `pytest` (dev, S1) |
 | API | `fastapi.testclient.TestClient` | любая ОС | нет (использует `httpx`) |
 | Интеграция стрима | `TestClient` + `httpx.MockTransport` вместо CDN; резолвер yt-dlp подменяется фикстурой | любая ОС | нет |
 | Unit frontend | `node --test` для `player/queue.js` и `core/*` | любая ОС | нет |
@@ -94,6 +111,34 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 - без cookies, токенов, `client_id` и реальных подписанных URL;
 - для каждого файла указывается, откуда взята структура.
 
+**Реализовано в S1** (число тестов pytest, включая параметризацию):
+
+| Файл | Тестов | Сверх плана / примечание |
+|---|---|---|
+| `tests/unit/test_isolation.py` | 12 | самопроверка защиты (§3) |
+| `tests/unit/test_normalize_yt.py` | 20 | + «радио» `get_watch_playlist` |
+| `tests/unit/test_normalize_sc.py` | 10 | |
+| `tests/unit/test_catalog_cards.py` | 18 | + `_check` |
+| `tests/unit/test_ranges.py` | 48 | + `_extract_sync` (фильтр заголовков), `ydl_opts`, ошибки резолвера → HTTP, LRU/TTL головы |
+| `tests/unit/test_sqlite_schema.py` | 10 | снимок схемы v0, старая база без `downloads.root` — заготовка для `test_db_migrations` (S6) |
+| `tests/unit/test_lyrics.py` | 14 | |
+| `tests/api/test_track_contract.py` | 9 | новый: поля Track, OpenAPI, форма скачанного трека |
+| `tests/api/test_stream_proxy.py` | 38 | + обрыв клиентом в двух вариантах (ASGI 2.3, как uvicorn), обрыв CDN посередине |
+| `tests/api/test_stream_local.py` | 40 | + имена папок для Windows, запись индекса вне каталога загрузок |
+| `tests/api/test_stream_lifespan.py` | 6 | |
+| `tests/api/test_search_isolation.py` | 31 | + медленный источник не блокирует SQLite-эндпоинты |
+| `tests/api/test_catalog_api.py` | 20 | новый: страницы артиста и альбома, изоляция сбоев каталога |
+| `tests/api/test_recommendations.py` | 17 | |
+| `tests/api/test_userdata.py` | 22 | |
+| `tests/api/test_settings.py` | 19 | |
+| `tests/api/test_playlists.py` | 16 | |
+| `tests/api/test_local_api_security.py` | 8 | новый: TrustedHost, CORS, xfail M7 |
+| `tests/api/test_downloads.py` | 28 | |
+| `tests/api/test_lyrics_api.py` | 9 | новый |
+| `tests/live/test_live_sources.py` | 4 | LIVE-1, LIVE-6; цели в `tests/live_targets.json` |
+
+Описание фикстур и их происхождение: `tests/fixtures/README.md`. Подделки внешнего мира: `tests/wavetest/fakes.py`.
+
 ## 6. Обязательные проверки по группам изменений
 
 | Изменение | Минимум перед коммитом |
@@ -108,7 +153,7 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 
 ## 7. Что требует живых музыкальных источников
 
-Тесты с маркером `@pytest.mark.live`. Не запускаются по умолчанию и в CI. Запуск: `pytest -m live` на машине с сетью. Используются только публичные треки; идентификаторы хранятся в `tests/live_targets.json`.
+Тесты с маркером `@pytest.mark.live`. Не запускаются по умолчанию и в CI. Запуск: `pytest -m live` на машине с сетью. Используются только публичные треки; идентификаторы хранятся в `tests/live_targets.json`. LIVE-1 и LIVE-6 реализованы в S1 (`tests/live/test_live_sources.py`); в облачной среде — BLOCKED (прокси отвечает 403), владелец запускает их у себя.
 
 | ID | Проверка | Этап |
 |---|---|---|
@@ -142,11 +187,13 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | WIN-14 | Длинные пути и кириллица в каталоге загрузок | S11 |
 | WIN-15 | Сборка не содержит пользовательских баз, логов, cookies, `.env`, `__pycache__` вне PyInstaller-архива | S4, S19 |
 
-## 9. CI (решение владельца ADR-8: GitHub Actions с Windows-сборкой; реализуется в S1)
+## 9. CI (решение владельца ADR-8; реализовано в S1: `.github/workflows/ci.yml`)
 
-- GitHub Actions, `ubuntu-latest`: статика, `pytest -m "not live"`, `node --test`, e2e через раннер (Playwright Chromium).
-- `windows-latest`: `pytest -m "not live"`, PyInstaller-сборка и `Wave.exe --diagnostics` без live. Наличие Inno Setup на образе проверить [предп.].
-- Live-тесты и ручной Windows-чек-лист не входят в CI. Их результаты фиксируются в ROADMAP.md, в разделе статуса этапа.
+- Запускается на push в `main` и `claude/**`, на pull request и вручную. Секретов не использует, к живым источникам не обращается, права — только `contents: read`.
+- `checks (ubuntu-latest)` и `checks (windows-latest)`: Python 3.12, установка с `constraints.txt`, Playwright Chromium, затем `python tests/run_checks.py` — hygiene, compileall, pyflakes, `node --check`, pytest, e2e через раннер, проверка неизменности рабочего каталога. Шаг успешен только при коде 0, то есть все шаги PASS (BLOCKED даёт код 3).
+- `windows-build`: команды `build_windows.bat` без шага установщика — `svg_to_ico.py`, `PyInstaller packaging/wave.spec`; проверка, что в `dist\Wave` есть `Wave.exe` и `frontend\index.html`, а баз, журналов, `.env`, cookies и медиа нет. Это проверка spec, а не запуск приложения.
+- Не входят в CI: окно WebView2, воспроизведение в собранном приложении, `--diagnostics` (появится в S3), Inno Setup (S4), live-тесты, ручной Windows-чек-лист §8. `node --test` появится вместе с JS-модулями (S9).
+- Первый запуск: https://github.com/Andrey3269/Wave/actions/runs/38310405338 — все три job'а зелёные.
 
 ## 10. Формат отчёта по этапу
 
@@ -156,3 +203,39 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 4. Число проверок e2e до и после.
 5. Оставшиеся риски.
 6. Следующий шаг.
+
+## 11. Известные дефекты, закреплённые `xfail(strict=True)` (S1)
+
+Тест описывает **правильное** поведение и сейчас падает по указанной причине (проверено запуском с `--runxfail`). Когда дефект исправят, тест начнёт проходить, `strict` превратит это в FAIL — значит, пора снять маркер в том же коммите, что и исправление.
+
+| ID | Тест | Что происходит сейчас | Этап |
+|---|---|---|---|
+| H3 | `api/test_settings.py::test_ui_settings_are_persisted_by_backend` | `PUT /api/settings {"profile_name": …}` → 400 «Неизвестная настройка» | S2a |
+| L2 | `api/test_stream_proxy.py::test_empty_range_is_not_forwarded` | `Range: bytes=-` уходит на CDN как есть | S8 |
+| L2 | `api/test_stream_local.py::test_malformed_range_is_ignored` ×3 | битый Range на скачанном файле → 400 вместо 200 | S8 |
+| L2 | `api/test_stream_local.py::test_head_request_supported` | `HEAD /api/stream/...` → 404 | S8 |
+| M1 | `api/test_stream_lifespan.py::test_restart_after_contention_keeps_resolving` | после перезапуска приложения в том же процессе конкурентные резолвы → 500 (`[206, 206, 206, 206, 500, 500]`) | S2b |
+| M3 | `api/test_search_isolation.py::test_youtube_failure_enters_cooldown` | YouTube опрашивается снова при каждом поиске после сбоя | S7 |
+| M4 | `api/test_recommendations.py::test_all_candidate_sources_failed_is_reported` | сбой всех источников → `200 {"tracks": []}` без `failed_sources` | S2c |
+| M5 | `api/test_playlists.py::test_concurrent_add_of_same_track` | гонка двух добавлений → `IntegrityError` (через API — 500) | S6 |
+| M6 | `api/test_userdata.py::test_favorite_keeps_all_track_fields` | `explicit`, `plays`, `released` теряются при сохранении | S6 |
+| M6 | `api/test_userdata.py::test_saved_favorite_can_always_be_removed` | запись с `/` в `id` сохраняется, удалить её нельзя | S6, S13 |
+| M7 | `api/test_local_api_security.py::test_cross_origin_mutation_is_refused` | `POST /api/settings/clear-history` с чужим `Origin` выполняется | S13 |
+| M8 | `unit/test_lyrics.py::test_non_json_response_is_temporary_failure` | не-JSON ответ LRCLIB → `JSONDecodeError` | S11 |
+| M8 | `api/test_lyrics_api.py::test_non_json_service_response_is_handled` | то же через `/api/lyrics` → 500 | S11 |
+| M8 | `api/test_downloads.py::test_broken_lyrics_response_does_not_fail_download` | загрузка падает на шаге `processing`, скачанное аудио удаляется | S11 |
+
+Текущее поведение, которое изменится на этапах, закреплено обычными тестами с пометкой в docstring: M3 `test_youtube_is_not_put_in_cooldown`, M4 `test_all_candidate_sources_failed_returns_empty_200`, M5 `test_no_schema_version_yet`, M13 `personalized` в `test_radio_of_current_track`, L6 `test_network_failure_message_is_misleading`. При исправлении их меняют в том же коммите.
+
+`tests/conftest.py:reset_backend_state` пересоздаёт `stream._resolve_sem` перед каждым тестом, чтобы M1 не ломал соседние тесты. Сам дефект воспроизводится в `test_stream_lifespan.py`, где сброса между перезапусками нет. После S2b сброс убирается.
+
+## 12. Наблюдения S1, которых не было в аудите
+
+Не дефекты высокого приоритета; закреплены тестами «как есть» и требуют решения на указанном этапе.
+
+| ID | Наблюдение | Тест | Предлагаемый этап |
+|---|---|---|---|
+| N1 | `PUT /api/settings` применяет ключи по очереди: ключи до ошибочного уже сохранены, хотя ответ 400 | `api/test_settings.py::test_partial_write_before_error` | S2a (сделать запись атомарной) |
+| N2 | При обрыве CDN посередине ответа прокси теряет уже полученные, но ещё не отданные байты (читает кусками по 64 КБ). Плеер видит короткое тело и перезапрашивает диапазон | `api/test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` | S8 |
+| N3 | Запись индекса загрузок с `folder`, выходящим за каталог загрузок (`../`), даёт HTTP 500: чужой файл не отдаётся, но ответ — ошибка сервера, а не отказ | `api/test_stream_local.py::test_index_row_outside_downloads_is_not_served` | S6 (фильтрация невалидных строк при чтении) |
+
