@@ -1,5 +1,6 @@
 # Проверенный набор версий (pip constraints) для backend/requirements.txt и requirements-dev.txt.
 # Получен 2026-10-12: чистый venv, Python 3.12.3, Linux x86_64, `pip freeze`.
+# Дополнен 2026-10-13 (S1): pytest и его зависимости, тем же способом.
 # С этим набором tests/run_checks.py прошёл полностью (см. docs/engineering/reports/S0.md).
 #
 # Использование:
@@ -25,12 +26,17 @@ httpcore==1.0.9
 httptools==0.9.0
 httpx==0.28.1
 idna==3.20
+iniconfig==2.3.1
 opentelemetry-api==1.45.1
+packaging==26.3
 playwright==1.56.0
+pluggy==1.6.0
 pydantic==2.14.1
 pydantic_core==2.50.1
 pyee==13.0.1
 pyflakes==3.4.0
+Pygments==2.21.0
+pytest==9.1.1
 python-dotenv==1.2.4
 PyYAML==6.0.3
 requests==2.34.2

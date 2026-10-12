@@ -1,14 +1,16 @@
 """
 Все автоматические проверки репозитория одной командой.
 
-    python tests/run_checks.py [--no-e2e]
+    python tests/run_checks.py [--no-pytest] [--no-e2e]
 
 Шаги:
   hygiene    — в git не отслеживаются базы, журналы, медиа, секреты, окружения, артефакты сборки;
   compileall — синтаксис Python (байткод пишется во временную папку, не в репозиторий);
   pyflakes   — статические ошибки Python;
   node       — синтаксис JavaScript фронтенда (node --check);
-  e2e        — браузерный тест на одноразовом профиле (tests/run_e2e.py).
+  pytest     — unit- и API-тесты без сети и на временном профиле (python -m pytest, live выключены);
+  e2e        — браузерный тест на одноразовом профиле (tests/run_e2e.py);
+  worktree   — после всех шагов в рабочем каталоге не появилось новых неигнорируемых файлов.
 
 Статусы: PASS — выполнено и прошло; FAIL — выполнено и нашло дефект; BLOCKED — нет нужного
 инструмента; NOT RUN — шаг пропущен по флагу. Код выхода: 1 при любом FAIL, 3 при BLOCKED
@@ -81,6 +83,29 @@ def step_node() -> tuple[str, str]:
     return ("FAIL", "\n".join(errors)) if errors else ("PASS", f"{len(files)} файл(ов)")
 
 
+def step_pytest() -> tuple[str, str]:
+    if importlib.util.find_spec("pytest") is None:
+        return "BLOCKED", "pytest не установлен (requirements-dev.txt)"
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    code = subprocess.run([sys.executable, "-m", "pytest"], cwd=ROOT, env=env).returncode
+    return ("PASS", "") if code == 0 else ("FAIL", f"код выхода {code}")
+
+
+def git_status() -> str | None:
+    if not shutil.which("git"):
+        return None
+    code, out = run(["git", "status", "--porcelain", "--untracked-files=all"])
+    return out if code == 0 else None
+
+
+def step_worktree(before: str | None) -> tuple[str, str]:
+    after = git_status()
+    if before is None or after is None:
+        return "BLOCKED", "git status недоступен"
+    new = sorted(set(after.splitlines()) - set(before.splitlines()))
+    return ("FAIL", "проверки изменили рабочий каталог: " + "; ".join(new)) if new else ("PASS", "")
+
+
 def step_e2e() -> tuple[str, str]:
     code = subprocess.run([sys.executable, str(ROOT / "tests" / "run_e2e.py")], cwd=ROOT).returncode
     return {0: ("PASS", ""), 3: ("BLOCKED", "см. вывод выше")}.get(code, ("FAIL", f"код выхода {code}"))
@@ -88,22 +113,28 @@ def step_e2e() -> tuple[str, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Проверки Wave")
+    ap.add_argument("--no-pytest", action="store_true", help="пропустить unit- и API-тесты (NOT RUN)")
     ap.add_argument("--no-e2e", action="store_true", help="пропустить браузерный тест (NOT RUN)")
     args = ap.parse_args()
 
+    before = git_status()
     steps = [("hygiene", step_hygiene), ("compileall", step_compileall), ("pyflakes", step_pyflakes),
              ("node", step_node)]
     results = []
-    for name, fn in steps:
-        status, note = fn()
+
+    def record(name: str, status: str, note: str) -> None:
         results.append((name, status, note))
         print(f"[{status}] {name}" + (f": {note}" if note else ""), flush=True)
-    if args.no_e2e:
-        results.append(("e2e", "NOT RUN", "--no-e2e"))
-    else:
-        print("[....] e2e", flush=True)
-        status, note = step_e2e()
-        results.append(("e2e", status, note))
+
+    for name, fn in steps:
+        record(name, *fn())
+    for name, skip, fn in (("pytest", args.no_pytest, step_pytest), ("e2e", args.no_e2e, step_e2e)):
+        if skip:
+            record(name, "NOT RUN", f"--no-{name}")
+        else:
+            print(f"[....] {name}", flush=True)
+            record(name, *fn())
+    record("worktree", *step_worktree(before))
 
     print("\nИтог:")
     for name, status, _ in results:

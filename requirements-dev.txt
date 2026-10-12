@@ -4,3 +4,4 @@
 
 playwright==1.56.0      # браузерный e2e-тест tests/e2e_smoke.py
 pyflakes==3.4.0         # статическая проверка Python (tests/run_checks.py)
+pytest==9.1.1           # unit- и API-тесты (python -m pytest)
