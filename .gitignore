@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Wave / «ВОЛНА». Что никогда не должно попадать в репозиторий.
+# ---------------------------------------------------------------------------
+
+# Python: байткод, кэши инструментов
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Виртуальные окружения (в т.ч. окружение сборки из build_windows.bat)
+venv/
+.venv/
+.venv-*/
+env/
+
+# Сборка PyInstaller / Inno Setup и скачиваемые при сборке бинарники
+build/
+dist/
+installer/MicrosoftEdgeWebview2Setup.exe
+packaging/runtime/**/*.exe
+packaging/runtime/**/*.zip
+
+# Пользовательские данные: базы, журналы, скачанная музыка
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+logs/
+*.m4a
+*.mp3
+*.webm
+*.ogg
+*.opus
+*.wav
+
+# Секреты: окружение, cookies для yt-dlp, ключи
+.env
+.env.*
+cookies*.txt
+*.cookies
+*.pem
+*.key
+*.pfx
+
+# Результаты тестов (скриншоты e2e пишутся во временный каталог, это запасное правило)
+tests/shots/
+test-results/
+
+# Node (если появятся инструменты фронтенда)
+node_modules/
+
+# Редакторы и ОС
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
