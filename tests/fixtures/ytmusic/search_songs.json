@@ -1,0 +1,54 @@
+[
+  {
+    "category": "Songs",
+    "resultType": "song",
+    "title": "Northern Lights",
+    "album": {"name": "Polar Nights", "id": "MPREb_alb00000001"},
+    "inLibrary": false,
+    "feedbackTokens": {"add": null, "remove": null},
+    "videoId": "AAAAAAAAAA1",
+    "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    "duration": "3:45",
+    "duration_seconds": 225,
+    "year": null,
+    "artists": [
+      {"name": "Aurora Wave", "id": "UCaurorawave00000000001"},
+      {"name": "Guest Singer", "id": null},
+      {"name": "Third Feat", "id": "UCthirdfeat000000000003"}
+    ],
+    "isExplicit": true,
+    "thumbnails": [
+      {"url": "https://lh3.googleusercontent.com/song1=w60-h60-l90-rj", "width": 60, "height": 60},
+      {"url": "https://lh3.googleusercontent.com/song1=w120-h120-l90-rj", "width": 120, "height": 120}
+    ]
+  },
+  {
+    "category": "Songs",
+    "resultType": "song",
+    "title": "Old Duration Format",
+    "album": null,
+    "videoId": "AAAAAAAAAA2",
+    "duration": "1:02:10",
+    "artists": [{"name": "Long Mix", "id": "UClongmix00000000000002"}],
+    "isExplicit": false,
+    "thumbnails": [{"url": "https://i.ytimg.com/vi/AAAAAAAAAA2/hqdefault.jpg", "width": 480, "height": 360}]
+  },
+  {
+    "category": "Top result",
+    "resultType": "album",
+    "title": "Album without videoId",
+    "browseId": "MPREb_alb00000009",
+    "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+    "thumbnails": []
+  },
+  {
+    "category": "Songs",
+    "resultType": "song",
+    "title": "",
+    "album": {"name": "Singles", "id": null},
+    "videoId": "AAAAAAAAAA3",
+    "duration": "bad:duration",
+    "artists": [],
+    "thumbnails": null
+  }
+]

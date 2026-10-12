@@ -1,0 +1,42 @@
+{
+  "collection": [
+    {
+      "kind": "track",
+      "id": 1000000001,
+      "title": "Indie Morning",
+      "duration": 30000,
+      "full_duration": 187500,
+      "artwork_url": "https://i1.sndcdn.com/artworks-abc-large.jpg",
+      "permalink_url": "https://soundcloud.com/indie-uploader/indie-morning",
+      "playback_count": 12345,
+      "display_date": "2025-03-01T10:00:00Z",
+      "created_at": "2025-02-28T09:00:00Z",
+      "policy": "ALLOW",
+      "streamable": true,
+      "publisher_metadata": {"artist": "Indie Artist", "album_title": "Mornings EP", "explicit": true},
+      "user": {"id": 555001, "username": "indie-uploader", "avatar_url": "https://i1.sndcdn.com/avatars-u1-large.jpg"}
+    },
+    {
+      "kind": "track",
+      "id": 1000000002,
+      "title": "Uploader Only",
+      "duration": 200400,
+      "artwork_url": null,
+      "permalink_url": "https://soundcloud.com/bedroom-producer/uploader-only",
+      "created_at": "2024-01-01T00:00:00Z",
+      "policy": "MONETIZE",
+      "user": {"id": 555002, "username": "bedroom-producer", "avatar_url": "https://i1.sndcdn.com/avatars-u2-large.jpg"}
+    },
+    {"kind": "track", "id": 1000000003, "title": "Go+ preview", "duration": 30000, "policy": "SNIP",
+     "user": {"id": 555003, "username": "label"}},
+    {"kind": "track", "id": 1000000004, "title": "Region blocked", "duration": 100000, "policy": "BLOCK",
+     "user": {"id": 555004, "username": "label"}},
+    {"kind": "track", "id": 1000000005, "title": "Not streamable", "duration": 100000, "streamable": false,
+     "user": {"id": 555005, "username": "label"}},
+    {"kind": "playlist", "id": 2000000001, "title": "A playlist in track search"},
+    {"kind": "track", "title": "Missing id"},
+    {"id": 1000000006, "title": null, "user": {}}
+  ],
+  "next_href": "https://api-v2.soundcloud.com/search/tracks?offset=20",
+  "query_urn": "soundcloud:search:test"
+}

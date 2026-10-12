@@ -1,0 +1,6 @@
+[
+  {"kind": "track", "id": 1000000011, "title": "Track Two", "full_duration": 150000, "policy": "ALLOW",
+   "user": {"id": 555001, "username": "indie-uploader"}},
+  {"kind": "track", "id": 1000000012, "title": "Track Three (Go+)", "full_duration": 160000, "policy": "SNIP",
+   "user": {"id": 555001, "username": "indie-uploader"}}
+]

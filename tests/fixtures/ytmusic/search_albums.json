@@ -1,0 +1,8 @@
+[
+  {"category": "Albums", "resultType": "album", "title": "Polar Nights", "type": "Album", "year": "2024",
+   "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}, {"name": "Guest", "id": null}],
+   "browseId": "MPREb_alb00000001", "playlistId": "OLAK5uy_polar", "isExplicit": false,
+   "thumbnails": [{"url": "https://lh3.googleusercontent.com/alb1=w60-h60-l90-rj", "width": 60, "height": 60}]},
+  {"category": "Albums", "resultType": "album", "title": null, "year": null, "artists": [], "browseId": "MPREb_alb00000003",
+   "audioPlaylistId": "OLAK5uy_untitled", "thumbnails": []}
+]

@@ -1,0 +1,23 @@
+{
+  "title": "Polar Nights",
+  "type": "Album",
+  "thumbnails": [
+    {"url": "https://lh3.googleusercontent.com/alb1=w60-h60-l90-rj", "width": 60, "height": 60},
+    {"url": "https://lh3.googleusercontent.com/alb1=w544-h544-l90-rj", "width": 544, "height": 544}
+  ],
+  "description": null,
+  "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+  "year": "2024",
+  "trackCount": 3,
+  "duration": "10 минут",
+  "audioPlaylistId": "OLAK5uy_polar",
+  "tracks": [
+    {"videoId": "AAAAAAAAAA1", "title": "Northern Lights", "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+     "album": "Polar Nights", "likeStatus": "INDIFFERENT", "thumbnails": null, "isAvailable": true, "isExplicit": false,
+     "videoType": "MUSIC_VIDEO_TYPE_ATV", "duration": "3:45", "duration_seconds": 225, "trackNumber": 1},
+    {"videoId": null, "title": "Unavailable Track", "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+     "album": "Polar Nights", "thumbnails": null, "isAvailable": false, "duration": "3:00", "duration_seconds": 180, "trackNumber": 2},
+    {"videoId": "AAAAAAAAAA5", "title": "No Artists Listed", "artists": [], "album": "Polar Nights", "thumbnails": null,
+     "isAvailable": true, "duration": "3:15", "duration_seconds": 195, "trackNumber": 3}
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "tracks": [
+    {
+      "videoId": "AAAAAAAAAA1",
+      "title": "Northern Lights",
+      "length": "3:45",
+      "thumbnail": [{"url": "https://lh3.googleusercontent.com/song1=w60-h60-l90-rj", "width": 60, "height": 60}],
+      "feedbackTokens": {"add": null, "remove": null},
+      "likeStatus": "INDIFFERENT",
+      "inLibrary": false,
+      "videoType": "MUSIC_VIDEO_TYPE_ATV",
+      "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+      "album": {"name": "Polar Nights", "id": "MPREb_alb00000001"},
+      "year": "2024",
+      "views": "1.2M"
+    },
+    {
+      "videoId": "RRRRRRRRRR1",
+      "title": "Radio Pick One",
+      "length": "4:01",
+      "thumbnail": [{"url": "https://lh3.googleusercontent.com/r1=w60-h60-l90-rj", "width": 60, "height": 60}],
+      "artists": [{"name": "Neighbour Band", "id": "UCneighbour000000000001"}],
+      "album": null
+    },
+    {
+      "videoId": "RRRRRRRRRR2",
+      "title": "Radio Pick Two",
+      "length": "2:59",
+      "thumbnail": [{"url": "https://lh3.googleusercontent.com/r2=w60-h60-l90-rj", "width": 60, "height": 60}],
+      "artists": [{"name": "Neighbour Band", "id": "UCneighbour000000000001"}]
+    }
+  ],
+  "playlistId": "RDAMVMAAAAAAAAAA1",
+  "lyrics": null,
+  "related": null
+}

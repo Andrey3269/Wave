@@ -1,0 +1,10 @@
+{
+  "collection": [
+    {"kind": "playlist", "id": 3000000001, "title": "Mornings EP", "release_date": "2025-03-01T00:00:00Z",
+     "artwork_url": null, "track_count": 4,
+     "user": {"id": 555001, "username": "indie-uploader", "avatar_url": "https://i1.sndcdn.com/avatars-u1-large.jpg"}},
+    {"kind": "playlist", "id": 3000000002, "title": "Old Album", "display_date": "2019-06-01T00:00:00Z",
+     "artwork_url": "https://i1.sndcdn.com/artworks-old-large.png", "track_count": 10, "user": {"username": "someone"}}
+  ],
+  "next_href": "https://api-v2.soundcloud.com/search/albums?offset=20"
+}

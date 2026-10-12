@@ -1,0 +1,50 @@
+{
+  "name": "Aurora Wave",
+  "description": "Test artist",
+  "views": "1 000 000 views",
+  "channelId": "UCaurorawave00000000001",
+  "shuffleId": "RDAOshuffle",
+  "radioId": "RDEMradio",
+  "subscribers": "1,2 млн",
+  "subscribed": false,
+  "thumbnails": [
+    {"url": "https://lh3.googleusercontent.com/artist=w60-h60-p-l90-rj", "width": 60, "height": 60},
+    {"url": "https://lh3.googleusercontent.com/artist=w540-h225-p-l90-rj", "width": 540, "height": 225}
+  ],
+  "songs": {
+    "browseId": "VLOLAKsongs000000000000001",
+    "results": [
+      {"videoId": "AAAAAAAAAA1", "title": "Northern Lights", "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+       "album": {"name": "Polar Nights", "id": "MPREb_alb00000001"}, "duration": "3:45",
+       "thumbnails": [{"url": "https://lh3.googleusercontent.com/song1=w60-h60-l90-rj", "width": 60, "height": 60}]},
+      {"videoId": "AAAAAAAAAA4", "title": "Second Song", "artists": [{"name": "Aurora Wave", "id": "UCaurorawave00000000001"}],
+       "album": {"name": "Polar Nights", "id": "MPREb_alb00000001"}, "duration": "2:30",
+       "thumbnails": [{"url": "https://lh3.googleusercontent.com/song4=w60-h60-l90-rj", "width": 60, "height": 60}]}
+    ]
+  },
+  "albums": {
+    "browseId": "UCaurorawave00000000001",
+    "params": "albums-params",
+    "results": [
+      {"title": "Polar Nights", "type": "Album", "year": "2024", "browseId": "MPREb_alb00000001", "audioPlaylistId": "OLAK5uy_polar",
+       "thumbnails": [{"url": "https://lh3.googleusercontent.com/alb1=w226-h226-l90-rj", "width": 226, "height": 226}], "isExplicit": false},
+      {"title": "No Browse Id", "type": "Album", "year": "2020", "thumbnails": []}
+    ]
+  },
+  "singles": {
+    "browseId": "UCaurorawave00000000001",
+    "params": "singles-params",
+    "results": [
+      {"title": "Single A", "type": "Single", "year": "2023", "browseId": "MPREb_sgl00000001",
+       "thumbnails": [{"url": "https://lh3.googleusercontent.com/sgl1=w226-h226-l90-rj", "width": 226, "height": 226}]}
+    ]
+  },
+  "related": {
+    "browseId": null,
+    "results": [
+      {"browseId": "UCneighbour000000000001", "subscribers": "50 тыс.", "title": "Neighbour Band",
+       "thumbnails": [{"url": "https://lh3.googleusercontent.com/nb=w226-h226-p-l90-rj", "width": 226, "height": 226}]},
+      {"title": "No id related", "thumbnails": []}
+    ]
+  }
+}

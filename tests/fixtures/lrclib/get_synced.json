@@ -1,0 +1,10 @@
+{
+  "id": 1,
+  "trackName": "Northern Lights",
+  "artistName": "Aurora Wave",
+  "albumName": "Polar Nights",
+  "duration": 225,
+  "instrumental": false,
+  "plainLyrics": "Первая строка\nВторая строка",
+  "syncedLyrics": "[00:01.50] Первая строка\n[00:04.00]\n[01:02.25] Вторая строка\n[ar: метаданные без таймкода]\nстрока без таймкода"
+}

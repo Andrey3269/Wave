@@ -1,0 +1,7 @@
+[
+  {"category": "Artists", "resultType": "artist", "artist": "Aurora Wave", "shuffleId": "RDAO", "radioId": "RDEM",
+   "browseId": "UCaurorawave00000000001", "subscribers": "1,2 млн",
+   "thumbnails": [{"url": "https://lh3.googleusercontent.com/artist=w60-h60-p-l90-rj", "width": 60, "height": 60}]},
+  {"category": "Artists", "resultType": "artist", "artist": "No Browse", "thumbnails": []},
+  {"category": "Artists", "resultType": "artist", "browseId": "UCnoname0000000000000001", "thumbnails": []}
+]

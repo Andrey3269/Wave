@@ -1,0 +1,16 @@
+{
+  "kind": "playlist",
+  "id": 3000000001,
+  "title": "Mornings EP",
+  "release_date": "2025-03-01T00:00:00Z",
+  "artwork_url": "https://i1.sndcdn.com/artworks-ep-large.jpg",
+  "track_count": 4,
+  "user": {"id": 555001, "username": "indie-uploader"},
+  "tracks": [
+    {"kind": "track", "id": 1000000001, "title": "Indie Morning", "full_duration": 187500, "policy": "ALLOW",
+     "user": {"id": 555001, "username": "indie-uploader"}, "publisher_metadata": {"artist": "Indie Artist"}},
+    {"id": 1000000011},
+    {"id": 1000000012},
+    {"id": 1000000013}
+  ]
+}
