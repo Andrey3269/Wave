@@ -33,6 +33,16 @@
 
 Запуски CI ветки: https://github.com/Andrey3269/Wave/actions?query=branch%3Aclaude%2Fs1-regression-tests (первый — run 38310405338 на `83f6c6b`, все job'ы зелёные)
 
+### Состояние после S2 (2026-10-13, ветка `claude/s2-p0-fixes`)
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 469 passed, 13 xfailed (strict; сняты H3, M1, M4), 0 failed; 4 live-теста не выбираются | Linux, Python 3.12.3; CI `ubuntu-latest`, `windows-latest` |
+| `tests/e2e_smoke.py` | **PASS**: 122 проверки (было 109; все прежние сохранены; у трёх обновлены только подписи вместе с названиями S2e), 0 ошибок консоли | Linux Chromium 141; CI Linux и Windows Chromium (не WebView2) |
+| `tests/e2e_settings.py` (новый, S2a) | **PASS**: 24 проверки в трёх запусках backend — `set` на порту A, `verify` после перезапуска на порту B с тем же профилем, `migrate` на чистом профиле | то же |
+| `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
+| WIN-5 (настройки в WebView2), WIN-12 (сторож) | **NOT RUN** | нужна Windows-машина |
+
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
 ## 3. Изоляция данных (обязательно с этапа S0)
@@ -44,20 +54,23 @@
    - убирает из окружения секреты и прокси (`YTDLP_COOKIES`, `YTDLP_PROXY`, `*_PROXY`); прокси возвращаются только live-тестам;
    - аудит-хук Python (`sys.addaudithook`) блокирует запись файлов, `mkdir`, `rename`, `remove`, `rmtree` и `sqlite3.connect` вне системного временного каталога, а также любые сетевые соединения, кроме loopback. Нарушение записывается и роняет тест (ошибка в teardown), даже если код приложения перехватил исключение;
    - перед каждым тестом проверяет, что `paths.data_dir()` и `paths.downloads_dir()` указывают в каталог этого теста, иначе `pytest.exit(returncode=2)`;
-   - каждый тест получает свой профиль (`wave_profile`: свои `data/` и `downloads/`) и сброшенное модульное состояние backend (кэши, задачи загрузок, `_resolve_sem`, соединение SQLite); фикстура `db` инициализирует `library`, `userdata`, `playlists`;
+   - каждый тест получает свой профиль (`wave_profile`: свои `data/` и `downloads/`) и сброшенное модульное состояние backend (кэши, задачи загрузок, соединение SQLite); асинхронное состояние резолвера с S2b создаёт и закрывает lifespan (`app.state.resolver`), сбрасывать его не нужно; фикстура `db` инициализирует `library`, `userdata`, `playlists`;
    - в конце сессии сверяет реальные каталоги пользователя (существование, размер и время изменения `wave.db`) с состоянием до запуска;
-   - `api`/`harness`: приложение с подменёнными `YTMusic`, httpx-клиентом (`FakeNet` на `httpx.MockTransport`), резолвером yt-dlp и SoundCloud API; запрос к неизвестному хосту роняет тест;
+   - `api`/`harness`: приложение с подменёнными `YTMusic`, httpx-клиентом (`FakeNet` на `httpx.MockTransport`), резолвером yt-dlp и SoundCloud API; запрос к неизвестному хосту роняет тест. `harness.serve()` (S2a) запускает то же приложение настоящим uvicorn на свободном порту loopback — для проверок, где важен порт;
    - самопроверки защиты: `tests/unit/test_isolation.py`.
 2. **e2e** (`tests/e2e_smoke.py`):
    - перед первым действием запрашивает `GET /api/settings`;
    - продолжает только если `paths.data` содержит файл-метку `.wave-test-profile`, созданный раннером, либо лежит внутри `tempfile.gettempdir()`;
    - скриншоты по умолчанию пишет во временный каталог, а не в `tests/shots`.
-3. **Раннер** `tests/run_e2e.py` (реализован в S0), одна команда:
+3. **Раннер** `tests/run_e2e.py` (реализован в S0, расширен в S2a), одна команда:
    1. создаёт временный профиль и метку;
    2. запускает backend на свободном порту;
    3. ждёт `/api/health`;
-   4. запускает e2e;
-   5. останавливает backend и удаляет временные данные.
+   4. запускает `e2e_smoke.py`, затем `e2e_settings.py set` на том же порту;
+   5. перезапускает backend на **другом** порту с тем же профилем и запускает `e2e_settings.py verify` (в WebView другой порт = другой localStorage);
+   6. на отдельном чистом профиле запускает `e2e_settings.py migrate`;
+   7. останавливает backend и удаляет временные данные.
+   `e2e_settings.py` проверяет профиль так же, как `e2e_smoke.py`.
 Пункты 2 и 3 реализованы в S0 (`tests/e2e_smoke.py:ensure_test_profile`, `tests/run_e2e.py`). Все проверки запускаются командой `python tests/run_checks.py`.
 
 4. Тест, который должен удалять или очищать данные (история, загрузки, плейлисты), дополнительно проверяет, что работает на временном профиле.
@@ -90,11 +103,11 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/unit/test_ranges.py` | `RANGE_RE` и `_cap_range`: `bytes=a-`, `a-b` с обрезкой до 1 МБ, `-n` без изменений, `bytes=-` (дефект), битые значения; `_serve_from_head`: начало внутри или вне головы, `end < start`, корректный `Content-Range` (L2) |
 | `tests/api/test_stream_proxy.py` | `stream_track` с `MockTransport`: 206 с проксированными `Content-Range`/`Content-Length`; без Range → 200; апстрим 416 → 416; апстрим 403 → перерезолв и успех со второй попытки; два 403 → 502; ошибка соединения → перерезолв; отмена клиента закрывает апстрим; параллельные запросы одного трека → **один** вызов резолвера; `?warm=1` → 202/204/503 |
 | `tests/api/test_stream_local.py` | локальный файл: 200, 206 (`0-`, `a-b`, `-n`, `x-` до конца), 416, MIME по расширению; запись в индексе есть, а файл удалён → запись исчезает, ответ не 500; путь `../` в `folder` → отказ (`folder_path`) |
-| `tests/api/test_stream_lifespan.py` | два последовательных lifespan в одном процессе, конкурентные запросы → без `RuntimeError` (M1; xfail до S2b) |
+| `tests/api/test_stream_lifespan.py` | последовательные lifespan в одном процессе, конкурентные запросы → без `RuntimeError` (M1, исправлено в S2b); остановка посреди прогрева; состояние резолвера отказывает в чужом цикле |
 | `tests/api/test_search_isolation.py` | `yt` OK + `sc` падает → 200, `failed_sources=["sc"]`, результат не кэшируется; `sc` в cooldown не опрашивается; оба падают → 502; таймаут провайдера; пагинация `offset`/`has_more`; пустой и слишком длинный `q` → 422/400 |
-| `tests/api/test_recommendations.py` | скоринг по таблице `W` на фиксированных данных; ограничение `MAX_PER_ARTIST`; исключение недавних и `exclude`; дубли по `_sig`; сбой всех кандидатов → сейчас `200 []` (M4: фиксируем, после S2c ждём `failed_sources`) |
+| `tests/api/test_recommendations.py` | скоринг по таблице `W` на фиксированных данных; ограничение `MAX_PER_ARTIST`; исключение недавних и `exclude`; дубли по `_sig`; четыре исхода (S2c): результаты, пусто без сбоя, частичный и полный сбой (`failed_sources`, `source_status`); честные `personalized` и `radio` |
 | `tests/api/test_userdata.py` | избранное: добавить, повторить, удалить, порядок по `added_at`; история: `GROUP BY`, пагинация, `skip`, очистка обоими эндпоинтами; потеря `explicit`/`plays`/`released` (M6: фиксируем, после S6/S13 ждём сохранения) |
-| `tests/api/test_settings.py` | текущие ключи, валидация, неизвестный ключ → 400, `downloads_dir`: относительный путь → 400, недоступный для записи → 400, `WAVE_DOWNLOADS_DIR` блокирует; после S2a — новые ключи и **сохранение между перезапусками backend** |
+| `tests/api/test_settings.py` | ключи и валидация, неизвестный ключ → 400, `downloads_dir`: относительный путь → 400, недоступный для записи → 400, `WAVE_DOWNLOADS_DIR` блокирует; S2a: ключи интерфейса, атомарность (N1), испорченные строки, однократный перенос из localStorage, `boot.js`, **два запуска uvicorn на разных портах с одним профилем** |
 | `tests/api/test_playlists.py` | CRUD; дубль трека → `added: false`; позиции; переименование пустым именем → 400; удаление каскадом; конкурентное добавление одного трека не даёт 500 (M5: xfail до S6) |
 | `tests/unit/test_db_migrations.py` (S6) | фикстура базы «как в 5a7f27c» и «старее, без `downloads.root`» → миграция до последней версии без потери строк; бэкап создан; повторный запуск идемпотентен; ошибка миграции → откат и исходная база цела |
 | `tests/api/test_downloads.py` | старт → `jobs` → done (CDN через `MockTransport`); апстрим без Range (200); `Content-Range */*`; ошибка посередине → каталог `.part` удалён, индекс не тронут; сбой LRCLIB не отменяет загрузку (M8: xfail до S11); после S5 — 403 `download_not_allowed` для запрещённых источников |
@@ -104,7 +117,8 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_origin_guard.py` (S13) | мутирующий запрос с чужим `Origin` → 403; без `Origin` и со своим → OK; GET не затронут |
 | `tests/js/queue.test.mjs` (S9) | модель очереди: add/next/prev/remove/move/clear, индекс текущего при перестановках, shuffle без повторов и с историей для «назад», repeat off/one/all, сериализация и восстановление |
 | `tests/js/format.test.mjs` (S9) | `fmtTime`, `plural`, `thumb` |
-| `tests/e2e_smoke.py` | существующие 109 проверок; расширения: сохранение настроек при смене порта (S2a), честные названия (S2e), сообщение о недоступном источнике (S2c), запрет скачивания (S5), клавиатурная навигация (S12) |
+| `tests/e2e_smoke.py` | 122 проверки после S2: + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c); дальше — запрет скачивания (S5), клавиатурная навигация (S12) |
+| `tests/e2e_settings.py` (S2a) | 24 проверки: настройки интерфейса через UI на порту A → те же значения после перезапуска на порту B в новом окне (тема до отрисовки, имя, громкость, тексты, обложки миксов); однократный перенос из localStorage, старые ключи не удаляются |
 
 **Фикстуры провайдеров** (`tests/fixtures/ytmusic/*.json`, `tests/fixtures/soundcloud/*.json`):
 - вручную составленные или обезличенные ответы;
@@ -138,6 +152,8 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/live/test_live_sources.py` | 4 | LIVE-1, LIVE-6; цели в `tests/live_targets.json` |
 
 Описание фикстур и их происхождение: `tests/fixtures/README.md`. Подделки внешнего мира: `tests/wavetest/fakes.py`.
+
+**Изменения в S2** (число тестов pytest после этапа): `test_settings.py` 19 → 64 (S2a); `test_stream_lifespan.py` 6 → 9 (S2b); `test_recommendations.py` 17 → 21 (S2c); `test_ranges.py` 48 → 81 и `test_stream_proxy.py` 38 → 40 (S2d: тексты и типы ошибок стрима, реальные сообщения yt-dlp для Linux и Windows, отсутствие технических подробностей и секретов). Всего 482 теста pytest (469 PASS + 13 xfail), было 395.
 
 ## 6. Обязательные проверки по группам изменений
 
@@ -204,19 +220,18 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 5. Оставшиеся риски.
 6. Следующий шаг.
 
-## 11. Известные дефекты, закреплённые `xfail(strict=True)` (S1)
+## 11. Известные дефекты, закреплённые `xfail(strict=True)`
 
 Тест описывает **правильное** поведение и сейчас падает по указанной причине (проверено запуском с `--runxfail`). Когда дефект исправят, тест начнёт проходить, `strict` превратит это в FAIL — значит, пора снять маркер в том же коммите, что и исправление.
 
+После S2 осталось 13:
+
 | ID | Тест | Что происходит сейчас | Этап |
 |---|---|---|---|
-| H3 | `api/test_settings.py::test_ui_settings_are_persisted_by_backend` | `PUT /api/settings {"profile_name": …}` → 400 «Неизвестная настройка» | S2a |
 | L2 | `api/test_stream_proxy.py::test_empty_range_is_not_forwarded` | `Range: bytes=-` уходит на CDN как есть | S8 |
 | L2 | `api/test_stream_local.py::test_malformed_range_is_ignored` ×3 | битый Range на скачанном файле → 400 вместо 200 | S8 |
 | L2 | `api/test_stream_local.py::test_head_request_supported` | `HEAD /api/stream/...` → 404 | S8 |
-| M1 | `api/test_stream_lifespan.py::test_restart_after_contention_keeps_resolving` | после перезапуска приложения в том же процессе конкурентные резолвы → 500 (`[206, 206, 206, 206, 500, 500]`) | S2b |
 | M3 | `api/test_search_isolation.py::test_youtube_failure_enters_cooldown` | YouTube опрашивается снова при каждом поиске после сбоя | S7 |
-| M4 | `api/test_recommendations.py::test_all_candidate_sources_failed_is_reported` | сбой всех источников → `200 {"tracks": []}` без `failed_sources` | S2c |
 | M5 | `api/test_playlists.py::test_concurrent_add_of_same_track` | гонка двух добавлений → `IntegrityError` (через API — 500) | S6 |
 | M6 | `api/test_userdata.py::test_favorite_keeps_all_track_fields` | `explicit`, `plays`, `released` теряются при сохранении | S6 |
 | M6 | `api/test_userdata.py::test_saved_favorite_can_always_be_removed` | запись с `/` в `id` сохраняется, удалить её нельзя | S6, S13 |
@@ -225,17 +240,24 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | M8 | `api/test_lyrics_api.py::test_non_json_service_response_is_handled` | то же через `/api/lyrics` → 500 | S11 |
 | M8 | `api/test_downloads.py::test_broken_lyrics_response_does_not_fail_download` | загрузка падает на шаге `processing`, скачанное аудио удаляется | S11 |
 
-Текущее поведение, которое изменится на этапах, закреплено обычными тестами с пометкой в docstring: M3 `test_youtube_is_not_put_in_cooldown`, M4 `test_all_candidate_sources_failed_returns_empty_200`, M5 `test_no_schema_version_yet`, M13 `personalized` в `test_radio_of_current_track`, L6 `test_network_failure_message_is_misleading`. При исправлении их меняют в том же коммите.
+Сняты в S2 (тест проходит без маркера):
 
-`tests/conftest.py:reset_backend_state` пересоздаёт `stream._resolve_sem` перед каждым тестом, чтобы M1 не ломал соседние тесты. Сам дефект воспроизводится в `test_stream_lifespan.py`, где сброса между перезапусками нет. После S2b сброс убирается.
+| ID | Тест | Коммит |
+|---|---|---|
+| H3 | `api/test_settings.py::test_ui_settings_are_persisted_by_backend` | `1070aa8` (S2a) |
+| M1 | `api/test_stream_lifespan.py::test_restart_after_contention_keeps_resolving` | `b72b6cd` (S2b) |
+| M4 | `api/test_recommendations.py::test_all_candidate_sources_failed_is_reported` | `21ddcab` (S2c) |
+
+Тесты «как есть», заменённые в S2 вместе с поведением: N1 `test_partial_write_before_error` → `test_write_is_atomic`; M4 `test_all_candidate_sources_failed_returns_empty_200` → проверка `failed_sources`/`source_status` в `test_all_candidate_sources_failed_is_reported`; M13 `personalized` в `test_radio_of_current_track` → `False` + `radio: True`; L6 `test_network_failure_message_is_misleading` → `test_network_failure_is_not_blamed_on_cookies` и соседние. Остаются «как есть»: M3 `test_youtube_is_not_put_in_cooldown`, M5 `test_no_schema_version_yet`.
+
+Сброс `stream._resolve_sem` в `tests/conftest.py:reset_backend_state` удалён в S2b: семафор принадлежит `app.state.resolver` и создаётся заново в каждом lifespan.
 
 ## 12. Наблюдения S1, которых не было в аудите
 
 Не дефекты высокого приоритета; закреплены тестами «как есть» и требуют решения на указанном этапе.
 
-| ID | Наблюдение | Тест | Предлагаемый этап |
+| ID | Наблюдение | Тест | Этап и статус |
 |---|---|---|---|
-| N1 | `PUT /api/settings` применяет ключи по очереди: ключи до ошибочного уже сохранены, хотя ответ 400 | `api/test_settings.py::test_partial_write_before_error` | S2a (сделать запись атомарной) |
-| N2 | При обрыве CDN посередине ответа прокси теряет уже полученные, но ещё не отданные байты (читает кусками по 64 КБ). Плеер видит короткое тело и перезапрашивает диапазон | `api/test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` | S8 |
-| N3 | Запись индекса загрузок с `folder`, выходящим за каталог загрузок (`../`), даёт HTTP 500: чужой файл не отдаётся, но ответ — ошибка сервера, а не отказ | `api/test_stream_local.py::test_index_row_outside_downloads_is_not_served` | S6 (фильтрация невалидных строк при чтении) |
-
+| N1 | `PUT /api/settings` применял ключи по очереди: ключи до ошибочного уже сохранялись, хотя ответ 400 | `api/test_settings.py::test_write_is_atomic` (×4), `test_failed_downloads_dir_leaves_other_keys_untouched`, `test_invalid_key_prevents_downloads_dir_change` | **исправлено в S2a** (`1070aa8`): все ключи проверяются заранее и пишутся одной транзакцией |
+| N2 | При обрыве CDN посередине ответа прокси теряет уже полученные, но ещё не отданные байты (читает кусками по 64 КБ). Плеер видит короткое тело и перезапрашивает диапазон | `api/test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` (как есть) | **S8**, критерий приёмки 4 в ROADMAP |
+| N3 | Запись индекса загрузок с `folder`, выходящим за каталог загрузок (`../`), даёт HTTP 500: чужой файл не отдаётся (`library.folder_path` бросает `ValueError`), но ответ — ошибка сервера, а не отказ | `api/test_stream_local.py::test_index_row_outside_downloads_is_not_served` (как есть: 500, посторонний файл не прочитан) | **S11 и S13**, критерии безопасности в ROADMAP: ни один эндпоинт не читает, не отдаёт и не удаляет файлы вне разрешённых каталогов, ответ — отказ, а не 500 |

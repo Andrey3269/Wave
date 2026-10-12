@@ -89,6 +89,15 @@ graph TD
 
 Каждый пункт — отдельный коммит с тестом. Зависит от S1.
 
+**Статус: выполнено 2026-10-13, ветка `claude/s2-p0-fixes` (от `claude/s1-regression-tests`, `6401e94`); отчёт — [reports/S2.md](reports/S2.md).** Итог: pytest 469 PASS + 13 strict xfail (снято 3: H3, M1, M4), e2e: smoke 122 проверки (было 109) + новый `e2e_settings.py` 24 проверки (три запуска backend: порт A, порт B, чистый профиль), 0 FAIL. Коммиты: `1070aa8` S2a · `b72b6cd` S2b · `21ddcab` S2c · `259599c` S2d · `4df5b50` S2e. WIN-5 и WIN-12 — **NOT RUN** (нужна Windows с WebView2), этап «закрыт с ограничениями» до их выполнения.
+
+Отклонения от плана в таблице ниже:
+- **S2a.** Кроме ключей добавлены служебная отметка переноса (`meta.local_ui_migrated`) и отдельный `POST /api/settings/migrate-local`: перенос выполняется на сервере один раз на профиль и пишет только отсутствующие ключи, поэтому устаревший localStorage другого порта не затирает новые значения. Запись `PUT /api/settings` атомарна (N1). Тело `PUT` теперь `dict[str, Any]`: число в прежнем ключе даёт 400 «Недопустимое значение настройки.» вместо 422 FastAPI. e2e смены порта вынесен в `tests/e2e_settings.py` (раннер перезапускает backend на другом порту с тем же профилем); в pytest — `ApiHarness.serve()`, два настоящих uvicorn на разных портах.
+- **S2b.** Название `stream.ResolverState` (`app.state.resolver`); кроме семафора в нём задачи резолва, ключи прогрева и фоновые задачи. Ссылки (`_cache`) и «головы» (`_heads`) остались данными процесса.
+- **S2c.** Кроме `failed_sources` и `source_status` добавлено поле `radio` (план из PRODUCT_GAP_ANALYSIS §3: «радио трека отдельным полем»).
+- **S2d.** Статусы: нет сети, ограничение частоты и проверка «не бот» — 503 (было 502); «Requested format is not available» — 502 `extractor` (было 404 «Трек недоступен»). Новый заголовок `X-Wave-Error` с типом ошибки.
+- **S2e.** Тексты из PRODUCT_GAP_ANALYSIS §3 с уточнениями: заголовок ряда миксов зависит от того, есть ли в нём радио по истории («Миксы по вашим трекам» / «Тематические миксы»); подпись ленты: «Подобрано по вашей истории» / «Похоже на текущий трек» / «С чего начать» / «Подборка». Финальные тексты — на утверждение владельца.
+
 | Пункт | Что | Модули | Тесты и проверки | Критерии приёмки | Окружение |
 |---|---|---|---|---|---|
 | **S2a** (H3) | Настройки UI в SQLite через `/api/settings`: `volume`, `last_volume`, `lyrics_visible`, `profile_name`, `mix_covers`; однократная миграция из localStorage; debounce записи громкости; `GET /api/boot.js` для темы без мигания | `backend/userdata.py`, `backend/main.py` (boot.js), `frontend/app.js` (LS → settings), `frontend/index.html` | `test_settings.py`: снять xfail `test_ui_settings_are_persisted_by_backend` (H3), новые ключи, валидация, сохранение между двумя запусками backend на одном профиле (образец — `test_settings_survive_backend_restart`); **e2e**: выставить настройки на порту A, перезапустить backend на порту B с тем же профилем → значения на месте | API аддитивен, старые ключи и ответы не изменились; e2e-проверка смены порта PASS; WIN-5 PASS на Windows | Windows — WIN-5 |
@@ -170,11 +179,12 @@ graph TD
 Закрывает L2 и структуру M1. Зависит от S7.
 
 - **Изменения.** `streaming/ranges.py` (чистые функции), `resolver.py`, `proxy.py`, `local.py`, `router.py`. Поддержка `HEAD`; битый Range → 200.
-- **Тесты.** Все тесты стрима; снимаются xfail L2: `test_stream_proxy.py::test_empty_range_is_not_forwarded`, `test_stream_local.py::test_malformed_range_is_ignored`, `test_stream_local.py::test_head_request_supported`; LIVE-3.
+- **Тесты.** Все тесты стрима; снимаются xfail L2: `test_stream_proxy.py::test_empty_range_is_not_forwarded`, `test_stream_local.py::test_malformed_range_is_ignored`, `test_stream_local.py::test_head_request_supported`; LIVE-3. **N2** (наблюдение S1): `test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` переводится с «как есть» на ожидаемое поведение.
 - **Критерии приёмки.**
-  1. Поведение 200/206/416 и перерезолва идентично зафиксированному в S1.
+  1. Поведение 200/206/416 и перерезолва идентично зафиксированному в S1; тексты и типы ошибок (`X-Wave-Error`) — как в S2d.
   2. `HEAD` → 200 с заголовками.
   3. e2e: seek, pause/resume, переключение, локальные файлы — PASS.
+  4. **N2:** при обрыве CDN посередине ответа уже полученные байты отдаются клиенту полностью (нет потери до 64 КБ), ответ завершается так, что плеер корректно запрашивает продолжение.
 
 ### S9. Декомпозиция `frontend/app.js`
 
@@ -201,11 +211,12 @@ graph TD
 Закрывает M8. Зависит от S8, S5, S6. Windows: WIN-14.
 
 - **Изменения.** `DownloadManager` (лимит, отмена, `to_thread` для записи, восстановление и очистка `.part` во всех `root`), изоляция сбоев текстов и обложек, отмена в UI.
-- **Тесты.** `test_downloads`: отмена, лимит, сбой LRCLIB (xfail снимается), завершение приложения посередине → чистый старт.
+- **Тесты.** `test_downloads`: отмена, лимит, сбой LRCLIB (xfail снимается), завершение приложения посередине → чистый старт; **N3**: `test_stream_local.py::test_index_row_outside_downloads_is_not_served` и аналоги для обложки, текста и удаления.
 - **Критерии приёмки.**
   1. Отмена освобождает ресурсы и удаляет `.part`.
   2. Не больше N параллельных загрузок.
   3. Битый ответ текстов не ломает загрузку.
+  4. **Безопасность (N3):** запись индекса загрузок с `folder`/`root`, выходящими за каталог загрузок (`../`, абсолютный путь, другой диск), не приводит к чтению или удалению посторонних файлов ни одним эндпоинтом (`/api/stream`, `/api/local/.../cover`, тексты, `DELETE /api/downloads`) и не даёт 500: запись пропускается при чтении индекса или ответ 404, событие пишется в журнал.
 
 ### S12. Доступность
 
@@ -219,12 +230,13 @@ graph TD
 
 Закрывает M7, M6 (валидация), L1. Зависит от S7 и S6.
 
-- **Изменения.** `OriginGuard`, серверная валидация `TrackIn` (`stream_url` вычисляется сервером, URL обложек из allowlist), маскирование трейсбеков, фильтрация невалидных старых строк при чтении.
-- **Тесты.** `test_origin_guard` (xfail M7 `test_local_api_security.py::test_cross_origin_mutation_is_refused` снимается), `test_userdata` (валидация; xfail M6 `test_saved_favorite_can_always_be_removed`), тест маскирования журнала.
+- **Изменения.** `OriginGuard`, серверная валидация `TrackIn` (`stream_url` вычисляется сервером, URL обложек из allowlist), маскирование трейсбеков, фильтрация невалидных старых строк при чтении (включая индекс загрузок, N3).
+- **Тесты.** `test_origin_guard` (xfail M7 `test_local_api_security.py::test_cross_origin_mutation_is_refused` снимается), `test_userdata` (валидация; xfail M6 `test_saved_favorite_can_always_be_removed`), тест маскирования журнала, проверка N3 на всех эндпоинтах, читающих файлы по индексу.
 - **Критерии приёмки.**
   1. Кросс-доменный POST → 403.
   2. Фронтенд и e2e работают без изменений.
   3. В журнале нет подписей URL и IP из googlevideo.
+  4. **N3:** ни одна запись базы (индекс загрузок, `downloads_dir` в настройках) не позволяет прочитать, отдать или удалить файл вне разрешённых каталогов; ответ — отказ (404/400), а не 500.
 
 ---
 
@@ -251,14 +263,14 @@ graph TD
 | `backend/catalog.py`, `soundcloud.py` → `providers/*` | S3, S5, S7 |
 | `backend/recs.py` | S0, S2c, S7, S14 |
 | `backend/library.py`, `userdata.py`, `playlists.py` → `persistence/*` | S2a, S6, S13, S15 |
-| `backend/downloads.py` → `jobs/*` | S0, S5, S11 |
+| `backend/downloads.py` → `jobs/*` | S0, S2b, S5, S11 |
 | `backend/lyrics.py` | S7, S11 |
 | `backend/applog.py` | S13 |
 | `backend/paths.py` | S3 (`resource_dir` для runtime), S15 |
 | новые: `jsruntime.py`, `version.py`, `providers/policy.py`, `persistence/*`, `streaming/*` | S3, S4, S5, S6, S8 |
 | `frontend/app.js` → `frontend/js/**` | S2a, S2c, S2e, S3, S5, S9–S12, S14–S18 |
 | `frontend/index.html`, `style.css` | S2a, S2e, S5, S9, S12, S17, S18 |
-| `tests/e2e_smoke.py` | S0, S2a, S2c, S2e, S5, S10, S12, S18 |
+| `tests/e2e_smoke.py`, `tests/e2e_settings.py` | S0, S2a, S2c, S2e, S5, S10, S12, S18 |
 | `packaging/wave.spec`, `build_windows.bat`, `installer/wave.iss` | S3, S4 |
 | зависимости | S0, S3 |
 
@@ -286,5 +298,6 @@ graph TD
 |---|---|---|---|
 | Аудит и документация | согласовано владельцем 2026-10-12 | `claude/engineering-docs` | решения ADR-1…ADR-9 в TARGET_ARCHITECTURE §14 |
 | S0 | **выполнено**, подтверждено владельцем 2026-10-12 | `claude/s0-repository-hygiene` | [reports/S0.md](reports/S0.md); Windows-сборка и e2e в Chromium на Windows теперь проверяются CI (S1) |
-| S1 | **выполнено**, ждёт подтверждения владельца | `claude/s1-regression-tests` | [reports/S1.md](reports/S1.md); 379 PASS + 16 xfail, e2e 109/109, CI зелёный; LIVE-1/6 — BLOCKED, WebView2 — NOT RUN |
-| S2–S19 | не начато | — | S2 начинается только после подтверждения S1 |
+| S1 | **выполнено**, подтверждено владельцем 2026-10-13 | `claude/s1-regression-tests` | [reports/S1.md](reports/S1.md); 379 PASS + 16 xfail, e2e 109/109, CI зелёный; LIVE-1/6 — BLOCKED, WebView2 — NOT RUN |
+| S2 | **выполнено** (с ограничениями), ждёт подтверждения владельца | `claude/s2-p0-fixes` | [reports/S2.md](reports/S2.md); 469 PASS + 13 xfail, e2e smoke 122 + настройки 24; WIN-5, WIN-12 — NOT RUN |
+| S3–S19 | не начато | — | S3 начинается только после подтверждения S2 |
