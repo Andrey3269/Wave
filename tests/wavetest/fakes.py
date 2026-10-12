@@ -139,6 +139,11 @@ class FakeNet:
             if callable(item):
                 return item(request)
             return httpx.Response(int(item))
+        return self.serve_file(request)
+
+    def serve_file(self, request: httpx.Request) -> httpx.Response:
+        """Обычный ответ CDN по файлу из `files` (с Range). Можно ставить в очередь: net.queue(path, net.serve_file, 500)."""
+        path = request.url.path
         if path not in self.files:
             return httpx.Response(404)
         data, ctype = self.files[path]
