@@ -1,0 +1,5 @@
+{
+  "_comment": "Публичные цели для живых проверок (python -m pytest -m live). Только общедоступный каталог, без входа в аккаунт.",
+  "ytmusic_query": "Daft Punk Get Lucky",
+  "lyrics": {"artist": "Daft Punk", "title": "Get Lucky", "duration": 369}
+}

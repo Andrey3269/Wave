@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ import pytest
 # Временный профиль и аудит-хук включаются при этом импорте — до любого импорта backend.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wavetest.guard import (  # noqa: E402
-    REAL_LOCATIONS, REAL_SNAPSHOT, SESSION_ROOT, _GUARD, _norm, _snapshot, take_guard_violations,
+    PROXY_ENV, REAL_LOCATIONS, REAL_SNAPSHOT, SESSION_ROOT, _GUARD, _norm, _snapshot, take_guard_violations,
 )
 
 # ---------------------------------------------------------------------------
@@ -63,9 +64,14 @@ def _guard_session():
 def _guard_test(request):
     """Каждый тест должен закончиться без нарушений защиты (сеть, запись вне temp)."""
     before = len(_GUARD["violations"])
-    _GUARD["network_allowed"] = request.node.get_closest_marker("live") is not None
+    live = request.node.get_closest_marker("live") is not None
+    _GUARD["network_allowed"] = live
+    if live:
+        os.environ.update(PROXY_ENV)              # живой сети может понадобиться прокси пользователя
     yield
     _GUARD["network_allowed"] = False
+    for k in PROXY_ENV:
+        os.environ.pop(k, None)
     new = _GUARD["violations"][before:]
     del _GUARD["violations"][before:]
     if new:

@@ -60,9 +60,10 @@ for _k in ("YTDLP_COOKIES", "YTDLP_PROXY", "SEARCH_SOURCES", "SEARCH_TIMEOUT", "
     os.environ.pop(_k, None)
 # Прокси убираем: иначе HTTP-библиотеки шли бы через локальный прокси (loopback разрешён) и защита
 # от сети стала бы дырявой. Без прокси любое внешнее соединение упирается в аудит-хук.
-for _k in [k for k in os.environ if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
-                                                  "ws_proxy", "wss_proxy", "no_proxy")]:
-    os.environ.pop(_k, None)
+# Сохраняем их только для live-тестов (им нужна настоящая сеть, возможно через прокси).
+PROXY_ENV = {k: os.environ.pop(k) for k in [k for k in os.environ
+                                            if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+                                                             "ws_proxy", "wss_proxy", "no_proxy")]}
 
 _fake_home = SESSION_ROOT / "home"
 _env = {
