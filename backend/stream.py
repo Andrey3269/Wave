@@ -129,6 +129,57 @@ class StreamUnavailable(Exception):
     """У трека нет подходящего прямого потока."""
 
 
+# ---------------------------------------------------------------------------
+# Понятные ошибки (находка L6). Пользователь видит короткий текст без технических подробностей:
+# ни текста исключения, ни URL, ни путей и значений из настроек. Подробности — только в журнале.
+# Тип ошибки уходит в заголовке X-Wave-Error (для тестов и будущего интерфейса).
+# ---------------------------------------------------------------------------
+ERROR_HEADER = "X-Wave-Error"
+
+_AGE = ("confirm your age", "age-restricted", "age restricted", "inappropriate for some users")
+_BOT = ("not a bot", "not a robot", "sign in to confirm", "--cookies", "cookies-from-browser")
+_RATE = ("http error 429", "too many requests")
+_PROXY = ("proxy", "socks")
+_NETWORK = (
+    "urlopen error", "name resolution", "name or service not known", "nodename nor servname", "getaddrinfo",
+    "failed to resolve", "errno 11001", "errno 11002", "network is unreachable", "no route to host",
+    "connection refused", "connection reset", "connection aborted", "remote end closed", "timed out", "timeout",
+    "errno 10051", "errno 10054", "errno 10060", "errno 10061", "errno 10065", "ssl:", "eof occurred",
+)
+_FORMAT = ("requested format is not available", "no video formats", "nsig", "signature extraction",
+           "unable to extract", "javascript runtime", "js runtime", "player response")
+_GONE = ("video unavailable", "this video is unavailable", "private video", "is private", "not available",
+         "removed", "has been terminated", "does not exist", "unavailable", "private", "404")
+
+
+def _err(status: int, kind: str, detail: str) -> HTTPException:
+    return HTTPException(status, detail, headers={ERROR_HEADER: kind})
+
+
+def _resolve_error(source: str, exc: DownloadError) -> HTTPException:
+    """Сообщение yt-dlp -> понятная ошибка. Про cookies говорим только когда YouTube действительно просит вход."""
+    label = SOURCES[source].label
+    msg = str(exc).lower()
+    if any(s in msg for s in _AGE):
+        return _err(403, "age_restricted", "Трек ограничен YouTube по возрасту и недоступен без входа в аккаунт.")
+    if any(s in msg for s in _BOT):
+        hint = ("Возможно, файл cookies из YTDLP_COOKIES устарел." if YTDLP_COOKIES
+                else "Если повтор не помогает, можно указать файл cookies в переменной YTDLP_COOKIES.")
+        return _err(503, "bot_check", f"{label} просит подтвердить, что запрос не от бота. Повторите позже. {hint}")
+    if any(s in msg for s in _RATE):
+        return _err(503, "rate_limited", f"{label} временно ограничил число запросов. Повторите через несколько минут.")
+    if YTDLP_PROXY and any(s in msg for s in _PROXY):
+        return _err(502, "proxy", "Не удалось подключиться через прокси из настройки YTDLP_PROXY. Проверьте прокси.")
+    if any(s in msg for s in _NETWORK):
+        return _err(503, "network", f"Нет связи с {label}. Проверьте подключение к интернету.")
+    if any(s in msg for s in _FORMAT):
+        return _err(502, "extractor", f"Не удалось получить аудиопоток: {label} изменил формат ответа или компонент "
+                                      "yt-dlp устарел. Обычно помогает обновление приложения.")
+    if any(s in msg for s in _GONE):
+        return _err(404, "unavailable", "Трек недоступен")
+    return _err(502, "resolve_failed", f"Не удалось получить аудиопоток от {label}. Попробуйте позже.")
+
+
 @dataclass(slots=True)
 class Resolved:
     url: str
@@ -269,18 +320,14 @@ async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Re
             log.info("Резолв %s занял %.1f с", key, time.monotonic() - t0)
         except StreamUnavailable as exc:
             log.warning("Нет прямого потока %s: %s", key, exc)
-            raise HTTPException(404, "Для этого трека нет прямого аудиопотока") from exc
+            raise _err(404, "no_direct_stream", "Для этого трека нет прямого аудиопотока") from exc
         except DownloadError as exc:
-            msg = str(exc).lower()
-            log.warning("yt-dlp: %s -> %s", key, exc)
-            if "confirm your age" in msg or "age-restricted" in msg or "age restricted" in msg:
-                raise HTTPException(403, "Трек ограничен YouTube по возрасту и недоступен без входа в аккаунт.") from exc
-            if any(s in msg for s in ("unavailable", "private", "not available", "removed", "404")):
-                raise HTTPException(404, "Трек недоступен") from exc
-            raise HTTPException(502, "Не удалось получить поток (проверьте yt-dlp/куки)") from exc
+            err = _resolve_error(source, exc)
+            log.warning("yt-dlp: %s -> %s [%s]", key, exc, err.headers[ERROR_HEADER])
+            raise err from exc
         except Exception as exc:
             log.exception("Сбой резолвера для %s", key)
-            raise HTTPException(502, "Внутренняя ошибка резолвера") from exc
+            raise _err(502, "internal", "Внутренняя ошибка резолвера") from exc
 
     _cache[key] = res
     if len(_cache) > 512:  # чистим протухшие записи
@@ -323,6 +370,7 @@ async def _connect(
     Открывает потоковое соединение с CDN. Если ссылка протухла
     (401/403/404/410) или соединение не удалось — один раз перерезолвим и повторим.
     """
+    last: int | None = None                       # HTTP-статус последней неудачи или None (нет соединения)
     for _attempt in range(2):
         res = await _resolve(rs, source, track_id)
         headers = {**res.headers, "Accept-Encoding": "identity", "Range": upstream_range}
@@ -333,16 +381,22 @@ async def _connect(
         except httpx.HTTPError as exc:
             log.warning("Сбой соединения с источником (%s:%s): %r", source, track_id, exc)
             _invalidate(source, track_id)
+            last = None
             continue
 
         if upstream.status_code in STALE_STATUSES:
             log.info("Ссылка протухла (%s:%s): HTTP %s", source, track_id, upstream.status_code)
             await upstream.aclose()
             _invalidate(source, track_id)
+            last = upstream.status_code
             continue
         return upstream
 
-    raise HTTPException(502, "Не удалось открыть аудиопоток")
+    label = SOURCES[source].label
+    if last is None:
+        raise _err(503, "network", f"Нет связи с сервером аудио {label}. Проверьте подключение к интернету.")
+    raise _err(502, "link_unavailable", f"{label} не отдаёт аудио по ссылке даже после её обновления "
+                                        f"(HTTP {last}). Попробуйте позже.")
 
 
 async def _body(upstream: httpx.Response) -> AsyncIterator[bytes]:
@@ -512,7 +566,7 @@ async def stream_track(source: str, track_id: str, request: Request, warm: int =
 
     if status not in (200, 206):
         await upstream.aclose()
-        raise HTTPException(502, f"Источник вернул HTTP {status}")
+        raise _err(502, "upstream_status", f"Сервер аудио {cfg.label} ответил ошибкой HTTP {status}. Попробуйте позже.")
 
     headers = {
         "Content-Type": upstream.headers.get("content-type", "audio/mpeg" if source == "sc" else "audio/mp4"),

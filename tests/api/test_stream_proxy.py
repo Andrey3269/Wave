@@ -154,6 +154,31 @@ def test_stale_twice_gives_502(cdn):
     assert r.status_code == 502
     assert cdn.resolver.calls[f"yt:{YT}"] == 2
     assert f"yt:{YT}" not in stream._cache
+    # L6: недоступная ссылка — свой текст и тип, без адреса ссылки и без упоминания сети/cookies
+    assert r.headers[stream.ERROR_HEADER] == "link_unavailable"
+    detail = r.json()["detail"]
+    assert "HTTP 403" in detail and "даже после её обновления" in detail
+    assert "cdn.test" not in detail and "cookies" not in detail.lower()
+
+
+def test_cdn_unreachable_twice_is_a_network_message(cdn):
+    """Соединение с сервером аудио не устанавливается дважды: «нет связи», а не «yt-dlp/куки»."""
+    cdn.net.queue(CDN_PATH, httpx.ConnectError("[Errno 101] Network is unreachable"),
+                  httpx.ConnectTimeout("timed out"))
+    r = cdn.get(PATH, headers={"Range": "bytes=0-"})
+    assert r.status_code == 503 and r.headers[stream.ERROR_HEADER] == "network"
+    assert r.json()["detail"] == "Нет связи с сервером аудио YouTube Music. Проверьте подключение к интернету."
+    assert cdn.resolver.calls[f"yt:{YT}"] == 2
+
+
+def test_resolver_network_error_reaches_the_client(api):
+    """Через HTTP: yt-dlp не достучался до YouTube — пользователь видит текст про сеть."""
+    from yt_dlp.utils import DownloadError
+    api.resolver.fail("yt", YT, DownloadError("ERROR: Unable to download webpage: <urlopen error [Errno 11001] getaddrinfo failed>"))
+    r = api.get(PATH, headers={"Range": "bytes=0-"})
+    assert r.status_code == 503 and r.headers[stream.ERROR_HEADER] == "network"
+    assert r.json()["detail"] == "Нет связи с YouTube Music. Проверьте подключение к интернету."
+    assert not api.net.requests
 
 
 def test_connection_error_triggers_re_resolve(cdn):
@@ -167,7 +192,7 @@ def test_upstream_server_error_is_not_retried(cdn):
     cdn.net.queue(CDN_PATH, 500)
     r = cdn.get(PATH, headers={"Range": "bytes=0-"})
     assert r.status_code == 502
-    assert "HTTP 500" in r.json()["detail"]
+    assert "HTTP 500" in r.json()["detail"] and r.headers[stream.ERROR_HEADER] == "upstream_status"
     assert cdn.resolver.calls[f"yt:{YT}"] == 1
 
 

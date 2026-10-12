@@ -208,7 +208,7 @@ def _uncached(source: str, track_id: str):
     (DownloadError("ERROR: [youtube] x: Sign in to confirm your age"), 403),
     (DownloadError("ERROR: [youtube] x: Video unavailable"), 404),
     (DownloadError("ERROR: [youtube] x: Private video"), 404),
-    (DownloadError("ERROR: unable to download webpage: timed out"), 502),
+    (DownloadError("ERROR: unable to download webpage: timed out"), 503),
     (RuntimeError("yt-dlp не вернул прямой URL"), 502),
 ])
 def test_resolver_error_mapping(monkeypatch, exc, status):
@@ -221,15 +221,112 @@ def test_resolver_error_mapping(monkeypatch, exc, status):
     assert "yt:AAAAAAAAAA1" not in stream._cache          # неудачный резолв не кэшируется
 
 
-def test_network_failure_message_is_misleading(monkeypatch):
-    """L6: при отсутствии сети пользователь видит «проверьте yt-dlp/куки» (фиксируем текущий текст до S2d)."""
-    def boom(source, track_id):
-        raise DownloadError("ERROR: Unable to download webpage: <urlopen error [Errno -3] Temporary failure in name resolution>")
+# ---------------------------------------------------------------------------
+# Понятные тексты ошибок стрима (S2d, находка L6)
+# ---------------------------------------------------------------------------
+# Реальные формулировки yt-dlp (в том числе Windows: WinError/Errno 11001, 10060).
+NETWORK_ERRORS = [
+    "ERROR: Unable to download webpage: <urlopen error [Errno -3] Temporary failure in name resolution> (caused by URLError)",
+    "ERROR: [youtube] AAAAAAAAAA1: Unable to download API page: <urlopen error [Errno 11001] getaddrinfo failed>",
+    "ERROR: Unable to download webpage: <urlopen error [WinError 10060] A connection attempt failed> (caused by URLError)",
+    "ERROR: Unable to download webpage: <urlopen error [Errno 101] Network is unreachable>",
+    "ERROR: Unable to download webpage: <urlopen error [Errno 111] Connection refused>",
+    "ERROR: Unable to download webpage: ('Connection aborted.', RemoteDisconnected('Remote end closed connection'))",
+    "ERROR: Unable to download webpage: The read operation timed out",
+    "ERROR: Unable to download webpage: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol",
+]
+
+
+def _detail(monkeypatch, message: str, source: str = "yt", tid: str = "AAAAAAAAAA1"):
+    def boom(s, i):
+        raise DownloadError(message)
+    monkeypatch.setattr(stream, "_extract_sync", boom)
+    with pytest.raises(HTTPException) as e:
+        _uncached(source, tid)
+    return e.value
+
+
+@pytest.mark.parametrize("message", NETWORK_ERRORS)
+def test_network_failure_is_not_blamed_on_cookies(monkeypatch, message):
+    """Нет сети -> «нет связи», без упоминания cookies и yt-dlp (раньше: «проверьте yt-dlp/куки»)."""
+    e = _detail(monkeypatch, message)
+    assert e.status_code == 503 and e.headers[stream.ERROR_HEADER] == "network"
+    assert e.detail == "Нет связи с YouTube Music. Проверьте подключение к интернету."
+
+
+def test_network_message_names_soundcloud(monkeypatch):
+    e = _detail(monkeypatch, NETWORK_ERRORS[0], "sc", "1000000001")
+    assert e.detail == "Нет связи с SoundCloud. Проверьте подключение к интернету."
+
+
+@pytest.mark.parametrize("message", [
+    "ERROR: [youtube] AAAAAAAAAA1: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.",
+    "ERROR: [youtube] AAAAAAAAAA1: Sign in to confirm you're not a bot. This helps protect our community.",
+])
+def test_cookies_are_mentioned_only_for_bot_check(monkeypatch, message):
+    e = _detail(monkeypatch, message)
+    assert e.status_code == 503 and e.headers[stream.ERROR_HEADER] == "bot_check"
+    assert "не от бота" in e.detail and "YTDLP_COOKIES" in e.detail
+
+
+def test_bot_check_with_cookies_configured_does_not_reveal_path(monkeypatch):
+    monkeypatch.setattr(stream, "YTDLP_COOKIES", "/home/user/secret/cookies.txt")
+    e = _detail(monkeypatch, "ERROR: [youtube] x: Sign in to confirm you're not a bot")
+    assert "устарел" in e.detail and "/home/user" not in e.detail and "cookies.txt" not in e.detail
+
+
+@pytest.mark.parametrize("message, status, kind", [
+    ("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate for some users.", 403, "age_restricted"),
+    ("ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests", 503, "rate_limited"),
+    ("ERROR: [youtube] x: Requested format is not available. Use --list-formats for a list of available formats", 502, "extractor"),
+    ("ERROR: [youtube] x: nsig extraction failed: Some formats may be missing", 502, "extractor"),
+    ("ERROR: [youtube] x: Video unavailable. This video has been removed by the uploader", 404, "unavailable"),
+    ("ERROR: [youtube] x: Private video. Sign in if you've been granted access to this video", 404, "unavailable"),
+    ("ERROR: Unable to download webpage: HTTP Error 403: Forbidden", 502, "resolve_failed"),
+    ("ERROR: something new and unexpected", 502, "resolve_failed"),
+])
+def test_resolver_error_kinds(monkeypatch, message, status, kind):
+    e = _detail(monkeypatch, message)
+    assert (e.status_code, e.headers[stream.ERROR_HEADER]) == (status, kind)
+    if kind not in ("bot_check",):
+        assert "cookies" not in e.detail.lower() and "куки" not in e.detail.lower()
+
+
+def test_proxy_failure_is_a_configuration_message_without_secrets(monkeypatch):
+    monkeypatch.setattr(stream, "YTDLP_PROXY", "socks5://user:pa55@10.0.0.5:1080")
+    e = _detail(monkeypatch, "ERROR: Unable to download webpage: <urlopen error Tunnel connection failed: 407 Proxy "
+                             "Authentication Required> socks5://user:pa55@10.0.0.5:1080")
+    assert e.status_code == 502 and e.headers[stream.ERROR_HEADER] == "proxy"
+    assert "YTDLP_PROXY" in e.detail
+    for secret in ("user", "pa55", "10.0.0.5", "socks5://"):
+        assert secret not in e.detail
+
+
+def test_proxy_words_without_configured_proxy_are_network(monkeypatch):
+    e = _detail(monkeypatch, "ERROR: Unable to download webpage: <urlopen error [Errno 111] Connection refused> proxy")
+    assert e.headers[stream.ERROR_HEADER] == "network"
+
+
+SENSITIVE = ("https://", "googlevideo", "signature=", "sig=", "expire=", "Errno", "Traceback", "urlopen", "WinError")
+
+
+@pytest.mark.parametrize("message", NETWORK_ERRORS + [
+    "ERROR: Unable to download webpage: HTTP Error 403: Forbidden https://rr1---sn.googlevideo.com/videoplayback?expire=1&sig=SECRET",
+    "ERROR: [youtube] x: Requested format is not available https://www.youtube.com/watch?v=x&signature=ABC",
+    "Traceback (most recent call last): ... ERROR: unexpected",
+])
+def test_user_message_never_contains_technical_details(monkeypatch, message):
+    detail = _detail(monkeypatch, message).detail
+    assert not [s for s in SENSITIVE if s in detail], detail
+
+
+def test_internal_error_hides_exception_text(monkeypatch):
+    def boom(s, i):
+        raise RuntimeError("secret token=abc at https://example.test/x?sig=1")
     monkeypatch.setattr(stream, "_extract_sync", boom)
     with pytest.raises(HTTPException) as e:
         _uncached("yt", "AAAAAAAAAA1")
-    assert e.value.status_code == 502
-    assert "yt-dlp/куки" in e.value.detail
+    assert e.value.detail == "Внутренняя ошибка резолвера" and e.value.headers[stream.ERROR_HEADER] == "internal"
 
 
 def test_successful_resolve_is_cached(monkeypatch):
