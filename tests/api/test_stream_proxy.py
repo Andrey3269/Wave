@@ -112,11 +112,12 @@ def test_unknown_total_size_is_proxied(cdn):
     assert (r.status_code, r.headers["content-range"]) == (206, "bytes 0-999/*")
 
 
-def test_soundcloud_default_content_type(api):
-    api.net.add_file("/sc/1000000001", DATA[:100], "")
-    r = api.get("/api/stream/sc/1000000001", headers={"Range": "bytes=0-"})
+@pytest.mark.parametrize("source, track_id, expected", [("sc", "1000000001", "audio/mpeg"), ("yt", YT, "audio/mp4")])
+def test_default_content_type_when_cdn_sends_none(api, source, track_id, expected):
+    api.net.add_file(f"/{source}/{track_id}", DATA[:100], None)
+    r = api.get(f"/api/stream/{source}/{track_id}", headers={"Range": "bytes=0-"})
     assert r.status_code == 206
-    assert r.headers["content-type"] in ("audio/mpeg", "")     # пустой Content-Type CDN проксируется как есть
+    assert r.headers["content-type"] == expected
 
 
 # ---------------------------------------------------------------------------

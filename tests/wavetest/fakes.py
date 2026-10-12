@@ -67,7 +67,7 @@ _RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 class FakeNet:
     def __init__(self):
-        self.files: dict[str, tuple[bytes, str]] = {}          # путь на cdn.test -> (данные, Content-Type)
+        self.files: dict[str, tuple[bytes, str | None]] = {}   # путь на cdn.test -> (данные, Content-Type или None)
         self.queues: dict[str, deque] = defaultdict(deque)      # путь -> заготовленные ответы (по очереди)
         self.requests: list[httpx.Request] = []
         self.unexpected: list[str] = []
@@ -82,7 +82,7 @@ class FakeNet:
         self.fail_after: int | None = None                       # обрыв тела CDN после N чанков
 
     # ---- настройка ----
-    def add_file(self, path: str, data: bytes, content_type: str = "audio/mp4") -> None:
+    def add_file(self, path: str, data: bytes, content_type: str | None = "audio/mp4") -> None:
         self.files[path] = (data, content_type)
 
     def queue(self, path: str, *responses) -> None:
@@ -149,7 +149,9 @@ class FakeNet:
         data, ctype = self.files[path]
         size = len(data)
         raw = request.headers.get("range")
-        base = {"Content-Type": ctype, "Accept-Ranges": "bytes"}
+        base = {"Accept-Ranges": "bytes"}
+        if ctype is not None:                                    # None — CDN не прислал Content-Type
+            base["Content-Type"] = ctype
         m = _RANGE.fullmatch(raw or "") if self.support_ranges else None
         if not m or (not m.group(1) and not m.group(2)):
             return self._stream_response(200, data, {**base, "Content-Length": str(size)})

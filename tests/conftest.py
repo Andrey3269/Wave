@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 # Временный профиль и аудит-хук включаются при этом импорте — до любого импорта backend.
+sys.dont_write_bytecode = True            # ни tests/, ни backend/ не получат __pycache__
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from wavetest.guard import (  # noqa: E402
     PROXY_ENV, REAL_LOCATIONS, REAL_SNAPSHOT, SESSION_ROOT, _GUARD, _norm, _snapshot, take_guard_violations,
