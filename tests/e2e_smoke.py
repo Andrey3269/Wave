@@ -5,11 +5,16 @@ Smoke-тест интерфейса Wave в настоящем браузере 
 Что подменено: только то, что требует интернета (поиск, рекомендации, страницы артиста/альбома,
 тексты, звук, картинки): их отдаёт этот скрипт, чтобы тест не зависел от YouTube/SoundCloud.
 
-Запуск (backend должен слушать порт, по умолчанию 8765):
-    set WAVE_DATA_DIR=%TEMP%\\wave-test & set WAVE_DOWNLOADS_DIR=%TEMP%\\wave-test-dl
-    cd backend && python -m uvicorn main:app --port 8765
-    pip install playwright && playwright install chromium
+Рекомендуемый запуск (сам поднимает backend на временном профиле и убирает его после теста):
+    python tests/run_e2e.py
+
+Ручной запуск против уже запущенного backend:
     python tests/e2e_smoke.py [http://127.0.0.1:8765] [папка_скриншотов]
+
+Тест меняет данные (избранное, история, плейлисты, настройки), поэтому до первого действия он
+проверяет, что backend работает на тестовом профиле: каталоги данных и загрузок должны лежать
+во временной папке системы или содержать файл-метку .wave-test-profile. Иначе тест завершается
+с кодом 2 и ничего не меняет. Скриншоты по умолчанию пишутся во временную папку.
 """
 from __future__ import annotations
 
@@ -17,14 +22,43 @@ import json
 import re
 import struct
 import sys
+import tempfile
+import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Route, sync_playwright
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
-SHOTS = Path(sys.argv[2] if len(sys.argv) > 2 else "tests/shots")
+SHOTS = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(tempfile.mkdtemp(prefix="wave-e2e-shots-"))
 SHOTS.mkdir(parents=True, exist_ok=True)
+TEST_PROFILE_MARKER = ".wave-test-profile"   # тот же файл создаёт tests/run_e2e.py
+
+
+# ---------------------------------------------------------------- защита реального профиля
+def _is_test_dir(raw: str) -> bool:
+    """Каталог тестовый: лежит во временной папке системы или помечен файлом-меткой."""
+    p = Path(raw).resolve()
+    tmp = Path(tempfile.gettempdir()).resolve()
+    return p.is_relative_to(tmp) or (p / TEST_PROFILE_MARKER).is_file()
+
+
+def ensure_test_profile(base: str) -> None:
+    """До любых действий: backend должен работать на тестовых каталогах, а не на данных пользователя."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # localhost без системного прокси
+    try:
+        with opener.open(f"{base}/api/settings", timeout=10) as r:      # чтение настроек ничего не меняет
+            info = json.load(r)["paths"]
+    except Exception as exc:                                    # любой сбой здесь = тест не запускаем
+        sys.exit(f"Не удалось проверить профиль backend ({base}/api/settings): {exc!r}. Тест не запущен.")
+    bad = [f"{name}: {info[name]}" for name in ("data", "downloads") if not _is_test_dir(info[name])]
+    if bad:
+        print("ОСТАНОВКА: backend работает не на тестовом профиле, тест изменил бы данные пользователя.", file=sys.stderr)
+        for line in bad:
+            print(f"  {line}", file=sys.stderr)
+        print("Запустите тест через `python tests/run_e2e.py` или укажите WAVE_DATA_DIR и WAVE_DOWNLOADS_DIR "
+              f"во временной папке (либо с файлом {TEST_PROFILE_MARKER}).", file=sys.stderr)
+        sys.exit(2)
 
 # ---------------------------------------------------------------- тестовые данные
 ARTISTS = ["Мэйби Бэйби", "GSPD", "Vtornik", "PHARAOH", "SCIRENA", "Монеточка", "Скриптонит", "Zivert", "Кино", "Lumen"]
@@ -162,6 +196,8 @@ def audio_state(page) -> dict:
 
 
 def main() -> int:
+    ensure_test_profile(BASE)
+    print(f"Скриншоты: {SHOTS}")
     errors: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
