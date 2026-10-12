@@ -1,0 +1,46 @@
+# Проверенный набор версий (pip constraints) для backend/requirements.txt и requirements-dev.txt.
+# Получен 2026-10-12: чистый venv, Python 3.12.3, Linux x86_64, `pip freeze`.
+# С этим набором tests/run_checks.py прошёл полностью (см. docs/engineering/reports/S0.md).
+#
+# Использование:
+#   pip install -r backend/requirements.txt -r requirements-dev.txt -c constraints.txt
+#
+# Ограничения:
+# - пакеты, которые ставятся только на Windows (например colorama), здесь не закреплены;
+#   uvloop на Windows не устанавливается (маркер uvicorn[standard]);
+# - зависимости сборки (PyInstaller, pywebview, Pillow) закрепляются после проверки сборки
+#   на Windows (ROADMAP, этапы S3–S4).
+# Обновление: отдельный коммит, пересборка этого файла тем же способом, полный прогон тестов.
+
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+charset-normalizer==3.5.2
+click==8.5.0
+fastapi==0.143.0
+greenlet==3.5.6
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.9.0
+httpx==0.28.1
+idna==3.20
+opentelemetry-api==1.45.1
+playwright==1.56.0
+pydantic==2.14.1
+pydantic_core==2.50.1
+pyee==13.0.1
+pyflakes==3.4.0
+python-dotenv==1.2.4
+PyYAML==6.0.3
+requests==2.34.2
+starlette==1.7.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.8.0
+uvicorn==0.54.0
+uvloop==0.23.0
+watchfiles==1.3.0
+websockets==17.2
+yt-dlp==2026.8.19
+ytmusicapi==1.12.3

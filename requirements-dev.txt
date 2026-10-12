@@ -1,0 +1,6 @@
+# Инструменты разработки и тестов. В сборку приложения не попадают.
+#   pip install -r backend/requirements.txt -r requirements-dev.txt -c constraints.txt
+# После установки Playwright нужен браузер:  python -m playwright install chromium
+
+playwright==1.56.0      # браузерный e2e-тест tests/e2e_smoke.py
+pyflakes==3.4.0         # статическая проверка Python (tests/run_checks.py)

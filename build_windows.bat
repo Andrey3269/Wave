@@ -10,7 +10,7 @@ if not exist ".venv-build\Scripts\python.exe" (
 call ".venv-build\Scripts\activate.bat" || goto :fail
 
 python -m pip install --upgrade pip || goto :fail
-pip install -r backend\requirements.txt -r packaging\requirements-build.txt || goto :fail
+pip install -r backend\requirements.txt -r packaging\requirements-build.txt -c constraints.txt || goto :fail
 
 python packaging\svg_to_ico.py frontend\assets\wave_icon.svg packaging\wave.ico || goto :fail
 python -m PyInstaller --noconfirm --clean packaging\wave.spec || goto :fail

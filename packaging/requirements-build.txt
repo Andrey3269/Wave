@@ -1,4 +1,7 @@
 # Зависимости только для СБОРКИ установщика (в готовом приложении всё уже внутри)
+# Ставятся скриптом build_windows.bat вместе с backend/requirements.txt и constraints.txt.
+# pywebview нужен и для запуска окна в разработке: python backend/launcher.py
+# Версии закрепляются после проверки сборки на Windows (docs/engineering/ROADMAP.md, S3–S4).
 pyinstaller>=6.10
 pywebview>=5.3          # окно (на Windows тянет pythonnet и использует Microsoft Edge WebView2)
 pillow>=10.0            # рисует иконку приложения
