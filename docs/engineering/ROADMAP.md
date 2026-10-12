@@ -58,15 +58,17 @@ graph TD
 
 ### S0. Гигиена репозитория и воспроизводимость
 
-Закрывает H4 (частично) и H5. Нужно ли окружение: нет.
+Закрывает H4 (защита данных в e2e) и H5. Окружение: нет.
+
+**Статус: выполнено 2026-10-12, ветка `claude/s0-repository-hygiene`; отчёт — [reports/S0.md](reports/S0.md).**
 
 | | |
 |---|---|
-| Изменения | `.gitignore`: `venv/ .venv/ .venv-build/ __pycache__/ *.pyc .idea/ .vscode/ build/ dist/ installer/MicrosoftEdgeWebview2Setup.exe packaging/runtime/deno/ tests/shots/ *.log .env cookies*.txt *.db`. `README.md`: назначение, требования (Python 3.12 для сборки, ≥ 3.10 для разработки), запуск в разработке, тесты, сборка, каталоги данных. Зависимости: `backend/requirements.txt` с runtime и точными версиями; `requirements-dev.txt` (pytest, playwright, pyflakes); `packaging/requirements-build.txt` с точными версиями; `constraints.txt` — снимок `pip freeze` из чистого venv на Python 3.12. Удаление неиспользуемого `sqlalchemy` (подтверждено: нет импортов); `certifi` объявлен явно. Защита e2e от реального профиля и временный каталог для скриншотов. Раннер `tests/run_e2e.py`. Удаление неиспользуемых импортов (L3). |
-| Модули | `.gitignore`, `README.md`, `backend/requirements.txt`, `requirements-dev.txt`, `constraints.txt`, `packaging/requirements-build.txt`, `tests/e2e_smoke.py` (только защита и путь скриншотов), `tests/run_e2e.py`, `backend/main.py`, `backend/recs.py`, `backend/downloads.py` (импорты) |
-| Тесты | e2e через раннер; проверка защиты: запуск против backend без временного профиля → отказ до первого действия |
-| Критерии приёмки | (1) `git status` чистый после compileall, тестов и сборки (артефакты игнорируются). (2) В чистом venv `pip install -r backend/requirements.txt -r requirements-dev.txt -c constraints.txt` → **PASS**. (3) `python tests/run_e2e.py` → 109/109. (4) e2e против профиля без метки завершается с ошибкой и ничего не пишет. (5) README воспроизводим другим человеком по шагам. (6) Поведение приложения не изменилось. |
-| Коммиты | `chore: restore .gitignore`; `docs: add README with dev/test/build instructions`; `build: split and pin dependencies, drop unused sqlalchemy`; `test: guard e2e against real user profile, add runner`; `chore: remove unused imports` |
+| Изменения | `.gitignore` (сборка, окружения, базы, журналы, медиа, секреты, скриншоты). `.gitattributes`: LF в репозитории, CRLF при checkout для `.bat/.cmd/.iss`. `README.md`: требования, установка, запуск, тесты, сборка, переменные окружения, ограничения. Зависимости: runtime в `backend/requirements.txt` без `sqlalchemy`, с явным `certifi`, нижние границы не менялись; `requirements-dev.txt` (playwright 1.56.0, pyflakes 3.4.0); `constraints.txt` — снимок чистого venv на Python 3.12; `build_windows.bat` ставит зависимости с `-c constraints.txt`. Зависимости сборки пока не закреплены, перенесено в S3–S4: закрепление без проверки сборки на Windows было бы непроверенным. Защита e2e от реального профиля, скриншоты во временную папку. Раннеры `tests/run_e2e.py` и `tests/run_checks.py` (гигиена git, compileall, pyflakes, node, e2e). Удалены три неиспользуемых импорта и переменная (L3). `pytest` появится в S1 вместе с тестами. |
+| Модули | `.gitignore`, `.gitattributes`, `README.md`, `backend/requirements.txt`, `requirements-dev.txt`, `constraints.txt`, `packaging/requirements-build.txt`, `build_windows.bat` (одна строка), `tests/e2e_smoke.py` (только защита и путь скриншотов), `tests/run_e2e.py`, `tests/run_checks.py`, `backend/main.py`, `backend/recs.py`, `backend/downloads.py` (импорты) |
+| Тесты | `tests/run_checks.py`; отказ e2e на нетестовом профиле; BLOCKED без Playwright и pyflakes |
+| Критерии приёмки | (1) `git status` чистый после всех проверок — **PASS**. (2) Чистый venv: `pip install … -c constraints.txt` → **PASS**, `pip freeze` совпадает с `constraints.txt`. (3) e2e через раннер 109/109 — **PASS** (Linux, Chromium 141). (4) e2e против профиля без метки → код 2, база не изменена — **PASS**. (5) README по шагам на Linux — **PASS**; на Windows — **NOT RUN**. (6) Поведение приложения не изменилось — **PASS** (в коде приложения удалены только импорты; e2e 109/109). |
+| Коммиты | `8c7e502` chore: restore .gitignore · `f25786a` build: split runtime/dev dependencies and add tested constraints · `055817e` chore: add .gitattributes · `9f5b172` test: guard e2e against the real user profile, add runners · `c742b02` chore: remove unused imports · `cd71320` docs: add README · документация и отчёт — следующим коммитом |
 
 ### S1. Регрессионные тесты (characterization)
 
@@ -74,10 +76,10 @@ graph TD
 
 | | |
 |---|---|
-| Изменения | `tests/conftest.py` (изоляция §3 стратегии), фикстуры провайдеров, тесты из TEST_STRATEGY §5 с пометкой «S1». Код приложения **не меняется**. Дефекты, которые обнаружат тесты, фиксируются как `xfail(strict=True, reason="<ID находки>")` и исправляются на своём этапе. |
-| Модули | только `tests/**`, `pytest.ini` (маркеры `live`, `windows`) |
+| Изменения | `tests/conftest.py` (изоляция §3 стратегии), фикстуры провайдеров, тесты из TEST_STRATEGY §5 с пометкой «S1». Код приложения **не меняется**. Дефекты, которые обнаружат тесты, фиксируются как `xfail(strict=True, reason="<ID находки>")` и исправляются на своём этапе. **CI (ADR-8)**: GitHub Actions — `ubuntu-latest`: `run_checks.py` (с pytest и e2e); `windows-latest`: `run_checks.py` (с pytest и e2e в Chromium) и сборка `dist\Wave` через PyInstaller как проверка spec. Шаг установщика добавляется в S4. Без секретов и без обращений к живым источникам. |
+| Модули | `tests/**`, `pytest.ini` (маркеры `live`, `windows`), `requirements-dev.txt` (+ pytest), `constraints.txt`, `tests/run_checks.py` (+ шаг pytest), `.github/workflows/ci.yml` (новый) |
 | Тесты | `test_normalize_yt/sc`, `test_catalog_cards`, `test_ranges`, `test_stream_proxy`, `test_stream_local`, `test_stream_lifespan` (xfail M1), `test_search_isolation`, `test_recommendations`, `test_userdata`, `test_settings`, `test_playlists`, `test_downloads`, `test_lyrics` |
-| Критерии приёмки | (1) `pytest -m "not live"` → PASS на Linux; xfail только с ID находок. (2) Покрыты все ветки Range: 200/206/416, суффикс, открытый конец, битый заголовок, протухшая ссылка, параллельный резолв = один вызов. (3) Тесты не обращаются в сеть: проверяется подменой транспорта, сетевой вызов роняет тест. (4) Ни один тест не пишет вне временного каталога. (5) e2e 109/109. |
+| Критерии приёмки | (1) `pytest -m "not live"` → PASS на Linux; xfail только с ID находок. (2) Покрыты все ветки Range: 200/206/416, суффикс, открытый конец, битый заголовок, протухшая ссылка, параллельный резолв = один вызов. (3) Тесты не обращаются в сеть: проверяется подменой транспорта, сетевой вызов роняет тест. (4) Ни один тест не пишет вне временного каталога. (5) e2e 109/109. (6) Оба job'а CI зелёные на ветке; ссылка на запуск в отчёте этапа. |
 | Коммиты | по группе: `test: add isolated pytest harness`; `test: track normalization`; `test: range parsing and stream proxy`; `test: sqlite user data and playlists`; `test: provider failure isolation`; `test: downloads and lyrics` |
 
 ### S2. P0-исправления
@@ -118,10 +120,17 @@ graph TD
 
 ### S5. Политика источников и скачивание
 
-Зависит от S1. Окружение: live LIVE-5. **Нужны решения владельца: ADR-5, ADR-6.**
+Зависит от S1. Окружение: LIVE-5 не требуется, SoundCloud выключен. Решения владельца: ADR-5, ADR-6 (TARGET_ARCHITECTURE §6, §14).
 
 | | |
 |---|---|
+| Изменения | `providers/policy.py`: `yt` — `enabled=True, download_allowed=False`; `sc` — `enabled=False, download_allowed=False`; `local` — разрешён. Проверки политики на backend во всех точках входа: `POST /api/downloads` → 403 `download_not_allowed`; поиск, каталог, рекомендации, радио и `/api/stream/sc/...` для выключенного источника → 403 `source_disabled`. Уже скачанные файлы (включая `sc`) по-прежнему отдаются с диска. Фронтенд: пояснение вместо кнопки «Скачать», SoundCloud в переключателе помечен «недоступен в этой версии», понятные тексты ошибок. Адаптер SoundCloud остаётся в коде за интерфейсом. Переопределение политики `WAVE_SOURCE_OVERRIDES` действует только в dev-запуске и игнорируется в собранной версии. |
+| Модули | `backend/providers/policy.py` (новый), `backend/main.py`, `backend/catalog.py`, `backend/recs.py`, `backend/stream.py`, `backend/downloads.py`, `backend/soundcloud.py`, `frontend/app.js`, `frontend/index.html`, `tests/e2e_smoke.py` |
+| Тесты | `test_policy.py` (матрица; обход прямым запросом невозможен; `WAVE_SOURCE_OVERRIDES` игнорируется в frozen-режиме); `test_downloads` (403, существующая загрузка играет); `test_search_isolation` (выключенный `sc` не опрашивается); e2e: пояснение у кнопки скачивания, недоступный SoundCloud в переключателе, «Скачанные» с существующим файлом воспроизводятся |
+| Критерии приёмки | (1) Ни один API-запрос не запускает загрузку с `yt` или `sc` и не обращается к SoundCloud (проверка подменой транспорта: сетевой вызов `sc` роняет тест). (2) Существующие загрузки не удалены и играют. (3) Импорт и воспроизведение локальных файлов политикой не блокируются. (4) Тексты UI не обещают недоступных функций. (5) Число проверок e2e не уменьшилось: проверки, которые опирались на скачивание или SoundCloud, заменены проверками нового поведения. |
+| Коммиты | `feat(policy): backend source capability policy`; `feat(api): enforce download and source policy on all entry points`; `feat(ui): explain unavailable downloads and disabled SoundCloud` |
+
+---|---|
 | Изменения | `providers/policy.py` с матрицей возможностей (TARGET_ARCHITECTURE §6). `POST /api/downloads` → 403 `download_not_allowed` для источников без разрешения. Фронтенд: вместо кнопки «Скачать» — пояснение. Уже скачанные треки играют и удаляются как раньше. SoundCloud: атрибуция (автор и ссылка на SoundCloud) на странице трека и в плеере; режим «без смешивания» или флаг `WAVE_SC_ENABLED` — по решению владельца. Тексты ошибок по типам `ProviderError`. |
 | Модули | `backend/providers/policy.py` (новый), `backend/downloads.py`, `backend/soundcloud.py`, `backend/main.py`, `frontend/app.js`, `frontend/index.html` |
 | Тесты | `test_policy.py`; `test_downloads` (403); e2e: кнопка скачивания показывает пояснение, «Скачанные» с уже существующим файлом воспроизводятся |
@@ -265,7 +274,7 @@ graph TD
 | S2 | WIN-5 (S2a), WIN-12 (S2b) | — |
 | S3 | WIN-1, WIN-6, WIN-7 — **обязательно** | LIVE-2, LIVE-3, LIVE-4 — **обязательно** |
 | S4 | WIN-1…4, 8, 9, 13, 15 — **обязательно** | — |
-| S5 | — | LIVE-5 |
+| S5 | — | — (SoundCloud выключен политикой; LIVE-5 — только при будущем включении) |
 | S7 | WIN-10 | LIVE-1, LIVE-5 |
 | S8 | — | LIVE-3 |
 | S10 | WIN-11 | — |
@@ -279,5 +288,6 @@ graph TD
 
 | Этап | Статус | Ветка | Примечание |
 |---|---|---|---|
-| Аудит и документация | готово, ждёт согласования | `claude/engineering-docs` | этот набор документов |
-| S0–S19 | не начато | — | старт после согласования плана |
+| Аудит и документация | согласовано владельцем 2026-10-12 | `claude/engineering-docs` | решения ADR-1…ADR-9 в TARGET_ARCHITECTURE §14 |
+| S0 | **выполнено**, ждёт подтверждения владельца | `claude/s0-repository-hygiene` | [reports/S0.md](reports/S0.md); проверки Windows — NOT RUN |
+| S1–S19 | не начато | — | S1 начинается только после подтверждения S0 |
