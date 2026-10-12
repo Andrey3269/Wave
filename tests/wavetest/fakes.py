@@ -78,6 +78,8 @@ class FakeNet:
         self.lyrics_calls = 0
         self.images: dict[str, tuple[bytes, str]] = {}
         self.chunk = 4096                                        # размер чанков тела ответа CDN
+        self.hang_streams = False                                # тело CDN зависает после данных
+        self.fail_after: int | None = None                       # обрыв тела CDN после N чанков
 
     # ---- настройка ----
     def add_file(self, path: str, data: bytes, content_type: str = "audio/mp4") -> None:
@@ -121,6 +123,8 @@ class FakeNet:
 
     def _stream_response(self, status: int, data: bytes, headers: dict, **kw) -> httpx.Response:
         chunks = [data[i:i + self.chunk] for i in range(0, len(data), self.chunk)] or [b""]
+        kw.setdefault("hang", self.hang_streams)
+        kw.setdefault("fail_after", self.fail_after)
         s = TrackedStream(chunks, **kw)
         self.streams.append(s)
         return httpx.Response(status, headers=headers, stream=s)
