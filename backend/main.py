@@ -17,7 +17,6 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Awaitable, Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request

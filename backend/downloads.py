@@ -142,7 +142,7 @@ async def _run(client, req: DownloadRequest) -> None:
         job.update(state="done", progress=100)
     except HTTPException as exc:
         job.update(state="error", error=str(exc.detail))
-    except Exception as exc:
+    except Exception:
         log.exception("Загрузка %s не удалась", key)
         job.update(state="error", error="Не удалось скачать трек. Попробуйте ещё раз.")
     finally:
