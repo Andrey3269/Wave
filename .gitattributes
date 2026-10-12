@@ -1,0 +1,14 @@
+# Единые окончания строк: в репозитории LF.
+* text=auto eol=lf
+
+# Командные файлы Windows: cmd.exe надёжно работает с метками и goto только при CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.iss text eol=crlf
+
+# Бинарные ресурсы
+*.ico binary
+*.png binary
+*.jpg binary
+*.exe binary
+*.zip binary
