@@ -93,6 +93,8 @@ python tests/run_e2e.py               # одноразовый профиль, �
 python tests/run_e2e.py --keep --shots shots-out   # оставить профиль и сохранить скриншоты в папку
 ```
 
+`run_e2e.py` прогоняет `e2e_smoke.py`, затем `e2e_settings.py`: настройки интерфейса выставляются на одном порту, backend перезапускается на другом порту с тем же профилем, и значения проверяются в новом окне (в приложении порт меняется при каждом запуске, а с ним и localStorage окна). Отдельный чистый профиль проверяет однократный перенос старых значений из localStorage.
+
 Статусы шагов:
 
 | Статус | Значение |
@@ -157,7 +159,7 @@ build_windows.bat
 backend/      FastAPI-приложение, лаунчер, провайдеры, стриминг, SQLite
 frontend/     index.html, style.css, app.js, assets/
 tests/        unit/, api/ (pytest), live/ (живые источники), fixtures/, wavetest/ (защита и подделки),
-              e2e_smoke.py (Playwright), run_e2e.py, run_checks.py
+              e2e_smoke.py, e2e_settings.py (Playwright), run_e2e.py, run_checks.py
 .github/      workflows/ci.yml (GitHub Actions: Linux и Windows)
 packaging/    wave.spec (PyInstaller), иконки, зависимости сборки
 docs/         инженерная документация

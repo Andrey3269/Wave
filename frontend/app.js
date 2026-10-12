@@ -181,7 +181,9 @@
     ctx: null, reopen: null,
     fav: new Set(),    // ключи избранных треков (единственный источник правды)
     favItems: [],      // сами избранные треки (для рекомендаций и коллекции)
-    settings: { autoplay: true, theme: "auto" },
+    // Настройки из /api/settings (SQLite). Интерфейсные (громкость, тексты, имя, обложки миксов) раньше жили в
+    // localStorage, но он привязан к порту окна, а порт меняется при каждом запуске (H3).
+    settings: { autoplay: true, theme: "auto", volume: 1, last_volume: 1, lyrics_visible: true, profile_name: "", mix_covers: {} },
     dl: new Map(),     // скачанные треки: "source:id" -> трек
     jobs: {},          // активные загрузки с сервера
     query: "", offset: 0, more: false, loadingMore: false,
@@ -204,6 +206,8 @@
     get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch { return d; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch { /* приватный режим */ } },
   };
+  // localStorage теперь только для темы до первой отрисовки (запасной путь к /api/boot.js) и для одноразового
+  // переноса старых значений в backend (migrateLocalUi). Старые ключи не удаляются: откат на прежнюю версию их найдёт.
 
   // ---------- Сеть ----------
   async function api(url, opts) {
@@ -213,6 +217,35 @@
   }
   const getJSON = (url, signal) => api(url, { signal });
   const jsonOpts = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+
+  // ---------- Сохранение настроек интерфейса в backend ----------
+  // Изменения копятся и уходят одним PUT /api/settings через короткую паузу (перетаскивание громкости —
+  // одна запись, а не сотня). При закрытии окна несохранённое отправляется с keepalive.
+  const round3 = (v) => Math.round(v * 1000) / 1000;
+  let uiReady = false;                                     // настройки из backend уже применены
+  let volTouched = false;                                  // громкость меняли до ответа backend: не перетираем
+  const uiSave = (() => {
+    let pending = {}, timer = 0;
+    function flush(keepalive = false) {
+      clearTimeout(timer);
+      const body = pending;
+      pending = {};
+      const changed = Object.keys(body).filter((k) => JSON.stringify(body[k]) !== JSON.stringify(state.settings[k]));
+      if (!changed.length) return;
+      const send = Object.fromEntries(changed.map((k) => [k, body[k]]));
+      Object.assign(state.settings, send);
+      fetch("/api/settings", { ...jsonOpts("PUT", send), keepalive }).then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+      }).catch(() => {                                     // не записалось: вернём в очередь, уйдёт со следующим изменением
+        for (const k of changed) { if (!(k in pending)) { pending[k] = send[k]; state.settings[k] = undefined; } }
+      });
+    }
+    return {
+      put(obj, delay = 400) { Object.assign(pending, obj); clearTimeout(timer); timer = setTimeout(flush, delay); },
+      flush,
+    };
+  })();
+  window.addEventListener("pagehide", () => uiSave.flush(true));
   const trackPayload = (t) => ({ id: t.id, source: t.source, title: t.title, artist: t.artist, artists: t.artists || [t.artist],
     album: t.album || null, duration: t.duration || null, cover: t.cover || null, stream_url: t.stream_url,
     artist_id: t.artist_id || null, artist_ids: t.artist_ids || [], url: t.url || null });
@@ -676,7 +709,7 @@
     { id: "shake", title: "Встряхнуть мою волну", sub: "Новая подборка по твоей истории", tone: 4, wave: true },
     { id: "indie", title: "Инди без границ", sub: "Альтернатива, которая вдохновляет", tone: 5, q: "indie alternative" },
   ];
-  const covers = (() => { try { return JSON.parse(LS.get("wave-mix-covers", "{}")) || {}; } catch { return {}; } })();
+  const covers = {};                                         // id микса -> обложка; приходит из настроек (mix_covers)
   const themeMixes = THEMES.map((th) => ({
     id: `theme:${th.id}`, title: th.title, sub: th.sub, tone: th.tone, cover: covers[th.id] || null, fresh: !!th.wave, themeId: th.id,
     async load() {
@@ -703,7 +736,7 @@
     if (tracks[0] && !mix.cover && mix.themeId) {          // запоминаем обложку микса для боковой панели
       mix.cover = tracks[0].cover;
       covers[mix.themeId] = mix.cover;
-      LS.set("wave-mix-covers", JSON.stringify(covers));
+      uiSave.put({ mix_covers: { ...covers } }, 0);
       renderThemeMixes();
     }
     return tracks;
@@ -1305,13 +1338,15 @@
   /** commit=false: промежуточные значения при перетаскивании. «Последней слышимой» громкостью они не считаются,
    *  поэтому, если ушли ползунком в ноль, mute вернёт то значение, что было до перетаскивания. */
   function setVolume(v, commit = true) {
+    if (!uiReady) volTouched = true;
     v = clamp(v, 0, 1);
     audio.volume = v;
     if (v > 0) audio.muted = false;
-    if (commit && v >= 0.05) { state.lastVol = v; LS.set("wave-last-volume", String(v)); }
+    if (commit && v >= 0.05) { state.lastVol = v; uiSave.put({ last_volume: round3(v) }); }
     paintVolume();
   }
   function toggleMute() {
+    if (!uiReady) volTouched = true;
     if (audio.muted || audio.volume === 0) {
       audio.muted = false;
       if (audio.volume === 0) audio.volume = state.lastVol || 0.6;   // ушли ползунком в ноль: возвращаем последнюю слышимую громкость
@@ -1320,16 +1355,14 @@
     }
     paintVolume();
   }
-  audio.addEventListener("volumechange", () => { paintVolume(); LS.set("volume", String(audio.volume)); });
+  audio.addEventListener("volumechange", () => {
+    paintVolume();
+    if (uiReady) uiSave.put({ volume: round3(audio.volume) });   // перетаскивание: одна запись в конце (см. uiSave)
+  });
   for (const node of volBars) {
     makeSlider(node, { preview: (v) => setVolume(v, false), commit: (v) => setVolume(v, true), nudge: (dir) => setVolume((audio.muted ? 0 : audio.volume) + dir * 0.05) });
   }
-  {
-    const last = parseFloat(LS.get("wave-last-volume"));
-    if (Number.isFinite(last) && last >= 0.05) state.lastVol = last;
-    const saved = parseFloat(LS.get("volume"));
-    setVolume(Number.isFinite(saved) ? saved : 1, false);
-  }
+  paintVolume();                                           // громкость из настроек придёт в applyUiSettings
 
   // ==========================================================================
   // Media Session (медиаклавиши, экран блокировки, часы/наушники)
@@ -1454,7 +1487,7 @@
   }
   function toggleLyrics() {
     state.lyricsOn = !state.lyricsOn;
-    LS.set("wave-lyrics", state.lyricsOn ? "1" : "0");
+    uiSave.put({ lyrics_visible: state.lyricsOn }, 0);
     now.stage.classList.toggle("no-lyrics", !state.lyricsOn);
     now.lyricsBtn.setAttribute("aria-pressed", String(state.lyricsOn));
     const t = current();
@@ -2311,12 +2344,48 @@
     state.settingsPaths = d.paths;
     return d;
   }
+  /** Однократный перенос старых значений из localStorage этого окна в backend (до S2a они жили только там).
+   *  Backend сам следит, чтобы перенос был один раз на профиль и не затирал уже сохранённое. */
+  function migrateLocalUi() {
+    const body = {};
+    const num = (k) => { const v = parseFloat(LS.get(k)); return Number.isFinite(v) ? v : undefined; };
+    const vol = num("volume"), last = num("wave-last-volume");
+    if (vol !== undefined) body.volume = clamp(vol, 0, 1);
+    if (last !== undefined && last >= 0.05) body.last_volume = clamp(last, 0, 1);
+    const lyr = LS.get("wave-lyrics");
+    if (lyr === "0" || lyr === "1") body.lyrics_visible = lyr === "1";
+    const name = LS.get("wave-profile-name");
+    if (name != null) body.profile_name = [...name.trim()].slice(0, 24).join("");
+    try {
+      const c = JSON.parse(LS.get("wave-mix-covers", "null"));
+      if (c && typeof c === "object" && !Array.isArray(c)) body.mix_covers = c;
+    } catch { /* испорченное значение не переносим */ }
+    return api("/api/settings/migrate-local", jsonOpts("POST", body));
+  }
+  /** Применяет настройки интерфейса один раз, при старте (ответы на последующие PUT их не трогают). */
+  function applyUiSettings(v) {
+    if (!volTouched && Number.isFinite(v.volume)) audio.volume = clamp(v.volume, 0, 1);
+    if (Number.isFinite(v.last_volume) && v.last_volume >= 0.05) state.lastVol = v.last_volume;
+    state.lyricsOn = v.lyrics_visible !== false;
+    Object.assign(covers, v.mix_covers || {});
+    for (const m of themeMixes) if (covers[m.themeId]) m.cover = covers[m.themeId];
+    uiReady = true;
+    if (volTouched) uiSave.put({ volume: round3(audio.volume) });   // пока ждали backend, громкость уже поменяли
+    paintVolume();
+    renderThemeMixes();
+    renderProfile();
+    document.body.dataset.settings = "ready";              // признак готовности (используют e2e-тесты)
+  }
   async function loadSettings() {
     try {
-      const d = await fetchSettings();
+      let d = await fetchSettings();
+      if (d.meta && d.meta.local_ui_migrated === false) {
+        try { d = await migrateLocalUi(); applySettings(d.values); state.settingsPaths = d.paths; } catch { /* попробуем при следующем запуске */ }
+      }
       state.source = d.values.default_source;              // источник по умолчанию
       syncTabs();
-    } catch { /* остаются значения по умолчанию */ }
+      applyUiSettings(d.values);
+    } catch { uiReady = true; document.body.dataset.settings = "default"; /* остаются значения по умолчанию */ }
   }
   const setMsg = (t) => { $("#set-msg").textContent = t; };
   async function showSettings() {
@@ -2356,17 +2425,18 @@
     try { await api("/api/settings/clear-cache", { method: "POST" }); setMsg("Кэш очищен. Загрузки не затронуты."); } catch (e) { setMsg(e.message); }
   });
 
-  // Профиль: локальное имя в боковой панели (хранится только в этом окне приложения)
-  const profileName = () => (LS.get("wave-profile-name", "") || "").trim();
+  // Профиль: локальное имя в боковой панели (хранится в настройках backend, никуда не отправляется)
+  const profileName = () => (state.settings.profile_name || "").trim();
   function renderProfile() {
     const n = profileName() || "Слушатель";
     el.profileName.textContent = n;
     el.avatar.textContent = [...n][0].toUpperCase();
   }
   $("#set-name").addEventListener("change", (e) => {
-    LS.set("wave-profile-name", e.target.value.trim().slice(0, 24));
+    const name = [...e.target.value.trim()].slice(0, 24).join("");
+    state.settings.profile_name = name;                     // панель обновляется сразу, запись — следом
     renderProfile();
-    setMsg("Сохранено");
+    saveSetting({ profile_name: name });
   });
 
   // ==========================================================================
@@ -2527,7 +2597,6 @@
   // Старт
   // ==========================================================================
   async function boot() {
-    state.lyricsOn = LS.get("wave-lyrics", "1") !== "0";
     renderProfile();
     renderThemeMixes();
     renderArtistMixes();

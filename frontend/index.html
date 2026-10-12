@@ -4,7 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#101113">
-  <script>/* тема до первой отрисовки, чтобы не было вспышки */try{var m=localStorage.getItem("wave-theme")||"auto";document.documentElement.dataset.theme=m==="auto"?(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):m}catch(e){document.documentElement.dataset.theme="dark"}</script>
+  <!-- Тема до первой отрисовки, чтобы не было вспышки: значение из backend (api/boot.js, база профиля).
+       Встроенный скрипт — запасной путь, если backend не ответил. -->
+  <script>try{var m=localStorage.getItem("wave-theme")||"auto";document.documentElement.dataset.theme=m==="auto"?(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"):m}catch(e){document.documentElement.dataset.theme="dark"}</script>
+  <script src="api/boot.js"></script>
   <title>Волна — музыка</title>
   <link rel="icon" type="image/svg+xml" href="assets/wave_icon.svg">
   <link rel="stylesheet" href="style.css">

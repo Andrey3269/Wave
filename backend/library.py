@@ -10,7 +10,9 @@ import re
 import shutil
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import paths
 
@@ -47,6 +49,22 @@ def _q(sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         rows = cur.fetchall()
         _db.commit()
     return rows
+
+
+@contextmanager
+def transaction() -> Iterator[sqlite3.Connection]:
+    """
+    Несколько запросов как одна операция: всё или ничего. Блокировка держится до конца блока,
+    поэтому чтение и запись внутри не перемежаются с другими запросами приложения.
+    Внутри блока используйте только переданное соединение (не `_q`: он берёт ту же блокировку).
+    """
+    with _lock:
+        try:
+            yield _db
+            _db.commit()
+        except BaseException:
+            _db.rollback()
+            raise
 
 
 # ---------- имена папок ----------

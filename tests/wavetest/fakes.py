@@ -366,6 +366,43 @@ class ApiHarness:
     def delete(self, url, **kw):
         return self.http.delete(url, **kw)
 
+    @contextmanager
+    def serve(self, timeout: float = 15.0):
+        """
+        Настоящий uvicorn на свободном порту 127.0.0.1 в отдельном потоке — как backend.start() в лаунчере
+        (порт 0 → каждый запуск на своём порту). Даёт синхронный httpx.Client с base_url этого порта.
+        Внешние зависимости подменены так же, как в client(); сеть вне loopback по-прежнему запрещена.
+        """
+        import socket
+
+        import uvicorn
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(self.app, log_level="warning", lifespan="on"))
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, name=f"uvicorn-{port}", daemon=True)
+        thread.start()
+        deadline = time.monotonic() + timeout
+        while not server.started:
+            if not thread.is_alive() or time.monotonic() > deadline:
+                server.should_exit = True
+                sock.close()
+                raise RuntimeError(f"uvicorn на порту {port} не запустился")
+            time.sleep(0.02)
+        try:
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=10) as c:
+                c.port = port
+                yield c
+        finally:
+            server.should_exit = True
+            thread.join(timeout)
+            sock.close()
+            self.net.assert_no_unexpected()
+        if thread.is_alive():
+            raise RuntimeError(f"uvicorn на порту {port} не остановился за {timeout} с")
+
     def run(self, fn: Callable[[httpx.AsyncClient], Any]):
         """
         Отдельный запуск приложения в asyncio.run: lifespan + httpx.ASGITransport. Позволяет слать
