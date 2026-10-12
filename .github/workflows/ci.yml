@@ -1,0 +1,110 @@
+# Автоматические проверки Wave / «ВОЛНА» (ADR-8). Секретов и живых музыкальных источников не использует.
+#
+#   checks (ubuntu, windows): python tests/run_checks.py — гигиена git, compileall, pyflakes, node --check,
+#                             pytest (unit + API, без сети, временный профиль), e2e в Playwright Chromium
+#                             (не WebView2), проверка, что рабочий каталог не изменился.
+#   windows-build:            PyInstaller собирает dist\Wave по packaging/wave.spec и проверяется состав папки.
+#                             Это проверка spec, а не запуск приложения: окно WebView2, воспроизведение и
+#                             установщик здесь не проверяются (ручной чек-лист TEST_STRATEGY §8, этапы S3–S4).
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash          # и на Windows: bash -eo pipefail останавливает шаг на первой ошибке
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  checks:
+    name: checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            requirements-dev.txt
+            constraints.txt
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install dependencies (pinned by constraints.txt)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt -r requirements-dev.txt -c constraints.txt
+
+      - name: Install Chromium for Playwright (Linux)
+        if: runner.os == 'Linux'
+        run: python -m playwright install --with-deps chromium
+
+      - name: Install Chromium for Playwright (Windows)
+        if: runner.os == 'Windows'
+        run: python -m playwright install chromium
+
+      - name: Run all checks
+        run: python tests/run_checks.py
+
+  windows-build:
+    name: windows-build (PyInstaller spec)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            packaging/requirements-build.txt
+            constraints.txt
+
+      - name: Install runtime and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt -r packaging/requirements-build.txt -c constraints.txt
+
+      - name: Build icon and dist\Wave (same commands as build_windows.bat, without the installer step)
+        run: |
+          python packaging/svg_to_ico.py frontend/assets/wave_icon.svg packaging/wave.ico
+          python -m PyInstaller --noconfirm --clean packaging/wave.spec
+
+      - name: Check build output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "dist\Wave\Wave.exe")) { throw "dist\Wave\Wave.exe not found" }
+          $index = Get-ChildItem -Path "dist\Wave" -Recurse -Filter "index.html" | Where-Object { $_.Directory.Name -eq "frontend" }
+          if (-not $index) { throw "frontend\index.html is not bundled" }
+          $forbidden = Get-ChildItem -Path "dist\Wave" -Recurse -File -Include *.db,*.db-wal,*.db-shm,*.log,.env,cookies*.txt,*.m4a,*.mp3
+          if ($forbidden) { $forbidden | ForEach-Object { $_.FullName }; throw "user data or secrets in dist" }
+          $size = (Get-ChildItem -Path "dist\Wave" -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          "dist\Wave: {0:N1} MB" -f ($size / 1MB)
