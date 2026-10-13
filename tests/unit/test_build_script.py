@@ -76,7 +76,15 @@ def test_failures_return_nonzero_and_success_requires_the_file(bat):
         assert lines and all("|| goto :fail" in ln for ln in lines), cmd
     assert 'if not exist "%OUT%"' in bat and 'set "OUT=dist\\installer\\Wave-Setup-%WAVE_VERSION%.exe"' in bat
     assert _pos(bat, 'if not exist "%OUT%"') < _pos(bat, "exit /b 0")
-    assert "if errorlevel 1 (" in bat[_pos(bat, "--diagnostics"):_pos(bat, "backend\\version.py")]
+    assert 'if not "%DIAG_CODE%"=="0" (' in bat[_pos(bat, "--diagnostics"):_pos(bat, "backend\\version.py")]
+
+
+def test_diagnostics_does_not_touch_the_real_profile(bat):
+    """Wave.exe --diagnostics пишет журнал и кэш Deno в каталог данных: при сборке — только во временный."""
+    i = _pos(bat, 'start "" /wait "dist\\Wave\\Wave.exe" --diagnostics')
+    before = bat[:i]
+    assert before.rfind('set "WAVE_DATA_DIR=%CD%\\build\\diagnostics-profile"') > before.rfind("echo [6/9]")
+    assert 'set "WAVE_DATA_DIR="' in bat[i:]
 
 
 def test_iscc_is_checked_with_instructions(bat):

@@ -53,10 +53,17 @@ echo [6/9] Самопроверка собранного приложения: W
 rem Без окна и без сети: упакованный Deno найден и поддерживается, скрипты yt-dlp-ejs на месте.
 rem Воспроизведение этим не проверяется (ручной чек-лист). Wave.exe — оконная программа, поэтому
 rem start /wait (иначе cmd не ждёт и не получает код возврата).
+rem Профиль диагностики — во временной папке сборки: журнал и кэш Deno не пишутся в %LOCALAPPDATA%\Wave.
 if exist "build\diagnostics.json" del /q "build\diagnostics.json"
+set "WAVE_DATA_DIR=%CD%\build\diagnostics-profile"
+set "WAVE_DOWNLOADS_DIR=%CD%\build\diagnostics-profile\downloads"
 start "" /wait "dist\Wave\Wave.exe" --diagnostics --output "build\diagnostics.json"
-if errorlevel 1 (
-  echo ОШИБКА: диагностика собранного приложения нашла проблему. Отчёт: build\diagnostics.json
+set "DIAG_CODE=%ERRORLEVEL%"
+set "WAVE_DATA_DIR="
+set "WAVE_DOWNLOADS_DIR="
+if not "%DIAG_CODE%"=="0" (
+  echo ОШИБКА: диагностика собранного приложения нашла проблему ^(код %DIAG_CODE%^). Отчёт: build\diagnostics.json,
+  echo         журнал: build\diagnostics-profile\logs\wave.log
   goto :fail
 )
 if not exist "build\diagnostics.json" (
