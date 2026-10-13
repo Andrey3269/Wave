@@ -134,7 +134,7 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_settings.py` | ключи и валидация, неизвестный ключ → 400, `downloads_dir`: относительный путь → 400, недоступный для записи → 400, `WAVE_DOWNLOADS_DIR` блокирует; S2a: ключи интерфейса, атомарность (N1), испорченные строки, однократный перенос из localStorage, `boot.js`, **два запуска uvicorn на разных портах с одним профилем** |
 | `tests/api/test_playlists.py` | CRUD; дубль трека → `added: false`; позиции; переименование пустым именем → 400; удаление каскадом; конкурентное добавление одного трека не даёт 500 (M5: xfail до S6) |
 | `tests/unit/test_db_migrations.py` (S6) | фикстура базы «как в 5a7f27c» и «старее, без `downloads.root`» → миграция до последней версии без потери строк; бэкап создан; повторный запуск идемпотентен; ошибка миграции → откат и исходная база цела |
-| `tests/api/test_downloads.py` | старт → `jobs` → done (CDN через `MockTransport`); апстрим без Range (200); `Content-Range */*`; ошибка посередине → каталог `.part` удалён, индекс не тронут; сбой LRCLIB не отменяет загрузку (M8: xfail до S11); после S5 — 403 `download_not_allowed` для запрещённых источников |
+| `tests/api/test_downloads.py` | старт → `jobs` → done (CDN через `MockTransport`); апстрим без Range (200); `Content-Range */*`; ошибка посередине → каталог `.part` удалён, индекс не тронут; сбой и не-JSON ответ LRCLIB не отменяют загрузку (M8, закрыто на S5); прогресс по полученным байтам (`received`, `total`, `progress`) перед каждой порцией; повторный запрос (готовый → `done`, активный → та же задача); сохранность загрузок после перезапуска |
 | `tests/unit/test_lyrics.py` | `_parse_lrc`: таймкоды `mm:ss.xx`, пустые строки, без таймкодов; 404 → пустой результат; не-JSON → `None`, без исключения |
 | `tests/unit/test_jsruntime.py` (S3) | поддельный Deno в путях с пробелами и кириллицей: найден и совместим, отсутствует, не запускается, неожиданный ответ, старая версия, граница 2.3.0, таймаут; порядок поиска (env без подмены → bundle → PATH только в разработке), frozen не берёт системный Deno и cwd; настоящий `YoutubeDL` получает наш путь или пустой `js_runtimes`; `DENO_DIR`/`DENO_NO_UPDATE_CHECK`; пересоздание `YoutubeDL` при смене runtime; сторож процессов (таймаут, завершение, счётчик `run`); только Windows: нет окна консоли, Job Object завершает процесс; логгер yt-dlp |
 | `tests/unit/test_jsruntime_real.py` (S3) | **настоящий** Deno из `WAVE_TEST_REAL_DENO` (в CI — после `fetch_runtime.py`): закреплённая версия, путь с кириллицей, yt-dlp его принимает, скрипты yt-dlp-ejs исполняются без сети с флагами yt-dlp, кэш только в `DENO_DIR`, зависший процесс завершается |
@@ -145,11 +145,13 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_js_runtime_errors.py` (S3) | нет runtime → `js_runtime` (503), а не «Трек недоступен»; настоящие причины (удалён, нет сети, возраст) не подменяются; сбой решения JS-задачи → `js_runtime_failed`; SoundCloud и скачанные треки не затронуты; остановка backend завершает дочерние процессы |
 | `tests/live/test_live_youtube_runtime.py` (S3) | LIVE-2, LIVE-3, LIVE-4 (§7) |
 | `tests/unit/test_ci_annotate.py` (S3) | аннотации CI для упавших тестов и итог pytest со списком пропущенных |
-| `tests/unit/test_policy.py` (S5) | матрица возможностей; API соблюдает `download_allowed` и `mixing_allowed` |
+| `tests/api/test_download_policy.py` (S5) | разрешение источника на backend: YouTube — только лицензия Creative Commons, иначе `download_not_permitted`/`license_unknown` без обращения к CDN; тело запроса разрешения не даёт; SoundCloud — `downloadable`/`has_downloads_left`, отсутствие поля не трактуется как разрешение, ошибки ссылки (401 → `auth_required`, 429, недоступен), только https, неиграемый формат, обновление протухшей ссылки один раз; существующие загрузки играют с диска при любой политике |
+| `tests/api/test_download_paths.py` (S5, N3) | строки индекса с `../`, абсолютным путём, symlink наружу не читаются и не удаляются ни одним эндпоинтом, без 500; своя папка удаляется целиком |
+| `tests/unit/test_download_sources.py` (S5) | `license` берётся из того же резолва; распознавание Creative Commons; `soundcloud.download_link`: `redirectUri`, коды HTTP, без сброса `client_id` при 401 |
 | `tests/api/test_origin_guard.py` (S13) | мутирующий запрос с чужим `Origin` → 403; без `Origin` и со своим → OK; GET не затронут |
 | `tests/js/queue.test.mjs` (S9) | модель очереди: add/next/prev/remove/move/clear, индекс текущего при перестановках, shuffle без повторов и с историей для «назад», repeat off/one/all, сериализация и восстановление |
 | `tests/js/format.test.mjs` (S9) | `fmtTime`, `plural`, `thumb` |
-| `tests/e2e_smoke.py` | 123 проверки после S3: + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); дальше — запрет скачивания (S5), клавиатурная навигация (S12) |
+| `tests/e2e_smoke.py` | 136 проверок после S5 (123 после S3): + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); S5 — раздел «Загрузки»: этапы «Подготовка»/«Скачивание N%»/«Обработка», «Скачано», причина отказа источника без повторного запроса, меню без «Скачать» для отклонённого, повтор после временной ошибки, список «Скачанных»; дальше — клавиатурная навигация (S12) |
 | `tests/e2e_settings.py` (S2a) | 24 проверки: настройки интерфейса через UI на порту A → те же значения после перезапуска на порту B в новом окне (тема до отрисовки, имя, громкость, тексты, обложки миксов); однократный перенос из localStorage, старые ключи не удаляются |
 
 **Фикстуры провайдеров** (`tests/fixtures/ytmusic/*.json`, `tests/fixtures/soundcloud/*.json`):
@@ -211,7 +213,8 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | LIVE-2 | yt-dlp с `yt-dlp-ejs` и Deno: резолв публичного трека YouTube, прямой URL, `deno run` действительно запускался для JS-задач (`jsruntime.GUARD.runs`) | S3 |
 | LIVE-3 | Стрим YouTube через настоящее приложение: 206 на `bytes=0-`, перемотка в середину, перерезолв после принудительной инвалидации | S3, S8 |
 | LIVE-4 | Без JS-runtime: задокументировать фактическую деградацию (какие форматы и ошибки); при недоступности YouTube — FAIL с пометкой BLOCKED, а не PASS | S3 |
-| LIVE-5 | SoundCloud: поиск и стрим прогрессивного формата; поведение при отказе API | S5, S7 |
+| LIVE-5 | SoundCloud: поиск и стрим прогрессивного формата; поведение при отказе API | S7 |
+| LIVE-8 | Признаки разрешения на сохранение: (a) YouTube отдаёт `license` «Creative Commons…» для CC-видео и не отдаёт для обычного клипа; (b) у трека SoundCloud есть `downloadable`, фиксируется ответ `tracks/{id}/download` без входа | S5 |
 | LIVE-6 | LRCLIB: синхронный текст для известного трека | S1 |
 | LIVE-7 | Рекомендации: радио трека YouTube и SoundCloud непустые | S14 |
 
@@ -224,6 +227,8 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 ```
 
 Вывод `-rP` содержит итог каждой проверки одной строкой JSON (время резолва, число решений JS-задач, размер трека, у LIVE-4 — форматы или тип ошибки); ссылки на поток в вывод не попадают. В собранном приложении то же самое для одного трека проверяет `Wave.exe --diagnostics --live <videoId>` (поле `js_challenge_runs`). В облачной среде S3 все три — **BLOCKED**: прокси отвечает `Tunnel connection failed: 403 Forbidden` на соединение с YouTube (reports/S3.md §9).
+
+**LIVE-8 (S5)** — `tests/live/test_live_downloads.py`, цели `_youtube_cc_video_id` и `_soundcloud_downloadable_track_id` в `tests/live_targets.json`; запуск как у LIVE-2 (нужен Deno для 8a). Результат 2026-10-13 в облачной среде: **8b PASS** (`downloadable: true`, без входа — HTTP 401 → `auth_required`), **8a BLOCKED** (YouTube: HTTP 429 и требование подтвердить «не бот» для облачного IP) — reports/S5.md §5.
 
 ## 8. Что требует Windows
 

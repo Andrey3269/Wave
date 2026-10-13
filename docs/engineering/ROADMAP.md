@@ -18,7 +18,7 @@ graph TD
   S0[S0 Гигиена и воспроизводимость] --> S1[S1 Регрессионные тесты]
   S1 --> S2[S2 P0-исправления a–e]
   S1 --> S3[S3 YouTube: yt-dlp-ejs + Deno]
-  S1 --> S5[S5 Политика источников]
+  S1 --> S5[S5 Загрузки по разрешению источника]
   S3 --> S4[S4 Инсталлятор]
   S2 --> S4
   S1 --> S6[S6 SQLite]
@@ -132,9 +132,21 @@ graph TD
 | Коммиты | `build: single version source`; `build(installer): add Inno Setup script`; `build: fix build_windows.bat installer steps and add diagnostics gate` |
 | Реализация (2026-10-13) | Ветка `claude/s4-installer` от принятого S3 (`bcaaa92`), отчёт [reports/S4.md](reports/S4.md). Версия 0.1.0 в `backend/version.py` (API, диагностика, version-resource `Wave.exe`, установщик). `installer/wave.iss`: per-user без прав администратора, фиксированный AppId, WebView2 по ключам `launcher.WEBVIEW2_KEYS` с тихим bootstrapper и проверкой реестра после него, `AppMutex` = mutex приложения, данные при удалении не трогаются. Сверх плана: хэш-лок зависимостей сборки (`packaging/requirements-build.lock`) и обязательный Python 3.12 x64; bootstrapper WebView2 принимается только с подписью Microsoft; перечни лицензий Rust/C++-частей Deno и Python-пакетов сборки; из приложения исключены попадавшие туда инструменты сборки; диагностика при сборке — во временном профиле. CI выполняет `build_windows.bat` целиком и проверки установщика (`tests/installer/run_installer_checks.ps1`). Критерии: (1) PASS в CI (`Wave-Setup-0.1.0.exe`, 53,0 МБ) и на Windows 11 владельца (`build_windows.bat` — код 0, диагностика пройдена, `Wave-Setup-0.1.0.exe` 54 974 824 байта); (2) установка без прав администратора — PASS в CI, в том числе под стандартной учётной записью, и при ручной проверке владельца; запуск и воспроизведение — PASS при ручной проверке владельца; (3) обновление поверх сохраняет данные — PASS в CI (переустановка той же версии); (4) удаление не трогает данные и загрузки — PASS в CI; (5) WIN-15 — PASS в CI; (6) установлена настоящая `dist\Wave` (сверка файл в файл) — PASS в CI. **Принят владельцем 2026-10-13**: все ручные проверки по [checklists/S4_WINDOWS_CHECK.md](checklists/S4_WINDOWS_CHECK.md) на Windows 11 пройдены (reports/S4.md §13). Приёмка не решает вопросы публичного выпуска: установщик не подписан собственным сертификатом, остаются LGPL-2.1-код в Deno/V8, имя издателя и условия Inno Setup (reports/S4.md §12) |
 
-### S5. Политика источников и скачивание
+### S5. Загрузки по разрешению источника
 
-Зависит от S1. Окружение: LIVE-5 не требуется, SoundCloud выключен. Решения владельца: ADR-5, ADR-6 (TARGET_ARCHITECTURE §6, §14).
+Зависит от S1. Постановка владельца 2026-10-13 (заменяет прежний S5 «Политика источников»): сохранить существующий загрузчик (`downloads.py`: аудио порциями с Range, обложка, текст, `metadata.json`, атомарный перенос `*.part`, индекс в SQLite) и разрешать новые загрузки там, где источник подтверждает разрешение для конкретного трека. ADR-5 и ADR-6 в части загрузок пересмотрены (ADR-10, TARGET_ARCHITECTURE §6). Выключение SoundCloud как источника (прежняя часть S5 по ADR-6) в новую постановку не входит.
+
+| | |
+|---|---|
+| Изменения | `backend/download_policy.py` (новый): `yt` — только лицензия Creative Commons из того же резолва yt-dlp (`stream.Resolved.license`); `sc` — `downloadable`/`has_downloads_left` трека и исходный файл автора (`soundcloud.download_link`). Проверка на этапе `preparing`, отказ — `error` + `code` + понятный текст, без файлов и без обращения к CDN. `downloads.py`: источник файла (поток или исходный файл со сменой протухшей ссылки), формат исходника по Content-Disposition/пути/типу, поля задачи `code`, `received`, `total`, в `metadata.json` — `permission`, `license`. `lyrics.py`: не-JSON ответ LRCLIB не роняет загрузку (M8). `library.py`: строки индекса не выводят за каталог загрузок (N3). `stream.py`: MIME для `.wav/.flac/.opus`. UI: этапы, прогресс, причина отказа, повтор после временной ошибки, честное пустое состояние «Скачанных» |
+| Модули | `backend/download_policy.py` (новый), `backend/downloads.py`, `backend/library.py`, `backend/lyrics.py`, `backend/soundcloud.py`, `backend/stream.py`, `frontend/app.js`, `frontend/style.css`, `tests/e2e_smoke.py` |
+| Тесты | `api/test_download_policy.py` (24), `api/test_download_paths.py` (N3, 22), `unit/test_download_sources.py` (24), дополнены `api/test_downloads.py`, `unit/test_lyrics.py`, `api/test_stream_local.py`; сняты три xfail M8; e2e: раздел «Загрузки (S5)»; live: LIVE-8 (`tests/live/test_live_downloads.py`) |
+| Критерии приёмки | (1) Существующий сценарий загрузки сохранён: аудио, обложка и текст при наличии, `metadata.json`, атомарный перенос, запись в SQLite, трек в «Скачанных». (2) Разрешение проверяется на backend до загрузки; обход прямым запросом невозможен; возможность воспроизведения разрешением не считается. (3) Отказ и ошибка — понятная причина в API и UI, без бесконечного прогресса. (4) Существующие загрузки не удаляются и играют с диска без обращения к источнику. (5) Ни один эндпоинт не читает, не отдаёт и не удаляет файлы вне папки загрузки (N3). (6) Число проверок e2e не уменьшилось. (7) Живые признаки (LIVE-8) проверены у владельца |
+| Результат | (1)–(6) — **PASS** в облачной среде (pytest 743 + 10 xfail, e2e 136 + 27); (7) — LIVE-8b **PASS** (признак `downloadable` есть; без входа файл не выдаётся — 401 → `auth_required`), LIVE-8a **BLOCKED** (YouTube требует подтвердить «не бот» у облачного IP); WIN-14 — **NOT RUN**. Подробно — [reports/S5.md](reports/S5.md) |
+| Коммиты | `test(downloads): characterize …`; `fix(lyrics): … (M8)`; `fix(library): … (N3)`; `feat(downloads): save a track only with the source's own permission (S5)`; `feat(ui): download stages, real progress and the source's reason`; `test(downloads): progress follows received bytes`; `docs(engineering): S5 report …` |
+
+<details>
+<summary>Прежняя постановка S5 «Политика источников» (ADR-5, ADR-6, 2026-10-12) — заменена владельцем 2026-10-13, не реализовывалась</summary>
 
 | | |
 |---|---|
@@ -143,6 +155,8 @@ graph TD
 | Тесты | `test_policy.py` (матрица; обход прямым запросом невозможен; `WAVE_SOURCE_OVERRIDES` игнорируется в frozen-режиме); `test_downloads` (403, существующая загрузка играет); `test_search_isolation` (выключенный `sc` не опрашивается); e2e: пояснение у кнопки скачивания, недоступный SoundCloud в переключателе, «Скачанные» с существующим файлом воспроизводятся |
 | Критерии приёмки | (1) Ни один API-запрос не запускает загрузку с `yt` или `sc` и не обращается к SoundCloud (проверка подменой транспорта: сетевой вызов `sc` роняет тест). (2) Существующие загрузки не удалены и играют. (3) Импорт и воспроизведение локальных файлов политикой не блокируются. (4) Тексты UI не обещают недоступных функций. (5) Число проверок e2e не уменьшилось: проверки, которые опирались на скачивание или SoundCloud, заменены проверками нового поведения. |
 | Коммиты | `feat(policy): backend source capability policy`; `feat(api): enforce download and source policy on all entry points`; `feat(ui): explain unavailable downloads and disabled SoundCloud` |
+
+</details>
 
 ---
 
@@ -210,15 +224,15 @@ graph TD
 
 ### S11. Загрузки (для разрешённого контента)
 
-Закрывает M8. Зависит от S8, S5, S6. Windows: WIN-14.
+Закрывает остаток M8 (отмена, лимит, запись вне event loop, очистка `.part` во всех каталогах). Зависит от S8, S5, S6. Windows: WIN-14.
 
-- **Изменения.** `DownloadManager` (лимит, отмена, `to_thread` для записи, восстановление и очистка `.part` во всех `root`), изоляция сбоев текстов и обложек, отмена в UI.
-- **Тесты.** `test_downloads`: отмена, лимит, сбой LRCLIB (xfail снимается), завершение приложения посередине → чистый старт; **N3**: `test_stream_local.py::test_index_row_outside_downloads_is_not_served` и аналоги для обложки, текста и удаления.
+- **Изменения.** `DownloadManager` (лимит, отмена, `to_thread` для записи, восстановление и очистка `.part` во всех `root`, отмена задач при выходе из `lifespan`), отмена в UI. Сделано раньше, на S5: изоляция сбоев текстов и обложек (M8), защита путей индекса (N3).
+- **Тесты.** `test_downloads`: отмена, лимит, завершение приложения посередине → чистый старт. (Сбой LRCLIB и N3 закрыты на S5: `test_downloads`, `test_download_paths.py`.)
 - **Критерии приёмки.**
   1. Отмена освобождает ресурсы и удаляет `.part`.
   2. Не больше N параллельных загрузок.
-  3. Битый ответ текстов не ломает загрузку.
-  4. **Безопасность (N3):** запись индекса загрузок с `folder`/`root`, выходящими за каталог загрузок (`../`, абсолютный путь, другой диск), не приводит к чтению или удалению посторонних файлов ни одним эндпоинтом (`/api/stream`, `/api/local/.../cover`, тексты, `DELETE /api/downloads`) и не даёт 500: запись пропускается при чтении индекса или ответ 404, событие пишется в журнал.
+  3. Битый ответ текстов не ломает загрузку — **выполнено на S5**.
+  4. **Безопасность (N3)** — **выполнено на S5** (`test_download_paths.py`): запись индекса загрузок с `folder`/`root`, выходящими за каталог загрузок (`../`, абсолютный путь, другой диск), не приводит к чтению или удалению посторонних файлов ни одним эндпоинтом (`/api/stream`, `/api/local/.../cover`, тексты, `DELETE /api/downloads`) и не даёт 500: запись пропускается при чтении индекса или ответ 404, событие пишется в журнал.
 
 ### S12. Доступность
 
@@ -266,7 +280,8 @@ graph TD
 | `backend/recs.py` | S0, S2c, S7, S14 |
 | `backend/library.py`, `userdata.py`, `playlists.py` → `persistence/*` | S2a, S6, S13, S15 |
 | `backend/downloads.py` → `jobs/*` | S0, S2b, S5, S11 |
-| `backend/lyrics.py` | S7, S11 |
+| `backend/download_policy.py` (S5) → `providers/policy.py` | S5, S7 |
+| `backend/lyrics.py` | S5 (M8), S7 |
 | `backend/applog.py` | S13 |
 | `backend/paths.py` | S3 (`resource_dir` для runtime), S15 |
 | новые: `jsruntime.py`, `diagnostics.py` (S3), `version.py`, `providers/policy.py`, `persistence/*`, `streaming/*` | S3, S4, S5, S6, S8 |
@@ -284,7 +299,7 @@ graph TD
 | S2 | WIN-5 (S2a), WIN-12 (S2b) | — |
 | S3 | WIN-1, WIN-6, WIN-7 — **обязательно** | LIVE-2, LIVE-3, LIVE-4 — **обязательно** |
 | S4 | WIN-1…4, 8, 9, 13, 15 — **обязательно** | — |
-| S5 | — | — (SoundCloud выключен политикой; LIVE-5 — только при будущем включении) |
+| S5 | WIN-14 (загрузка и воспроизведение с диска в собранном приложении) — по возможности | LIVE-8a (лицензия YouTube), LIVE-8b (признак и ссылка SoundCloud) |
 | S7 | WIN-10 | LIVE-1, LIVE-5 |
 | S8 | — | LIVE-3 |
 | S10 | WIN-11 | — |
@@ -305,4 +320,5 @@ graph TD
 | S2, стабильность e2e настроек | **исправлено**, принято владельцем 2026-10-13 | `claude/s2-e2e-stability` (не слита) | [reports/S2.md §9](reports/S2.md): причина — запоздавшие ответы `/api/settings` перезаписывали правки (гонка в `frontend/app.js`), воспроизведена детерминированно; `e2e_settings.py set` 8 → 11; CI на `f40d6b9` 5/5, на `17621a8` PASS (Chromium). WIN-5, WIN-12 — NOT RUN |
 | S3 | **выполнено и принято владельцем 2026-10-13** | `claude/s3-ytdlp-deno` (не слита) | [reports/S3.md](reports/S3.md); pytest 589 (Linux и Windows CI, включая настоящий Deno 2.9.7), e2e 123 + 27. На Windows 11 x64: S3-часть сборки и `Wave.exe --diagnostics` — PASS; YouTube в собранном приложении, перемотка, следующий трек, отсутствие консольного окна и завершение `deno.exe` — PASS; LIVE-2/3/4 — PASS. Полный WIN-1 с установщиком и WIN-2…4, 8, 9, 13, 15 остаются в S4. H1 закрыта; `main` не менялся |
 | S4 | **выполнено и принято владельцем 2026-10-13** | `claude/s4-installer` (не слита) | [reports/S4.md](reports/S4.md); pytest 680 (Linux и Windows CI), e2e 123 + 27, плюс 123 против установленного `Wave.exe`; `build_windows.bat` и WIN-1, 2, 3, 4, 8, 9, 13, 15 — PASS в CI `windows-latest`; на Windows 11 владельца: `build_windows.bat` — код 0, диагностика пройдена, `Wave-Setup-0.1.0.exe` 54 974 824 байта, версия 0.1.0, все ручные проверки [чек-листа](checklists/S4_WINDOWS_CHECK.md) пройдены. Для публичного выпуска открыты: подпись кода, LGPL-код в Deno/V8, издатель, условия Inno Setup. H2 закрыта; `main` не менялся |
-| S5–S19 | не начато | — | S5 начинается только по отдельной команде владельца |
+| S5 | **выполнено, ждёт приёмки владельцем** | `claude/s5-downloads` (не слита) | [reports/S5.md](reports/S5.md); pytest 743 + 10 xfail, e2e 136 + 27 (Chromium); LIVE-8b PASS, LIVE-8a BLOCKED, WIN-14 NOT RUN; решения владельца по YouTube и входу в SoundCloud — §6 отчёта; `main` не менялся |
+| S6–S19 | не начато | — | S6 начинается только по отдельной команде владельца |
