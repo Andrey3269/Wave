@@ -231,6 +231,13 @@
   // Изменения копятся и уходят одним PUT /api/settings через короткую паузу (перетаскивание громкости —
   // одна запись, а не сотня). При закрытии окна несохранённое отправляется с keepalive.
   const round3 = (v) => Math.round(v * 1000) / 1000;
+  // Ответы /api/settings могут прийти позже, чем пользователь что-то поменял (экран настроек открыт, его GET
+  // ещё в пути; два PUT подряд вернулись не по порядку). Каждая локальная правка получает номер; значение
+  // из ответа применяется, только если ключ не меняли после отправки этого запроса. Иначе запоздавший ответ
+  // возвращал бы старые значения в интерфейс и в поля формы (сбой CI 38348939401, см. reports/S2.md).
+  let settingsGen = 0;
+  const localAt = {};                                      // ключ настройки -> номер последней локальной правки
+  function markLocal(keys) { settingsGen++; for (const k of keys) localAt[k] = settingsGen; }
   let uiReady = false;                                     // настройки из backend уже применены
   let volTouched = false;                                  // громкость меняли до ответа backend: не перетираем
   const uiSave = (() => {
@@ -250,7 +257,7 @@
       });
     }
     return {
-      put(obj, delay = 400) { Object.assign(pending, obj); clearTimeout(timer); timer = setTimeout(flush, delay); },
+      put(obj, delay = 400) { markLocal(Object.keys(obj)); Object.assign(pending, obj); clearTimeout(timer); timer = setTimeout(flush, delay); },
       flush,
     };
   })();
@@ -2361,15 +2368,24 @@
   }
   if (systemLight && systemLight.addEventListener) systemLight.addEventListener("change", () => { if (themeMode === "auto") applyTheme("auto"); });
 
-  function applySettings(v) {
-    state.settings = { ...state.settings, ...v };
-    applyTheme(v.theme);
+  /** Значения из ответа backend. since — номер правки на момент отправки запроса: ключи, изменённые
+   *  локально позже, не трогаем (ответ про них устарел). */
+  function applySettings(v, since = settingsGen) {
+    const fresh = Object.fromEntries(Object.entries(v).filter(([k]) => !((localAt[k] || 0) > since)));
+    state.settings = { ...state.settings, ...fresh };
+    applyTheme(state.settings.theme);
   }
   async function fetchSettings() {
+    const since = settingsGen;
     const d = await api("/api/settings");
-    applySettings(d.values);
+    applySettings(d.values, since);
     state.settingsPaths = d.paths;
     return d;
+  }
+  /** Поле формы настроек: не перезаписываем то, что пользователь сейчас редактирует. */
+  function setField(sel, prop, value) {
+    const node = $(sel);
+    if (node !== document.activeElement) node[prop] = value;
   }
   /** Однократный перенос старых значений из localStorage этого окна в backend (до S2a они жили только там).
    *  Backend сам следит, чтобы перенос был один раз на профиль и не затирал уже сохранённое. */
@@ -2407,7 +2423,8 @@
     try {
       let d = await fetchSettings();
       if (d.meta && d.meta.local_ui_migrated === false) {
-        try { d = await migrateLocalUi(); applySettings(d.values); state.settingsPaths = d.paths; } catch { /* попробуем при следующем запуске */ }
+        const since = settingsGen;
+        try { d = await migrateLocalUi(); applySettings(d.values, since); state.settingsPaths = d.paths; } catch { /* попробуем при следующем запуске */ }
       }
       state.source = d.values.default_source;              // источник по умолчанию
       syncTabs();
@@ -2421,22 +2438,25 @@
     state.view = "settings";
     layout();
     try { await fetchSettings(); } catch { setMsg("Не удалось загрузить настройки."); return; }
-    const s = state.settings, p = state.settingsPaths;
-    $("#set-source").value = s.default_source;
-    $("#set-autoplay").checked = !!s.autoplay;
-    $("#set-theme").value = s.theme;
-    $("#set-dir").value = p.downloads;
-    $("#set-name").value = profileName();
+    const s = state.settings, p = state.settingsPaths;   // уже без устаревших значений (applySettings)
+    setField("#set-source", "value", s.default_source);
+    setField("#set-autoplay", "checked", !!s.autoplay);
+    setField("#set-theme", "value", s.theme);
+    setField("#set-dir", "value", p.downloads);
+    setField("#set-name", "value", profileName());
     $("#set-dir").disabled = $("#set-dir-save").disabled = !!p.downloads_locked;
     $("#set-paths").textContent = `Данные приложения: ${p.data}`;
     setMsg(p.downloads_locked ? "Папка загрузок задана переменной окружения WAVE_DOWNLOADS_DIR." : "");
   }
   async function saveSetting(body, okText) {
+    markLocal(Object.keys(body));
+    const since = settingsGen;
     try {
       const d = await api("/api/settings", jsonOpts("PUT", body));
-      applySettings(d.values);
+      applySettings(d.values, since);                      // свои ключи применяются, более поздние правки — нет
+      renderProfile();
       state.settingsPaths = d.paths;
-      $("#set-dir").value = d.paths.downloads;
+      setField("#set-dir", "value", d.paths.downloads);
       setMsg(okText || "Сохранено");
     } catch (e) { setMsg(e.message); }
   }

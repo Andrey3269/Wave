@@ -80,8 +80,20 @@ def _js(route: Route, body) -> None:
     route.fulfill(status=200, content_type="application/json", body=json.dumps(body, ensure_ascii=False))
 
 
+# Задержка ответов /api/settings для детерминированной проверки гонок (режим set).
+# Запрос уходит на backend сразу (route.fetch), а ответ странице отдаётся позже, по команде теста.
+HOLD = {"get": False, "put_name": False}
+HELD: list = []                   # [(route, response)] — ответы, ещё не отданные странице
+
+
 def handle(route: Route) -> None:
     u = urlparse(route.request.url)
+    req = route.request
+    if u.path == "/api/settings" and (
+            (HOLD["get"] and req.method == "GET")
+            or (HOLD["put_name"] and req.method == "PUT" and "profile_name" in (req.post_data or ""))):
+        HELD.append((route, route.fetch()))
+        return
     path, q = u.path, {k: v[0] for k, v in parse_qs(u.query).items()}
     if "googleusercontent.com" in u.netloc:
         return route.fulfill(status=200, content_type="image/svg+xml",
@@ -163,6 +175,22 @@ def check_eq(v: dict, expect: dict, msg: str, waited: bool) -> None:
     check(ok, msg if ok else f"{msg} — {diag(v, tuple(expect), waited)}")
 
 
+def wait_held(page, n: int, timeout_s: float = 10.0) -> None:
+    """Ждёт, пока обработчик маршрутов задержит n ответов (обработчик работает во время ожиданий Playwright)."""
+    deadline = time.monotonic() + timeout_s
+    while len(HELD) < n:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Запрос /api/settings не был перехвачен за {timeout_s} с")
+        page.wait_for_timeout(20)
+
+
+def release(page) -> None:
+    """Отдаёт странице задержанные ответы (в порядке задержки)."""
+    while HELD:
+        route, resp = HELD.pop(0)
+        route.fulfill(response=resp)
+
+
 def open_page(page) -> None:
     page.goto(BASE)
     page.wait_for_function("document.body.dataset.settings === 'ready'", timeout=15000)
@@ -187,12 +215,37 @@ def mode_set(page) -> None:
     check(abs(vol - VOLUME) < 0.06, f"громкость выставлена кликом по шкале ({vol:.2f})")
     page.click("#now-lyrics-btn")
     check(page.locator("#now-stage.no-lyrics").count() == 1, "панель текста скрыта")
+    before = backend_values(page)["values"]
+    check(before["profile_name"] not in ("", NAME) and before["theme"] == "dark",
+          f"исходно в backend другое имя и тёмная тема ({before['profile_name']!r}, {before['theme']!r})")
+
+    # Гонка 1 (причина сбоя CI 38348939401): экран настроек открылся, его GET /api/settings ещё в пути,
+    # пользователь вводит имя — и только потом приходит ответ со старыми значениями.
+    HOLD["get"] = True
     page.click(".nav__item[data-view=settings]")
     page.wait_for_selector("#view-settings:not([hidden])")
+    wait_held(page, 1)
+    HOLD["get"] = False
     page.fill("#set-name", NAME)
+    release(page)
+    page.wait_for_function("document.querySelector('#set-paths').textContent !== ''")   # ответ GET обработан
+    check(page.input_value("#set-name") == NAME,
+          f"запоздавший ответ GET не перезаписал вводимое имя (поле: {page.input_value('#set-name')!r})")
+
+    # Гонка 2: ответы PUT приходят не по порядку. Ответ на запись имени (в нём ещё старая тема)
+    # отдаётся странице после того, как тема уже сменена и подтверждена.
+    HOLD["put_name"] = True
     page.dispatch_event("#set-name", "change")
+    wait_held(page, 1)
+    HOLD["put_name"] = False
     page.select_option("#set-theme", "light")
     page.wait_for_function("document.documentElement.dataset.theme === 'light'")
+    release(page)
+    page.wait_for_function("document.querySelector('#set-msg').textContent === 'Сохранено'")
+    ui = page.evaluate("[document.documentElement.dataset.theme, document.querySelector('#set-theme').value,"
+                       " document.querySelector('#profile-name').textContent]")
+    check(ui == ["light", "light", NAME],
+          f"запоздавший ответ PUT не вернул старую тему и имя в интерфейсе (тема, список, панель: {ui})")
     # Вместо фиксированной паузы — ограниченное ожидание фактической записи всех значений в backend
     expect = {"volume": round(vol, 3), "last_volume": round(vol, 3), "lyrics_visible": False,
               "profile_name": NAME, "theme": "light"}
