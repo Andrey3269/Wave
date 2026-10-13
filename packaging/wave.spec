@@ -46,7 +46,7 @@ for pkg in ("yt_dlp", "yt_dlp_ejs", "ytmusicapi", "certifi", "webview", "pythonn
 if not any(str(src).endswith(".js") and "yt_dlp_ejs" in str(src).replace("\\", "/") for src, _ in datas):
     raise SystemExit("Скрипты yt_dlp_ejs (*.js) не попали в сборку")
 
-hidden += collect_submodules("uvicorn") + collect_submodules("anyio") + ["h11", "multipart"]
+hidden += collect_submodules("uvicorn") + collect_submodules("anyio") + ["h11"]
 
 a = Analysis(
     [os.path.join(ROOT, "backend", "launcher.py")],
