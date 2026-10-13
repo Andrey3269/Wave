@@ -109,5 +109,7 @@ LICENSE_TOC = python_notices.collect(
     extra=[("Microsoft.Web.WebView2 SDK", _sdk_version,
             "библиотеки Microsoft.Web.WebView2.Core.dll, .WinForms.dll и WebView2Loader.dll в составе pywebview; "
             "лицензия Microsoft (BSD-подобная), текст: licenses/webview2-sdk/LICENSE.txt")],
+    embedded=[("pyinstaller", "загрузчик Wave.exe и модули запуска PyInstaller (COPYING.txt: GPL-2.0-or-later "
+                              "с исключением для загрузчика; runtime hooks — Apache-2.0)")],
 )
 coll = COLLECT(exe, a.binaries, a.datas + LICENSE_TOC, name="Wave")

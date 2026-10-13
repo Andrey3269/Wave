@@ -63,7 +63,10 @@ pythonnet и их зависимости. Перечень формируетс�
 Python — PSF License; файл licenses\python\python-<версия>\LICENSE.txt из установки Python содержит
 и уведомления о встроенных в Python библиотеках (OpenSSL, libffi, SQLite, zlib, bzip2, xz, expat,
 mpdecimal и др.).
-Инструменты сборки (PyInstaller, Pillow, setuptools) в приложение не входят.
+Wave.exe собран PyInstaller: в нём загрузчик и модули запуска PyInstaller (GPL-2.0-or-later с
+исключением, которое разрешает распространять собранные программы на любых условиях; runtime hooks —
+Apache-2.0), текст — licenses\python\pyinstaller-<версия>\COPYING.txt. Остальные части PyInstaller
+и другие инструменты сборки (Pillow, setuptools, pefile, altgraph) в приложение не входят.
 
 
 5. Microsoft WebView2 SDK 1.0.3856.49 (в составе pywebview)

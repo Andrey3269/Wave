@@ -1,6 +1,7 @@
 """packaging/python_notices.py (S4): лицензии Python-пакетов, попавших в сборку, без PyInstaller и Windows."""
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -20,7 +21,8 @@ def test_modules_and_files_are_mapped_to_distributions():
 
 def test_collect_copies_license_files_and_writes_summary(tmp_path):
     toc = python_notices.collect(["fastapi", "httpx", "yt_dlp"], ["certifi/cacert.pem"], tmp_path,
-                                 extra=[("Пример SDK", "1.2.3", "проверочная запись")])
+                                 extra=[("Пример SDK", "1.2.3", "проверочная запись")],
+                                 embedded=[("pytest", "встроенная часть (проверка)")])
     dests = [d for d, _s, kind in toc]
     assert all(kind == "DATA" for _d, _s, kind in toc)
     assert all(d.startswith("licenses/python/") for d in dests)
@@ -30,6 +32,7 @@ def test_collect_copies_license_files_and_writes_summary(tmp_path):
     summary = (tmp_path / "PACKAGES.txt").read_text(encoding="utf-8")
     assert "fastapi " in summary and "httpx " in summary and "certifi " in summary
     assert "Пример SDK 1.2.3 — проверочная запись" in summary
+    assert re.search(r"^pytest \S+ — .*в сборке: встроенная часть \(проверка\)$", summary, re.M)
     assert f"Python {'.'.join(map(str, sys.version_info[:3]))}" in summary
     assert "licenses/python/PACKAGES.txt" in dests
 

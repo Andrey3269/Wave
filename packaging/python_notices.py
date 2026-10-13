@@ -90,13 +90,19 @@ def python_license() -> Path | None:
 
 
 def collect(module_names: list[str], file_names: list[str], workdir: Path,
-            extra: list[tuple[str, str, str]] = ()) -> list[tuple[str, str, str]]:
+            extra: list[tuple[str, str, str]] = (),
+            embedded: list[tuple[str, str]] = ()) -> list[tuple[str, str, str]]:
     """
     Возвращает элементы TOC (путь в сборке, исходный файл, 'DATA') для COLLECT и пишет PACKAGES.txt в workdir.
     extra — компоненты не из pip (имя, версия, примечание), например SDK внутри пакетов.
+    embedded — дистрибутивы, части которых встроены в Wave.exe не как модули (загрузчик PyInstaller):
+    (имя, что именно встроено).
     """
     workdir = Path(workdir)
     found = distributions_with_reasons(module_names, file_names)
+    for name, what in embedded:
+        d = metadata.distribution(name)
+        found.setdefault(norm(d.metadata["Name"]), (d, [what]))
     dists = {k: d for k, (d, _w) in found.items()}
     toc: list[tuple[str, str, str]] = []
     lines = ["Wave / «ВОЛНА»: Python и Python-пакеты в этой сборке",
