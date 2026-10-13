@@ -240,7 +240,8 @@ jobs:
                            $tail = if (Test-Path $log) { (Get-Content $log -Tail 12 -Encoding utf8) -join " | " } else { "no wave.log" }
                            "exit=$($p.ExitCode) text=$has log: $tail" } "Start-Process -Wait -RedirectStandardOutput"
           Write-Host "::notice title=Start-Process -Wait -RedirectStandardOutput::$($r3 -replace '[\r\n]+', ' | ')"
-          if ($r3 -notmatch "^exit=0 ") { throw "Start-Process -Wait -RedirectStandardOutput: $r3" }
+          # именно здесь первоначально зависал шаг: stdout в cp1252 -> UnicodeEncodeError -> MessageBox (исправлено)
+          if ($r3 -notmatch "^exit=0 text=True") { throw "Start-Process -Wait -RedirectStandardOutput: $r3" }
           # 5) после всех запусков не осталось процессов deno.exe
           Start-Sleep -Seconds 1
           $left = Get-Process -Name deno -ErrorAction SilentlyContinue

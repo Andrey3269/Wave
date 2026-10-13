@@ -287,6 +287,13 @@ def _cli_stream():
     Надёжный способ для сценариев — `--output файл.json` и код возврата. None — писать некуда.
     """
     if not _NO_STDOUT:
+        # Оконный Wave.exe с унаследованным дескриптором (например, PowerShell Start-Process -Wait
+        # -RedirectStandardOutput) получает stdout в кодировке локали (cp1252): русский текст отчёта
+        # падал с UnicodeEncodeError. Отчёт всегда пишется в UTF-8.
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
         return sys.stdout
     if not IS_WIN:
         return None

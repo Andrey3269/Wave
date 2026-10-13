@@ -140,6 +140,29 @@ def test_diagnostics_never_shows_a_message_box(monkeypatch, tmp_path, caplog):
     assert "окно не должно появиться" in caplog.text
 
 
+def test_report_is_written_as_utf8_to_a_cp1252_stdout(monkeypatch, tmp_path):
+    """
+    Причина зависания CI на 4a7606e: в режиме Start-Process -Wait -RedirectStandardOutput оконный Wave.exe
+    получает stdout в кодировке локали (cp1252), запись русского отчёта бросала UnicodeEncodeError, а общий
+    обработчик показывал MessageBox. Теперь отчёт пишется в UTF-8.
+    """
+    import io
+
+    import launcher
+
+    monkeypatch.setenv("WAVE_FAKE_PY", sys.executable)
+    monkeypatch.setenv("WAVE_JS_RUNTIME", str(make_fake_deno(tmp_path / "rt", name=fake_name())))
+    monkeypatch.setattr(launcher, "_HEADLESS", False)
+    monkeypatch.setattr(launcher, "_NO_STDOUT", False)
+    monkeypatch.setattr(launcher.applog, "setup", lambda: None)
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252", errors="strict"))
+    assert launcher.run_diagnostics(launcher.parse_args(["--diagnostics"])) == 0
+    sys.stdout.flush()
+    text = raw.getvalue().decode("utf-8")
+    assert "Wave — диагностика воспроизведения YouTube" in text and "deno 2.9.7 supported=true" in text
+
+
 def test_parse_args():
     import launcher
 
