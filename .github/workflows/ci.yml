@@ -213,8 +213,25 @@ jobs:
           $issue = $c.report.issues | Where-Object { $_.code -eq "js_runtime_unavailable" }
           if (-not $issue -or $issue.message -notmatch "Переустановите") { throw "no-runtime: no clear message" }
           if ($c.report.js_runtime.source -ne "bundled") { throw "no-runtime: system/cwd Deno was used" }
-          # 4) после всех запусков не осталось процессов deno.exe
+          # 4) команды из README и build_windows.bat возвращают код возврата и не зависают
+          #    (каждая — в отдельном задании с таймаутом: зависание видно аннотацией, а не таймаутом job)
+          $env:PATH = ($env:PATH -split ";" | Where-Object { $_ -ne $decoy }) -join ";"
+          $root = (Get-Location).Path
+          function TimedJob([scriptblock]$sb, [string]$name) {
+            $j = Start-Job -ScriptBlock $sb -ArgumentList $root
+            if (-not (Wait-Job $j -Timeout 90)) {
+              Evidence $name; Stop-Job $j
+              Get-Process -Name Wave, deno -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+              throw "${name}: did not return in 90 s"
+            }
+            return (Receive-Job $j | Out-String).Trim()
+          }
+          $r1 = TimedJob { param($r) Set-Location $r; cmd /v:on /c 'start "" /wait "dist\Wave\Wave.exe" --diagnostics & echo exit=!errorlevel!' } "cmd start /wait"
+          if ($r1 -notmatch "exit=0") { throw "cmd start /wait: $r1" }
+          $r2 = TimedJob { param($r) Set-Location $r; (Start-Process -FilePath "dist\Wave\Wave.exe" -ArgumentList "--diagnostics" -Wait -PassThru).ExitCode } "Start-Process -Wait"
+          if ($r2 -ne "0") { throw "Start-Process -Wait: exit code '$r2'" }
+          # 5) после всех запусков не осталось процессов deno.exe
           Start-Sleep -Seconds 1
           $left = Get-Process -Name deno -ErrorAction SilentlyContinue
           if ($left) { $left | Format-Table Id, Path; throw "deno.exe processes left after Wave.exe exited" }
-          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); runs: dist $($a.ms) ms, Cyrillic path $($b.ms) ms (OK), missing runtime $($c.ms) ms (exit 1, clear message, PATH/cwd Deno ignored); no deno.exe left"
+          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); runs: dist $($a.ms) ms, Cyrillic path $($b.ms) ms (OK), missing runtime $($c.ms) ms (exit 1, clear message, PATH/cwd Deno ignored); README commands (cmd start /wait, Start-Process -Wait) return exit 0; no deno.exe left"
