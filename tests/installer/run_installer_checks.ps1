@@ -201,10 +201,11 @@ Step "WIN-15 dist" {
         ($_.PSIsContainer -and $n -in @("__pycache__", ".git", ".venv", ".venv-build", "node_modules", "logs")) -or
         ($_.PSIsContainer -and $n -in @("tests", "docs", "build", "dist", "installer") -and (Split-Path $_.FullName) -in $roots) -or
         (-not $_.PSIsContainer -and ($n -match '\.(db|db-wal|db-shm|db-journal|sqlite3?|log|pyc|pyo|m4a|mp3|webm|ogg|opus|wav|pem|key|pfx)$' -or
-                                     $n -match '^(\.env.*|cookies.*\.txt|.*\.cookies|\.wave-test-profile|wave\.db)$'))
+                                     $n -match '^(\.env.*|cookies.*\.txt|.*\.cookies|\.wave-test-profile|wave\.db)$') -and
+         $_.FullName.Substring($Dist.Length) -ne "\_internal\certifi\cacert.pem")     # корневые сертификаты certifi — не секрет
     }
+    $script:DistTree = Tree $Dist                                # нужен следующим шагам и при сбое этого
     Assert (-not $bad) "forbidden files in dist: $(($bad | Select-Object -First 15 | ForEach-Object { $_.FullName.Substring($Dist.Length) }) -join ', ')"
-    $script:DistTree = Tree $Dist
     $mb = ((Get-ChildItem $Dist -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
     "dist\Wave: $($DistTree.Count) files, {0:N1} MB; no databases, logs, cookies, .env, media, __pycache__ or .pyc" -f $mb
 }
@@ -213,12 +214,13 @@ Step "installer file" {
     $fi = Get-Item $Installer
     Assert ($fi.Name -eq "Wave-Setup-$Version.exe") "unexpected file name $($fi.Name)"
     $vi = $fi.VersionInfo
-    Assert ($vi.ProductVersion -eq $Version -and $vi.FileVersionRaw.ToString() -eq "$Version.0") "setup version resource: $($vi.ProductVersion) / $($vi.FileVersionRaw)"
+    $pv = "$($vi.ProductVersion)".Trim([char]0, [char]32)        # Inno Setup дополняет строку пробелами
+    Assert ($pv -eq $Version -and $vi.FileVersionRaw.ToString() -eq "$Version.0") "setup version resource: '$pv' / $($vi.FileVersionRaw)"
     $bytes = [IO.File]::ReadAllBytes($Installer)
     $text = [Text.Encoding]::ASCII.GetString($bytes)
     Assert ($text -match 'requestedExecutionLevel\s+level="asInvoker"') "setup manifest does not request asInvoker (would ask for admin rights)"
     Assert ($text -notmatch 'level="requireAdministrator"') "setup manifest requires administrator"
-    "$($fi.Name) {0:N1} MB; version {1}; manifest asInvoker (no elevation)" -f ($fi.Length / 1MB), $vi.ProductVersion
+    "$($fi.Name) {0:N1} MB; version {1}; manifest asInvoker (no elevation)" -f ($fi.Length / 1MB), $pv
 }
 
 # Метка в настоящем каталоге данных: установщик и деинсталлятор не должны её трогать
@@ -450,11 +452,18 @@ Step "WIN-2 standard (non-admin) user" {
         }
         $cred = [pscredential]::new("$env:COMPUTERNAME\$user", $secure)
         $log = Join-Path $shared "stduser-install.log"
+        # Процесс от имени другого пользователя наследует окружение этого: TEMP раннера ему недоступен,
+        # и установщику негде распаковаться (код 1). Даём общую временную папку.
+        $tmp = Join-Path $shared "tmp"; New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $oldTemp, $oldTmp = $env:TEMP, $env:TMP
+        $env:TEMP = $tmp; $env:TMP = $tmp
         try {
             $p = Start-Process -FilePath (Join-Path $shared ([IO.Path]::GetFileName($Installer))) -ArgumentList (Setup-Args $log) `
                  -Credential $cred -LoadUserProfile -WorkingDirectory $shared -PassThru
         } catch {
             return "BLOCKED: cannot start a process as a local standard user here: $($_.Exception.Message)"
+        } finally {
+            $env:TEMP = $oldTemp; $env:TMP = $oldTmp
         }
         $null = $p.Handle
         if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw "setup as $user did not finish" }
