@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import sqlite3
@@ -16,6 +17,7 @@ from typing import Iterator
 
 import paths
 
+log = logging.getLogger("musicmeta.library")
 _db: sqlite3.Connection | None = None
 _lock = threading.Lock()
 
@@ -89,12 +91,72 @@ def folder_path(folder: str, root: str | None = None) -> Path:
     return p
 
 
+# ---------- проверка путей из индекса (находка N3) ----------
+# Строки индекса читаются из базы и не считаются доверенными: папка загрузки — одно имя внутри своего
+# каталога загрузок, файлы — одно имя внутри этой папки. Строка, которая выводит за эти пределы
+# (../, абсолютный путь, другой диск, ссылка наружу), пропускается при чтении и пишется в журнал;
+# её файлы не читаются и не удаляются. Сама строка не удаляется: это данные пользователя.
+_warned: set[str] = set()
+_SEP = re.compile(r"[/\\:\x00]")
+
+
+def _component(name) -> bool:
+    """Ровно одно имя файла или папки: без разделителей, диска и ссылок на родителя."""
+    return (isinstance(name, str) and name not in ("", ".", "..") and not _SEP.search(name)
+            and Path(name).name == name)
+
+
+def _unsafe(row: sqlite3.Row, why: str) -> None:
+    if row["key"] not in _warned:
+        _warned.add(row["key"])
+        log.warning("Запись индекса загрузок %s пропущена: %s", row["key"], why)
+
+
+def _row_dir(row: sqlite3.Row) -> Path | None:
+    """Папка загрузки этой строки или None, если строка указывает за пределы своего каталога загрузок."""
+    root = row["root"]
+    if root and not Path(root).is_absolute():
+        _unsafe(row, "каталог загрузок записан относительным путём")
+        return None
+    if not _component(row["folder"]):
+        _unsafe(row, "имя папки выводит за пределы каталога загрузок")
+        return None
+    try:
+        return folder_path(row["folder"], root)
+    except (ValueError, OSError):
+        _unsafe(row, "папка разрешается за пределы каталога загрузок")
+        return None
+
+
+def _row_file(row: sqlite3.Row, column: str) -> Path | None:
+    name = row[column]
+    if not name:
+        return None
+    folder = _row_dir(row)
+    if folder is None:
+        return None
+    if not _component(name):
+        _unsafe(row, f"имя файла ({column}) выводит за пределы папки загрузки")
+        return None
+    return folder / name
+
+
+def owns_folder(row: sqlite3.Row) -> bool:
+    """Папку создал загрузчик Wave именно для этого трека: только такую папку можно удалить целиком."""
+    return row["folder"].endswith(f"[{row['source']}-{_clean(row['track_id'], 24)}]")
+
+
 # ---------- запросы ----------
 def _alive(row: sqlite3.Row | None) -> sqlite3.Row | None:
-    """Строка индекса, только если аудиофайл реально лежит на диске."""
+    """Строка индекса, только если она безопасна и аудиофайл реально лежит на диске."""
     if row is None:
         return None
-    if (folder_path(row["folder"], row["root"]) / row["audio"]).is_file():
+    if _row_dir(row) is None:
+        return None
+    audio = _row_file(row, "audio")
+    if audio is None:
+        return None
+    if audio.is_file():
         return row
     _q("DELETE FROM downloads WHERE key = ?", (row["key"],))
     return None
@@ -107,23 +169,19 @@ def get(source: str, track_id: str) -> sqlite3.Row | None:
 
 def audio_path(source: str, track_id: str) -> Path | None:
     row = get(source, track_id)
-    return folder_path(row["folder"], row["root"]) / row["audio"] if row else None
+    return _row_file(row, "audio") if row else None
 
 
 def lyrics_path(source: str, track_id: str) -> Path | None:
     row = get(source, track_id)
-    if not row or not row["lyrics"]:
-        return None
-    p = folder_path(row["folder"], row["root"]) / row["lyrics"]
-    return p if p.is_file() else None
+    p = _row_file(row, "lyrics") if row else None
+    return p if p and p.is_file() else None
 
 
 def cover_path(source: str, track_id: str) -> Path | None:
     row = get(source, track_id)
-    if not row or not row["cover"]:
-        return None
-    p = folder_path(row["folder"], row["root"]) / row["cover"]
-    return p if p.is_file() else None
+    p = _row_file(row, "cover") if row else None
+    return p if p and p.is_file() else None
 
 
 def list_items() -> list[sqlite3.Row]:
@@ -140,15 +198,35 @@ def add(**f) -> None:
     )
 
 
+class FolderKept(Exception):
+    """Запись индекса удалена, а папку Wave не тронул: она не создана загрузчиком для этого трека."""
+
+    def __init__(self, folder: Path | None):
+        super().__init__(str(folder) if folder else "")
+        self.folder = folder
+
+
 def delete(source: str, track_id: str) -> bool:
-    """Удаляет папку трека целиком (аудио, обложка, текст, metadata), затем запись индекса."""
+    """
+    Удаляет папку трека целиком (аудио, обложка, текст, metadata), затем запись индекса.
+
+    Целиком удаляется только папка внутри каталога загрузок с хвостом имени [источник-id] этого трека.
+    Если запись указывает куда-то ещё (повреждённая или чужая строка базы), удаляется только запись,
+    файлы остаются на месте, а вызывающий получает FolderKept.
+    """
     rows = _q("SELECT * FROM downloads WHERE key = ?", (f"{source}:{track_id}",))
     if not rows:
         return False
-    folder = folder_path(rows[0]["folder"], rows[0]["root"])
+    row = rows[0]
+    folder = _row_dir(row)
+    if folder is None or not owns_folder(row):
+        if folder is not None:
+            _unsafe(row, "имя папки создано не загрузчиком Wave, удаляется только запись индекса")
+        _q("DELETE FROM downloads WHERE key = ?", (row["key"],))
+        raise FolderKept(folder)
     if folder.exists():
         shutil.rmtree(folder)          # при ошибке бросит OSError: запись индекса остаётся
-    _q("DELETE FROM downloads WHERE key = ?", (f"{source}:{track_id}",))
+    _q("DELETE FROM downloads WHERE key = ?", (row["key"],))
     return True
 
 

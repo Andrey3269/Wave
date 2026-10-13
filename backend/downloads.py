@@ -195,6 +195,10 @@ def remove_download(source: str, track_id: str):
     _check(source, track_id)
     try:
         library.delete(source, track_id)
+    except library.FolderKept:
+        # Запись указывала не на папку, созданную Wave для этого трека: её файлы не трогаем (N3).
+        # Путь в ответ не отдаём, он остаётся в журнале.
+        return {"ok": True, "files_kept": True}
     except OSError as exc:
         log.warning("Удаление %s:%s не удалось: %r", source, track_id, exc)
         raise HTTPException(500, "Не удалось удалить локальную копию. Попробуйте ещё раз.") from exc
