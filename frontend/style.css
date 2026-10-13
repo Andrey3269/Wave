@@ -235,6 +235,10 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .tbtn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 36px; height: 36px; padding: 0 8px; border-radius: var(--r-s); color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tbtn:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 .tbtn.is-fav, .tbtn.is-done, .tbtn:disabled { color: var(--accent); }
+/* Загрузка (S5): источник не разрешил сохранить трек — приглушённая перечёркнутая стрелка; временная ошибка — акцент с «!» */
+.tbtn.is-denied, .abtn.is-denied { color: var(--faint); }
+.tbtn.is-denied::after { content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 2px; margin: -1px 0 0 -10px; border-radius: 1px; background: currentColor; transform: rotate(-45deg); pointer-events: none; }
+.tbtn.is-error, .abtn.is-error { color: var(--accent); }
 
 /* Секции и горизонтальные ряды */
 .sec { margin-top: 36px; }

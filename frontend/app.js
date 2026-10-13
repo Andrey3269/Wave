@@ -186,6 +186,8 @@
     settings: { autoplay: true, theme: "auto", volume: 1, last_volume: 1, lyrics_visible: true, profile_name: "", mix_covers: {} },
     dl: new Map(),     // скачанные треки: "source:id" -> трек
     jobs: {},          // активные загрузки с сервера
+    dlDenied: new Map(),   // "source:id" -> причина окончательного отказа источника (на время сессии)
+    dlTitles: new Map(),   // "source:id" -> название (для сообщений о готовности и ошибке)
     query: "", offset: 0, more: false, loadingMore: false,
     shuffle: false, repeat: false, seeking: false, errors: 0,
     searchCtl: null, baseStatus: "",
@@ -2049,7 +2051,8 @@
       if (state.view === "playlist" && anchor.closest("#tracks")) items.push(["unlist", "Убрать из плейлиста", "i-trash"]);
       items.push(["artist", "Перейти к исполнителю", "i-user"]);
       if (track.album) items.push(["album", "Открыть альбом", "i-disc"]);
-      items.push(["download", downloaded ? "Удалить загрузку" : "Скачать", downloaded ? "i-trash" : "i-download"]);
+      const denied = !downloaded && state.dlDenied.has(trackKey(track));
+      items.push(["download", downloaded ? "Удалить загрузку" : denied ? "Скачивание недоступно" : "Скачать", downloaded ? "i-trash" : "i-download"]);
       items.push(["share", "Поделиться", "i-share"]);
     }
     el.menu.replaceChildren(...items.map(([act, label, ico]) => {
@@ -2136,20 +2139,45 @@
   // Загрузки и офлайн: скачать, удалить, «Скачанные»
   // ==========================================================================
   const BUSY = ["preparing", "downloading", "processing"];
+  // Разрешение на сохранение проверяет backend (download_policy.py, S5). Эти коды — окончательный отказ
+  // источника для конкретного трека: повторять запрос бессмысленно, кнопка показывает причину.
+  // Остальные ошибки (сеть, лимит запросов, сбой) временные: кнопка предлагает повторить.
+  const DL_FINAL = ["download_not_permitted", "license_unknown", "permission_unknown", "download_limit_reached",
+    "auth_required", "unsupported_format", "age_restricted", "unavailable", "no_direct_stream"];
+  const DL_STAGE = { preparing: "Подготовка", downloading: "Скачивание", processing: "Обработка" };
+  const mb = (n) => `${(n / 1048576).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
 
-  /** Рисует кнопку загрузки: скачать / процент / скачано (клик = удалить). */
+  /** Что сейчас с загрузкой трека: done | busy | denied | error | idle (+ текст для кнопки и подсказки). */
+  function dlStatus(t) {
+    const key = trackKey(t), job = state.jobs[key];
+    if (state.dl.has(key)) return { kind: "done", short: "Скачано", label: "Скачано. Нажми, чтобы удалить локальную копию" };
+    if (job && BUSY.includes(job.state)) {
+      const stage = DL_STAGE[job.state];
+      let pct = "…";
+      if (job.state === "downloading") pct = job.total ? `${job.progress || 0}%` : job.received ? mb(job.received) : "…";
+      return { kind: "busy", short: stage, pct, label: job.state === "downloading" ? `${stage}: ${pct}` : `${stage}…` };
+    }
+    const denied = state.dlDenied.get(key);
+    if (denied) return { kind: "denied", short: "Недоступно", label: `Скачивание недоступно. ${denied}` };
+    if (job && job.state === "error") return { kind: "error", short: "Ошибка", label: `Ошибка: ${job.error || "не удалось скачать"} Нажми, чтобы повторить.` };
+    return { kind: "idle", short: "Скачать", label: "Скачать" };
+  }
+
+  /** Рисует кнопку загрузки: скачать / этап и прогресс / скачано (клик = удалить) / недоступно / ошибка. */
   function paintDl(btn, t) {
-    const key = trackKey(t), job = state.jobs[key], done = state.dl.has(key);
-    const busy = !done && job && BUSY.includes(job.state);
-    const label = done ? "Скачано. Нажми, чтобы удалить" : busy ? "Скачивается" : "Скачать";
-    btn.classList.toggle("is-done", done);
-    btn.disabled = !!busy;
-    btn.title = label;
-    btn.setAttribute("aria-label", label);
-    btn.querySelector("use").setAttribute("href", done ? "#i-check" : "#i-download");
-    btn.querySelector(".track__pct").textContent = busy ? `${job.progress || 0}%` : "";
+    const st = dlStatus(t);
+    btn.classList.toggle("is-done", st.kind === "done");
+    btn.classList.toggle("is-busy", st.kind === "busy");
+    btn.classList.toggle("is-denied", st.kind === "denied");
+    btn.classList.toggle("is-error", st.kind === "error");
+    btn.disabled = st.kind === "busy";
+    btn.dataset.dl = st.kind;
+    btn.title = st.label;
+    btn.setAttribute("aria-label", st.label);
+    btn.querySelector("use").setAttribute("href", st.kind === "done" ? "#i-check" : "#i-download");
+    btn.querySelector(".track__pct").textContent = st.kind === "busy" ? st.pct || "" : st.kind === "error" ? "!" : "";
     const txt = btn.querySelector(".abtn__t");
-    if (txt) txt.textContent = done ? "Скачано" : busy ? "Скачивается" : "Скачать";
+    if (txt) txt.textContent = st.short;
   }
   function repaintDl() {
     $$(".track__dl", el.tracks).forEach((b) => { const t = rowTrack(b); if (t) paintDl(b, t); });
@@ -2164,33 +2192,46 @@
     repaintDl();
   }
   let polling = false;
-  const seenErrors = new Set();
+  const seenFinished = new Set();
+  /** Итог задачи — один раз: отказ запоминается для трека, ошибка и готовность показываются тостом. */
+  function noteFinished(key, j) {
+    const id = key + j.finished_at;
+    if (seenFinished.has(id)) return;
+    seenFinished.add(id);
+    const title = state.dlTitles.get(key);
+    if (j.state === "done") { if (title) toast(`Готово: «${title}» сохранён на компьютер`); return; }
+    if (j.state !== "error") return;
+    if (DL_FINAL.includes(j.code)) state.dlDenied.set(key, j.error);
+    toast(title ? `«${title}»: ${j.error}` : j.error, 6000);
+  }
   async function pollJobs() {
     if (polling) return;
     polling = true;
     try {
       for (;;) {
         state.jobs = await api("/api/downloads/jobs");
-        for (const [k, j] of Object.entries(state.jobs)) {
-          if (j.state === "error" && !seenErrors.has(k + j.finished_at)) { seenErrors.add(k + j.finished_at); toast(j.error); }
-        }
-        repaintDl();
+        for (const [k, j] of Object.entries(state.jobs)) if (j.finished_at) noteFinished(k, j);
+        if (Object.values(state.jobs).some((j) => j.state === "done")) await refreshDownloads(); else repaintDl();
         if (!Object.values(state.jobs).some((j) => BUSY.includes(j.state))) break;
         await new Promise((r) => setTimeout(r, 800));
       }
       await refreshDownloads();
-      if (state.view === "downloads") setStatus(state.dl.size ? `Скачано: ${state.dl.size}` : "");
+      if (state.view === "downloads") { await showDownloads(); }
     } catch { /* сеть пропала: опрос возобновится при следующей загрузке */ } finally { polling = false; }
   }
   async function startDownload(t) {
-    state.jobs[trackKey(t)] = { state: "preparing", progress: 0 };
+    const key = trackKey(t);
+    state.dlTitles.set(key, t.title);
+    state.dlDenied.delete(key);
+    state.jobs[key] = { state: "preparing", progress: 0 };
     repaintDl();
     try {
-      await api("/api/downloads", jsonOpts("POST", { source: t.source, id: t.id, title: t.title, artist: t.artist, album: t.album, duration: t.duration, cover: t.cover }));
-      toast("Загрузка началась");
+      const j = await api("/api/downloads", jsonOpts("POST", { source: t.source, id: t.id, title: t.title, artist: t.artist, album: t.album, duration: t.duration, cover: t.cover }));
+      if (j.state === "done") { await refreshDownloads(); toast(`«${t.title}» уже скачан`); return; }
+      toast("Проверяем, разрешает ли источник сохранить трек…");
       pollJobs();
     } catch (e) {
-      delete state.jobs[trackKey(t)];
+      delete state.jobs[key];
       repaintDl();
       toast(`Не удалось начать загрузку: ${e.message}`);
     }
@@ -2198,12 +2239,21 @@
   async function removeDownload(t) {
     if (!await askConfirm({ title: "Удалить загрузку?", text: `Локальная копия «${t.title}» будет удалена с компьютера. Сам трек останется доступным онлайн.`, ok: "Удалить" })) return;
     try {
-      await api(`/api/downloads/${t.source}/${enc(t.id)}`, { method: "DELETE" });
+      const r = await api(`/api/downloads/${t.source}/${enc(t.id)}`, { method: "DELETE" });
       state.dl.delete(trackKey(t));
+      if (r.files_kept) toast("Запись удалена из «Скачанных». Файлы на диске не тронуты: их папку создал не Wave.", 6000);
+      else toast("Локальная копия удалена");
       if (state.view === "downloads") await showDownloads(); else repaintDl();
     } catch (e) { toast(e.message); }
   }
-  const toggleDownload = (t) => (state.dl.has(trackKey(t)) ? removeDownload(t) : startDownload(t));
+  function toggleDownload(t) {
+    const key = trackKey(t);
+    if (state.dl.has(key)) return removeDownload(t);
+    const denied = state.dlDenied.get(key);
+    if (denied) { toast(`Скачивание недоступно. ${denied}`, 6000); return; }
+    if (state.jobs[key] && BUSY.includes(state.jobs[key].state)) return;
+    return startDownload(t);
+  }
 
   async function showDownloads() {
     state.reopen = () => showDownloads();
@@ -2214,7 +2264,8 @@
     const items = [...state.dl.values()];
     el.resultsTitle.textContent = "Скачанные";
     setTracks(items);
-    setBlock(el.empty, items.length ? "" : "Здесь появятся треки, которые ты скачал. Они играют без интернета.");
+    setBlock(el.empty, items.length ? "" : "Здесь появятся треки, которые ты скачал. Они играют без интернета. "
+      + "Сохранить можно только то, что разрешает источник: видео YouTube под лицензией Creative Commons и треки SoundCloud, для которых автор включил скачивание.");
     const active = Object.values(state.jobs).filter((j) => BUSY.includes(j.state)).length;
     setStatus(items.length || active ? `Скачано: ${items.length}${active ? ` · загружается: ${active}` : ""}` : "");
     layout();

@@ -124,6 +124,62 @@ RECS = {"mode": "normal"}             # ещё personal: лента собран
 # Режим /api/stream/: normal | js_runtime (нет JS-runtime Deno — ответ backend из S3, stream._runtime_error)
 STREAM = {"mode": "normal"}
 JS_RUNTIME_DETAIL = "Компонент воспроизведения YouTube (Deno) не найден или повреждён. Переустановите приложение."
+# Загрузки (S5). Скачать по-настоящему в e2e нечего (источников нет), поэтому на время раздела «Загрузки»
+# /api/downloads* отвечает этот скрипт: этапы задаёт тест (DL["stage"]), исходы — DL_OUTCOME. Вне раздела
+# запросы уходят в настоящий backend. Сама загрузка, политика источников и воспроизведение с диска
+# проверяются API-тестами (tests/api/test_downloads.py, test_download_policy.py).
+DL = {"mock": False, "stage": {}, "posts": [], "done": {}}
+DL_DENIED_TEXT = ("YouTube не разрешает сохранять этот трек: скачать можно только видео под лицензией "
+                  "Creative Commons. Слушать его можно как обычно.")
+DL_OUTCOME = {"trk00000041": ("error", "download_not_permitted", DL_DENIED_TEXT),
+              "trk00000042": ("error", "network", "Нет связи с YouTube Music. Проверьте подключение к интернету.")}
+
+
+def dl_job(tid: str) -> dict:
+    stage = DL["stage"][tid]
+    if isinstance(stage, tuple):                                       # готовый исход: ошибка с кодом
+        _, code, text = stage
+        return {"state": "error", "progress": 0, "error": text, "code": code, "received": 0, "total": None,
+                "finished_at": 1.0}
+    job = {"state": stage, "progress": 0, "error": None, "code": None, "received": 0, "total": None}
+    if stage == "downloading":
+        job.update(progress=40, received=400_000, total=1_000_000)
+    elif stage == "processing":
+        job.update(progress=99, received=1_000_000, total=1_000_000)
+    elif stage == "done":
+        job.update(progress=100, received=1_000_000, total=1_000_000, finished_at=2.0)
+    return job
+
+
+def dl_mock(route: Route, path: str) -> bool:
+    req = route.request
+    if path == "/api/downloads" and req.method == "POST":
+        body = req.post_data_json
+        DL["posts"].append(body["id"])
+        if body["id"] in DL["done"]:
+            js(route, {"state": "done", "progress": 100})
+            return True
+        outcome = DL_OUTCOME.get(body["id"])
+        DL["stage"][body["id"]] = outcome if outcome else "preparing"
+        js(route, {"state": "preparing", "progress": 0, "error": None, "code": None}, 202)
+        return True
+    if path == "/api/downloads/jobs":
+        jobs = {f"yt:{tid}": dl_job(tid) for tid in DL["stage"]}
+        for tid, stage in list(DL["stage"].items()):
+            if stage == "done":
+                DL["done"][tid] = {**track(int(tid[3:])), "downloaded": True, "size": 1_000_000, "has_lyrics": False}
+        js(route, jobs)
+        return True
+    if path == "/api/downloads" and req.method == "GET":
+        js(route, {"items": list(DL["done"].values()), "dir": "e2e"})
+        return True
+    m = re.match(r"^/api/downloads/yt/(\w+)$", path)
+    if m and req.method == "DELETE":
+        DL["done"].pop(m.group(1), None)
+        DL["stage"].pop(m.group(1), None)
+        js(route, {"ok": True})
+        return True
+    return False
 
 
 def handle(route: Route) -> None:
@@ -133,6 +189,9 @@ def handle(route: Route) -> None:
 
     if "googleusercontent.com" in u.netloc:
         return route.fulfill(status=200, content_type="image/svg+xml", body=cover_svg(req.url))
+
+    if DL["mock"] and path.startswith("/api/downloads") and dl_mock(route, path):
+        return None
 
     if path.startswith("/api/stream/"):
         if q.get("warm"):
@@ -573,6 +632,8 @@ def main() -> int:
         page.click(".nav__item[data-view=downloads]")
         page.wait_for_selector("#empty:not([hidden])")
         check("скачал" in page.inner_text("#empty"), "пустое состояние «Скачанные»")
+        check("Creative Commons" in page.inner_text("#empty") and "автор включил скачивание" in page.inner_text("#empty"),
+              "«Скачанные» не обещают скачивание всего: названы условия источников")
         page.screenshot(path=str(SHOTS / "14-downloads.png"))
         page.click(".nav__item[data-view=settings]")
         page.wait_for_selector("#view-settings:not([hidden])")
@@ -594,6 +655,76 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#audio').currentTime > 0.2 || !document.querySelector('#audio').paused")
         check(page.locator("#mixes .mix.is-active").count() == 1, "играющий микс отмечен в панели")
         page.screenshot(path=str(SHOTS / "16-mix.png"))
+
+        print("Загрузки (S5)")
+        DL["mock"] = True
+        page.fill("#search-input", "gspd")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")                       # вкладка «Артисты» осталась от раздела поиска
+        page.wait_for_selector("#tracks .row:not(.row--skel)")
+        row_dl = "#tracks .row:nth-child({}) .track__dl".format
+        label_starts = "([s, t]) => (document.querySelector(s)?.getAttribute('aria-label') || '').startsWith(t)"
+        has_class = "([s, c]) => !!document.querySelector(s)?.classList.contains(c)"
+        toast_has = "(t) => (document.querySelector('#toast')?.innerText || '').includes(t)"
+        ok_id = "trk00000040"
+        page.click(row_dl(1))
+        page.wait_for_function(label_starts, arg=[row_dl(1), "Подготовка"])
+        check(page.is_disabled(row_dl(1)) and DL["posts"] == [ok_id], "«Скачать»: запрос ушёл, этап «Подготовка», кнопка занята")
+        DL["stage"][ok_id] = "downloading"
+        page.wait_for_function(label_starts, arg=[row_dl(1), "Скачивание: 40%"])
+        check(page.inner_text(row_dl(1) + " .track__pct") == "40%", "этап «Скачивание» с реальным процентом от backend")
+        page.screenshot(path=str(SHOTS / "16b-download-progress.png"))
+        DL["stage"][ok_id] = "processing"
+        page.wait_for_function(label_starts, arg=[row_dl(1), "Обработка"])
+        check(True, "этап «Обработка» (обложка, текст, metadata.json)")
+        DL["stage"][ok_id] = "done"
+        page.wait_for_function(has_class, arg=[row_dl(1), "is-done"])
+        page.wait_for_function(toast_has, arg="Готово")
+        check(page.get_attribute(row_dl(1), "aria-label").startswith("Скачано") and not page.is_disabled(row_dl(1)),
+              "готово: тост «Готово», кнопка «Скачано» (нажатие — удалить)")
+
+        page.click(row_dl(2))
+        page.wait_for_function(has_class, arg=[row_dl(2), "is-denied"])
+        page.wait_for_function(toast_has, arg="Creative Commons")
+        check("Creative Commons" in page.get_attribute(row_dl(2), "title"),
+              "отказ источника: причина в подсказке кнопки и в сообщении, вместо бесконечного прогресса")
+        posts = len(DL["posts"])
+        page.click(row_dl(2))
+        page.wait_for_function(toast_has, arg="Скачивание недоступно")
+        check(len(DL["posts"]) == posts, "повторное нажатие на недоступный трек объясняет причину и не шлёт запрос")
+        page.click("#tracks .row:nth-child(2) .track__more")
+        check(page.inner_text("#menu [data-act=download]") == "Скачивание недоступно", "меню трека не обещает недоступное скачивание")
+        page.keyboard.press("Escape")
+        page.screenshot(path=str(SHOTS / "16c-download-denied.png"))
+
+        page.click(row_dl(3))
+        page.wait_for_function(has_class, arg=[row_dl(3), "is-error"])
+        check("повторить" in page.get_attribute(row_dl(3), "aria-label"), "временная ошибка: причина и предложение повторить")
+        DL_OUTCOME.pop("trk00000042")
+        posts = len(DL["posts"])
+        page.click(row_dl(3))
+        page.wait_for_function(label_starts, arg=[row_dl(3), "Подготовка"])
+        check(len(DL["posts"]) == posts + 1, "после временной ошибки загрузку можно запустить снова")
+        DL["stage"]["trk00000042"] = "done"
+        page.wait_for_function(has_class, arg=[row_dl(3), "is-done"])
+
+        page.click(".nav__item[data-view=downloads]")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 2")
+        check(page.locator("#tracks .row .track__dl.is-done").count() == 2 and "Скачано: 2" in page.inner_text("body"),
+              "«Скачанные»: оба готовых трека в списке")
+        page.screenshot(path=str(SHOTS / "16d-downloads-list.png"))
+        page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        page.wait_for_function("(id) => document.querySelector('#audio').src.includes(id)", arg=ok_id)
+        check(audio_state(page)["src"].endswith(f"/api/stream/yt/{ok_id}"),
+              "скачанный трек играет через тот же /api/stream (backend отдаёт файл с диска)")
+        page.click(row_dl(1))
+        page.wait_for_selector("#dlg-confirm[open]")
+        page.click("#dc-ok")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 1")
+        check(ok_id not in DL["done"] and page.locator("#tracks .row").count() == 1, "удаление локальной копии с подтверждением")
+        DL["mock"] = False
+        DL["stage"].clear()
+        DL["done"].clear()
 
         print("Узкое окно (980x640) и светлая тема")
         page.set_viewport_size({"width": 980, "height": 640})
