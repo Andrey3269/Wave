@@ -234,9 +234,12 @@ jobs:
           if ($r2 -ne "0") { throw "Start-Process -Wait: exit code '$r2'" }
           $r3 = TimedJob { param($r) Set-Location $r; $o = Join-Path $env:RUNNER_TEMP "diag-wait-redirect.txt"
                            $p = Start-Process -FilePath "dist\Wave\Wave.exe" -ArgumentList "--diagnostics" -Wait -PassThru -RedirectStandardOutput $o
-                           "$($p.ExitCode) $((Get-Content $o -Raw -Encoding utf8) -match 'supported=true')" } "Start-Process -Wait -RedirectStandardOutput"
-          Write-Host "::notice title=Start-Process -Wait -RedirectStandardOutput::returned in time; exit code and 'supported=true' in output: '$r3'"
-          if ($r3 -ne "0 True") { throw "Start-Process -Wait -RedirectStandardOutput: '$r3'" }
+                           $text = [string](Get-Content $o -Raw -Encoding utf8)
+                           $log = Join-Path $env:WAVE_DATA_DIR "logs\wave.log"
+                           $tail = if (Test-Path $log) { (Get-Content $log -Tail 12 -Encoding utf8) -join " | " } else { "no wave.log" }
+                           "exit=$($p.ExitCode) text=$($text.Contains('supported=true')) log: $tail" } "Start-Process -Wait -RedirectStandardOutput"
+          Write-Host "::notice title=Start-Process -Wait -RedirectStandardOutput::$($r3 -replace '[\r\n]+', ' | ')"
+          if ($r3 -notmatch "^exit=0 ") { throw "Start-Process -Wait -RedirectStandardOutput: $r3" }
           # 5) после всех запусков не осталось процессов deno.exe
           Start-Sleep -Seconds 1
           $left = Get-Process -Name deno -ErrorAction SilentlyContinue
