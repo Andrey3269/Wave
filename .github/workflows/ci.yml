@@ -234,10 +234,11 @@ jobs:
           if ($r2 -ne "0") { throw "Start-Process -Wait: exit code '$r2'" }
           $r3 = TimedJob { param($r) Set-Location $r; $o = Join-Path $env:RUNNER_TEMP "diag-wait-redirect.txt"
                            $p = Start-Process -FilePath "dist\Wave\Wave.exe" -ArgumentList "--diagnostics" -Wait -PassThru -RedirectStandardOutput $o
-                           $text = [string](Get-Content $o -Raw -Encoding utf8)
+                           $text = Get-Content $o -Raw -Encoding utf8          # пустой файл -> $null
+                           $has = "$text" -match "supported=true"
                            $log = Join-Path $env:WAVE_DATA_DIR "logs\wave.log"
                            $tail = if (Test-Path $log) { (Get-Content $log -Tail 12 -Encoding utf8) -join " | " } else { "no wave.log" }
-                           "exit=$($p.ExitCode) text=$($text.Contains('supported=true')) log: $tail" } "Start-Process -Wait -RedirectStandardOutput"
+                           "exit=$($p.ExitCode) text=$has log: $tail" } "Start-Process -Wait -RedirectStandardOutput"
           Write-Host "::notice title=Start-Process -Wait -RedirectStandardOutput::$($r3 -replace '[\r\n]+', ' | ')"
           if ($r3 -notmatch "^exit=0 ") { throw "Start-Process -Wait -RedirectStandardOutput: $r3" }
           # 5) после всех запусков не осталось процессов deno.exe
