@@ -27,6 +27,8 @@ import json, os, sys, time
 here = os.path.dirname(os.path.abspath(__file__))
 cfg = json.load(open(os.path.join(here, "fake_deno.json"), encoding="utf-8"))
 args = sys.argv[1:]
+with open(os.path.join(here, "pids.txt"), "a", encoding="utf-8") as f:
+    f.write(f"{os.getpid()}\n")
 
 def hang():
     sys.stdout.flush()
@@ -85,6 +87,22 @@ def calls(folder: Path) -> list[dict]:
     if not f.exists():
         return []
     return [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def pids(folder: Path) -> list[int]:
+    f = folder / "pids.txt"
+    return [int(x) for x in f.read_text(encoding="utf-8").split()] if f.exists() else []
+
+
+def pid_alive(pid: int) -> bool:
+    """POSIX: есть ли процесс (зомби уже собран родителем, иначе он считается живым)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def make_broken_executable(path: Path) -> Path:

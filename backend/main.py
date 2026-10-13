@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from ytmusicapi import YTMusic
 
 import catalog
+import diagnostics
 import jsruntime
 import library
 import paths
@@ -325,6 +326,15 @@ app.include_router(catalog.router)  # /api/search/{artists|albums}, /api/artist,
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/diagnostics")
+async def diagnostics_report():
+    """
+    Состояние компонентов воспроизведения YouTube (yt-dlp, yt-dlp-ejs, JS-runtime) без обращения к сети.
+    Подтверждает конфигурацию, а не воспроизведение (поле playback_verified=false). Секретов не содержит.
+    """
+    return await asyncio.to_thread(diagnostics.collect, True)
 
 
 @app.get("/api/search", response_model=SearchResponse)

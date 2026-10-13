@@ -16,8 +16,10 @@ YouTube. Они учитываются в jsruntime.GUARD: без окна ко�
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import ctypes
+import json
 import logging
 import os
 import socket
@@ -27,6 +29,7 @@ import time
 import urllib.request
 
 # Оконное приложение (console=False) запускается без stdout/stderr, а библиотеки в них пишут.
+_NO_STDOUT = sys.stdout is None          # для --diagnostics: вывод придётся искать отдельно (_cli_stream)
 for _name in ("stdout", "stderr"):
     if getattr(sys, _name) is None:
         setattr(sys, _name, open(os.devnull, "w", encoding="utf-8"))
@@ -252,7 +255,95 @@ def _check_runtime() -> None:
         log.exception("Проверка JS-runtime не удалась")
 
 
-def main() -> int:
+# ---------------------------------------------------------------------------
+# Командная строка: Wave.exe --diagnostics [--live <videoId>] [--json] [--output <файл.json>]
+# ---------------------------------------------------------------------------
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """Неизвестные аргументы игнорируются: обычный запуск (в т.ч. с чужими аргументами) не ломается."""
+    ap = argparse.ArgumentParser(prog="Wave", description="Wave / «ВОЛНА»")
+    ap.add_argument("--diagnostics", action="store_true",
+                    help="проверить компоненты воспроизведения YouTube без окна и сети, код возврата 0 или 1")
+    ap.add_argument("--live", metavar="VIDEO_ID",
+                    help="вместе с диагностикой получить поток публичного трека YouTube (нужна сеть)")
+    ap.add_argument("--json", action="store_true", help="вывести отчёт в JSON")
+    ap.add_argument("--output", metavar="FILE", help="записать отчёт в JSON-файл")
+    args, _unknown = ap.parse_known_args(argv)
+    return args
+
+
+def _cli_stream():
+    """
+    Куда писать отчёт. Wave.exe собран как оконное приложение (без консоли), поэтому:
+      1) запуск из исходников или с уже открытым stdout — обычный stdout;
+      2) Windows, вывод перенаправлен (`Wave.exe --diagnostics > out.txt`, конвейер) — этот дескриптор;
+      3) Windows, запуск из консоли — подключаемся к консоли родителя (cmd: `start /wait Wave.exe --diagnostics`,
+         иначе cmd не ждёт оконную программу).
+    Надёжный способ для сценариев — `--output файл.json` и код возврата. None — писать некуда.
+    """
+    if not _NO_STDOUT:
+        return sys.stdout
+    if not IS_WIN:
+        return None
+    import io
+    import msvcrt
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetStdHandle.argtypes = [wintypes.DWORD]
+    k32.GetStdHandle.restype = wintypes.HANDLE
+    k32.GetFileType.argtypes = [wintypes.HANDLE]
+    k32.GetFileType.restype = wintypes.DWORD
+    k32.AttachConsole.argtypes = [wintypes.DWORD]
+    k32.AttachConsole.restype = wintypes.BOOL
+    handle = k32.GetStdHandle(0xFFFFFFF5)                       # STD_OUTPUT_HANDLE (-11)
+    invalid = ctypes.c_void_p(-1).value
+    if handle and handle != invalid and k32.GetFileType(handle) in (1, 3):   # FILE_TYPE_DISK, FILE_TYPE_PIPE
+        return open(msvcrt.open_osfhandle(int(handle), 0), "w", encoding="utf-8", closefd=False)
+    if k32.AttachConsole(0xFFFFFFFF):                           # ATTACH_PARENT_PROCESS
+        try:
+            return io.TextIOWrapper(io._WindowsConsoleIO("CONOUT$", "w"), encoding="utf-8", line_buffering=True)
+        except (AttributeError, OSError):
+            return open("CONOUT$", "w", encoding="utf-8")
+    return None
+
+
+def run_diagnostics(args: argparse.Namespace) -> int:
+    """Без окна, без WebView2 и без проверки единственного экземпляра: работает и рядом с запущенным Wave."""
+    applog.setup()
+    log.info("Диагностика (frozen=%s, live=%s)", getattr(sys, "frozen", False), bool(args.live))
+    code = 1
+    text = ""
+    try:
+        import diagnostics
+
+        report = diagnostics.collect(refresh=True)
+        if args.live:
+            report["live"] = diagnostics.live_check(args.live)
+        code = diagnostics.exit_code(report)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+        text = json.dumps(report, ensure_ascii=False, indent=2) if args.json else diagnostics.format_text(report)
+        log.info("Диагностика: код %d, проблемы: %s", code, [i["code"] for i in report["issues"]] or "нет")
+    except Exception as exc:                                      # отчёт об ошибке вместо молчаливого выхода
+        log.exception("Диагностика не выполнена")
+        text = f"Диагностика не выполнена: {type(exc).__name__}: {exc}"
+    finally:
+        jsruntime.terminate_children()
+    out = _cli_stream()
+    if out is not None:
+        try:
+            out.write(text + "\n")
+            out.flush()
+        except OSError:
+            pass
+    return code
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.diagnostics or args.live:
+        return run_diagnostics(args)
     applog.setup()
     log.info("Wave Desktop запускается (frozen=%s)", getattr(sys, "frozen", False))
     if IS_WIN:
