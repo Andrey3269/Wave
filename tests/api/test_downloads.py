@@ -99,6 +99,27 @@ def test_upstream_without_range_support(dl):
     assert len(dl.net.cdn_requests(CDN)) == 1
 
 
+def test_progress_follows_received_bytes(dl):
+    """Перед каждой порцией задача показывает уже полученные байты и честный процент; 100 — только после done."""
+    seen: list[dict] = []
+
+    def snapshot_then_serve(request):
+        seen.append(dict(downloads.jobs[KEY]))
+        return dl.net.serve_file(request)
+
+    dl.net.queue(CDN, *[snapshot_then_serve] * 3)               # 10 000 байт порциями по 4096 → 3 запроса
+    dl.post("/api/downloads", json=REQ)
+    job = wait_job(dl)
+
+    assert [(s["state"], s["received"], s["total"], s["progress"]) for s in seen] == [
+        ("downloading", 0, None, 0),
+        ("downloading", 4096, len(DATA), 40),
+        ("downloading", 8192, len(DATA), 81),
+    ]
+    assert job["state"] == "done" and job["progress"] == 100
+    assert job["received"] == job["total"] == len(DATA)
+
+
 def test_unknown_total_size(dl):
     dl.net.unknown_total = True
     dl.post("/api/downloads", json=REQ)
