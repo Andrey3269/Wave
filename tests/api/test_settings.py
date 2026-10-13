@@ -12,7 +12,8 @@ import stream
 
 
 DEFAULT_VALUES = {"default_source": "yt", "autoplay": True, "theme": "auto",
-                  "volume": 1.0, "last_volume": 1.0, "lyrics_visible": True, "profile_name": "", "mix_covers": {}}
+                  "volume": 1.0, "last_volume": 1.0, "lyrics_visible": True, "profile_name": "", "mix_covers": {},
+                  "history_limit": 10_000}                                  # S6: ретеншн истории
 
 
 def test_defaults_and_paths(api):

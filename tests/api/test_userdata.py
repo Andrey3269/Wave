@@ -178,6 +178,65 @@ def test_clear_history(api, method, url):
     assert len(api.get("/api/favorites").json()["items"]) == 1          # избранное не тронуто
 
 
+# ---------------------------------------------------------------------------
+# Ретеншн истории (S6)
+# ---------------------------------------------------------------------------
+def test_history_limit_setting_defaults_and_validation(api):
+    assert api.get("/api/settings").json()["values"]["history_limit"] == 10_000
+    for good in (1000, 25_000, 100_000, "5000"):
+        r = api.put("/api/settings", json={"history_limit": good})
+        assert r.status_code == 200 and r.json()["values"]["history_limit"] == int(good)
+    for bad in (999, 100_001, 0, -5, 1.5, True, "", "много", "5000²", "²", "+5000", None, [1000]):
+        assert api.put("/api/settings", json={"history_limit": bad}).status_code == 400, bad
+    assert api.get("/api/settings").json()["values"]["history_limit"] == 5000
+
+
+def test_history_keeps_only_last_records(api, monkeypatch):
+    monkeypatch.setattr(userdata, "HISTORY_LIMIT_MIN", 1)          # маленький лимит, чтобы не писать 10 000 строк
+    api.post("/api/favorites", json=track_payload(id_=A))
+    pid = api.post("/api/playlists", json={"name": "P"}).json()["id"]
+    api.post(f"/api/playlists/{pid}/tracks", json=track_payload(id_=A))
+    assert api.put("/api/settings", json={"history_limit": 3}).status_code == 200
+    for i in range(6):
+        _play(api, f"EEEEEEEEEE{i}")
+    rows = api.profile.sql("SELECT key FROM history ORDER BY id")
+    assert rows == [(f"yt:EEEEEEEEEE{i}",) for i in (3, 4, 5)]
+    assert [t["id"] for t in api.get("/api/history").json()["tracks"]] == ["EEEEEEEEEE5", "EEEEEEEEEE4", "EEEEEEEEEE3"]
+    # другие данные не тронуты
+    assert len(api.get("/api/favorites").json()["items"]) == 1
+    assert api.get(f"/api/playlists/{pid}").json()["playlist"]["count"] == 1
+    assert api.get("/api/settings").json()["values"]["history_limit"] == 3
+
+
+def test_lower_limit_trims_immediately_and_at_startup(harness, monkeypatch):
+    monkeypatch.setattr(userdata, "HISTORY_LIMIT_MIN", 1)
+    with harness.client() as h:
+        for i in range(5):
+            _play(h, f"FFFFFFFFFF{i}")
+        h.put("/api/settings", json={"history_limit": 2})
+        assert h.profile.sql("SELECT key FROM history ORDER BY id") == [("yt:FFFFFFFFFF3",), ("yt:FFFFFFFFFF4",)]
+    # лишние строки появились мимо API (как в базе версии без ретеншна)
+    _write(harness.profile, "INSERT INTO history (key, data, played_at) VALUES (?, ?, ?)",
+           [(f"yt:GGGGGGGGGG{i}", "{}", float(i)) for i in range(4)])
+    with harness.client() as h:                                     # init() применяет лимит при запуске
+        assert h.profile.sql("SELECT key FROM history ORDER BY id") == [("yt:GGGGGGGGGG2",), ("yt:GGGGGGGGGG3",)]
+
+
+def test_corrupt_history_limit_falls_back_to_default(api):
+    _write(api.profile, "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [("history_limit", "мусор")])
+    assert api.get("/api/settings").json()["values"]["history_limit"] == 10_000
+    _play(api, A)                                                    # запись не падает и ничего лишнего не удаляет
+    assert api.profile.sql("SELECT COUNT(*) FROM history")[0][0] == 1
+
+
+def test_recommendations_still_see_recent_plays_after_trim(api, monkeypatch):
+    monkeypatch.setattr(userdata, "HISTORY_LIMIT_MIN", 1)
+    api.put("/api/settings", json={"history_limit": 2})
+    for i in range(4):
+        _play(api, f"HHHHHHHHHH{i}")
+    assert [p["key"] for p in userdata.recent_plays()] == ["yt:HHHHHHHHHH3", "yt:HHHHHHHHHH2"]
+
+
 def test_history_and_favorites_share_one_database_file(api):
     _play(api, A)
     api.post("/api/favorites", json=track_payload(id_=A))

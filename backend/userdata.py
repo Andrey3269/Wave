@@ -67,8 +67,16 @@ def _q(sql: str, args: tuple = ()):
 # Настройки интерфейса (громкость, тексты, имя профиля, обложки миксов) раньше жили в localStorage окна.
 # Он привязан к origin http://127.0.0.1:<порт>, а порт меняется при каждом запуске, поэтому значения терялись
 # (находка H3). Теперь источник правды — эта таблица; localStorage переносится сюда один раз (migrate-local).
+# Ретеншн истории (S6): хранятся последние history_limit прослушиваний, более старые удаляются при записи
+# нового. Пределы выбраны так, чтобы рекомендациям (recent_plays, 300 последних) и странице истории
+# (до 2050 уникальных треков) всегда хватало данных, а база не росла без ограничений.
+HISTORY_LIMIT_DEFAULT = 10_000
+HISTORY_LIMIT_MIN = 1_000
+HISTORY_LIMIT_MAX = 100_000
+
 DEFAULTS = {"default_source": "yt", "autoplay": "1", "theme": "auto",
-            "volume": "1", "last_volume": "1", "lyrics_visible": "1", "profile_name": "", "mix_covers": "{}"}
+            "volume": "1", "last_volume": "1", "lyrics_visible": "1", "profile_name": "", "mix_covers": "{}",
+            "history_limit": str(HISTORY_LIMIT_DEFAULT)}
 ALLOWED = {"default_source": {"yt", "sc"}, "autoplay": {"0", "1"}, "theme": {"auto", "dark", "light"}}
 UI_KEYS = ("volume", "last_volume", "lyrics_visible", "profile_name", "mix_covers")
 MIGRATED_KEY = "ui_local_migrated"      # служебная отметка: перенос из localStorage уже был
@@ -77,6 +85,7 @@ MIX_COVERS_MAX = 16
 _COVER_PREFIXES = ("https://", "http://", "/api/local/")
 _THEME_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_DIGITS = re.compile(r"[0-9]{1,7}")                 # только ASCII-цифры: «²» и «٥» int() не примет
 
 
 class BadValue(ValueError):
@@ -135,6 +144,22 @@ def _v_mix_covers(value, lenient: bool = False) -> str:
     return json.dumps(_clean_covers(value, lenient), ensure_ascii=False, separators=(",", ":"))
 
 
+def _v_history_limit(value) -> str:
+    """Целое число записей в пределах HISTORY_LIMIT_MIN…MAX (число или строка из цифр; bool — не число)."""
+    if isinstance(value, str) and _DIGITS.fullmatch(value.strip()):
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int) or not HISTORY_LIMIT_MIN <= value <= HISTORY_LIMIT_MAX:
+        raise BadValue("history_limit")
+    return str(value)
+
+
+def _read_history_limit(raw: str | None) -> int:
+    try:
+        return int(_v_history_limit(raw))
+    except BadValue:
+        return HISTORY_LIMIT_DEFAULT
+
+
 VALIDATORS: dict[str, Callable] = {
     "default_source": _v_choice("default_source"),
     "autoplay": _v_choice("autoplay"),
@@ -144,6 +169,7 @@ VALIDATORS: dict[str, Callable] = {
     "lyrics_visible": _v_flag,
     "profile_name": _v_profile_name,
     "mix_covers": _v_mix_covers,
+    "history_limit": _v_history_limit,
 }
 
 
@@ -173,6 +199,7 @@ def _read_covers(raw: str | None) -> dict[str, str]:
 
 def init() -> None:
     """Вызывается после library.init(): база уже открыта и обновлена до текущей схемы."""
+    trim_history()                              # лимит могли уменьшить, или база от версии без ретеншна
     saved = get_setting("downloads_dir")
     if saved:                                   # возвращаем выбранную пользователем папку загрузок
         try:
@@ -191,6 +218,7 @@ def _public() -> dict:
             "volume": _read_level(s["volume"], 1.0), "last_volume": _read_level(s["last_volume"], 1.0),
             "lyrics_visible": s["lyrics_visible"] != "0", "profile_name": s["profile_name"],
             "mix_covers": _read_covers(s["mix_covers"]),
+            "history_limit": _read_history_limit(s["history_limit"]),           # S6
         },
         "paths": {"downloads": str(paths.downloads_dir()), "data": str(paths.data_dir()),
                   "downloads_locked": bool(os.getenv("WAVE_DOWNLOADS_DIR"))},
@@ -245,6 +273,8 @@ def write_settings(body: dict[str, Any]):
         updates["downloads_dir"] = str(target)
     with library.transaction() as db:
         db.executemany("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", updates.items())
+        if "history_limit" in updates:                # уменьшенный лимит действует сразу
+            _trim(db, int(updates["history_limit"]))
     if target is not None:
         paths.set_downloads_dir(target)              # только после успешной записи в базу
     return _public()
@@ -346,10 +376,36 @@ def favorite_tracks() -> list[dict]:
 
 
 # ---------- история ----------
+def _trim(db, limit: int) -> int:
+    """Удаляет из истории всё, кроме последних `limit` записей (по порядку записи). Другие таблицы не трогает."""
+    cur = db.execute("DELETE FROM history WHERE id <= (SELECT id FROM history ORDER BY id DESC LIMIT 1 OFFSET ?)",
+                     (limit,))
+    return cur.rowcount
+
+
+def history_limit(db=None) -> int:
+    if db is None:
+        return _read_history_limit(get_setting("history_limit"))
+    row = db.execute("SELECT value FROM settings WHERE key = 'history_limit'").fetchone()
+    return _read_history_limit(row[0] if row else None)
+
+
+def trim_history() -> int:
+    """Применяет лимит истории; возвращает число удалённых записей."""
+    with library.transaction() as db:
+        removed = _trim(db, history_limit(db))
+    if removed:
+        log.info("История: удалено %d старых записей сверх лимита", removed)
+    return removed
+
+
 @router.post("/history")
 def add_history(t: TrackIn):
-    _q("INSERT INTO history (key, data, played_at) VALUES (?, ?, ?)",
-       (f"{t.source}:{t.id}", json.dumps(_dump(t), ensure_ascii=False), time.time()))
+    """Запись прослушивания и обрезка истории до лимита — одной транзакцией."""
+    with library.transaction() as db:
+        db.execute("INSERT INTO history (key, data, played_at) VALUES (?, ?, ?)",
+                   (f"{t.source}:{t.id}", json.dumps(_dump(t), ensure_ascii=False), time.time()))
+        _trim(db, history_limit(db))
     return {"ok": True}
 
 
