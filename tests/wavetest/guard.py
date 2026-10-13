@@ -97,6 +97,9 @@ _GUARD = {"active": False, "network_allowed": False, "violations": []}
 _ALLOWED_ROOTS = [_norm(SYSTEM_TMP), _norm(SESSION_ROOT)]
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+# Устройства, а не файлы профиля (S3): os.devnull — subprocess.DEVNULL при запуске JS-runtime;
+# CONOUT$/CONIN$ — консоль Windows, которую открывает YoutubeDL (yt_dlp.utils.windows_enable_vt_mode).
+_DEVICES = {os.devnull, "CONOUT$", "CONIN$"} if os.name == "nt" else {os.devnull}
 
 
 def _inside_allowed(path) -> bool:
@@ -106,7 +109,7 @@ def _inside_allowed(path) -> bool:
         path = os.fsdecode(path)
     if path in (":memory:", "") or str(path).startswith("file::memory:"):
         return True
-    if os.fspath(path) == os.devnull:    # subprocess.DEVNULL: запись в никуда (S3, запуск JS-runtime)
+    if os.fspath(path) in _DEVICES:      # не файлы: см. _DEVICES
         return True
     p = _norm(os.path.abspath(os.fspath(path)))
     return any(p == r or p.startswith(r + os.sep) for r in _ALLOWED_ROOTS)

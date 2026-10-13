@@ -60,6 +60,8 @@ def test_devnull_is_allowed_but_neighbours_are_not(wave_profile):
     with pytest.raises(harness_conf.GuardViolation):
         open(_outside_path().with_name(os.path.basename(os.devnull)), "w")
     assert harness_conf.take_guard_violations()
+    assert harness_conf._inside_allowed("CONOUT$") is (os.name == "nt")       # консоль Windows — только там
+    assert not harness_conf._inside_allowed(str(_outside_path().with_name("CONOUT$")))
 
 
 def test_sqlite_outside_temp_is_blocked(wave_profile):

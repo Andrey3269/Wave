@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -62,6 +63,8 @@ def main() -> int:
     ap.add_argument("--junit", action="append", default=[])
     ap.add_argument("--log", action="append", default=[])
     args = ap.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")       # кириллица в сообщениях и при кодировке консоли cp1252
     items = [f for p in args.junit for f in junit_failures(Path(p))]
     items += [f for p in args.log for f in log_failures(Path(p))]
     for title, message in items[:LIMIT]:
