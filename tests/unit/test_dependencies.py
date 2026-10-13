@@ -124,8 +124,9 @@ def test_build_lock_covers_runtime_requirements():
 
 
 def test_build_script_installs_from_the_hashed_lock():
-    """build_windows.bat и CI ставят зависимости сборки только из лока с проверкой хэшей."""
+    """build_windows.bat ставит зависимости сборки только из лока с проверкой хэшей; CI собирает этим же скриптом."""
     bat = (ROOT / "build_windows.bat").read_text(encoding="utf-8")
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for text in (bat, ci):
-        assert "--require-hashes --no-deps -r packaging" in text and "requirements-build.lock" in text
+    assert "--require-hashes --no-deps -r packaging\\requirements-build.lock" in bat
+    assert "call build_windows.bat" in ci
+    assert "pip install -r backend/requirements.txt -r packaging/requirements-build.txt" not in ci

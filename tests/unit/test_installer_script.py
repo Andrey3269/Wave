@@ -191,3 +191,30 @@ def test_webview2_placeholder_versions_do_not_count(fake_registry, pv):
     for key in launcher.WEBVIEW2_KEYS:
         fake_registry[key] = pv
     assert launcher.webview2_installed() is False
+
+
+# ---------------------------------------------------------------------------
+# PowerShell-скрипты сборки и проверок установщика: синтаксис (pwsh есть на раннерах GitHub)
+# ---------------------------------------------------------------------------
+PS_SCRIPTS = [ROOT / "packaging" / "fetch_webview2.ps1", ROOT / "tests" / "installer" / "run_installer_checks.ps1"]
+
+
+@pytest.mark.parametrize("script", PS_SCRIPTS, ids=lambda p: p.name)
+def test_powershell_script_has_bom_for_windows_powershell(script):
+    assert script.read_bytes().startswith(b"\xef\xbb\xbf"), "без BOM Windows PowerShell 5.1 прочтёт кириллицу неверно"
+
+
+@pytest.mark.parametrize("script", PS_SCRIPTS, ids=lambda p: p.name)
+def test_powershell_script_parses(script):
+    import shutil
+    import subprocess
+
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("pwsh не установлен (на раннерах GitHub он есть)")
+    path = str(script).replace("'", "''")
+    cmd = (f"$t=$null; $e=$null; [System.Management.Automation.Language.Parser]::ParseFile('{path}', [ref]$t, [ref]$e) "
+           "| Out-Null; $e | ForEach-Object { $_.Extent.StartLineNumber.ToString() + ': ' + $_.Message }; exit $e.Count")
+    p = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-Command", cmd],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert p.returncode == 0, p.stdout + p.stderr

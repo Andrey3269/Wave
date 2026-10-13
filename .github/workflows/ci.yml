@@ -5,11 +5,15 @@
 #                             (не WebView2), проверка, что рабочий каталог не изменился. Перед этим отдельный шаг
 #                             скачивает закреплённый Deno со сверкой SHA-256 (fetch_runtime.py) для тестов
 #                             tests/unit/test_jsruntime_real.py; сами тесты в сеть не ходят.
-#   windows-build:            Deno по packaging/runtime/deno.lock (сверка SHA-256), PyInstaller собирает dist\Wave,
-#                             проверяется состав папки, затем собранный Wave.exe --diagnostics (без окна и сети):
-#                             из папки сборки, из пути с пробелами и кириллицей, без упакованного Deno (ожидается
-#                             понятная ошибка, системный Deno не подхватывается), после — нет процессов deno.exe.
-#                             Это НЕ проверка WebView2 и воспроизведения YouTube (TEST_STRATEGY §8: WIN-6, LIVE-2).
+#   windows-build:            (S4) настоящий build_windows.bat в чистом окружении: Python 3.12 + хэш-лок, Deno по
+#                             deno.lock (SHA-256), PyInstaller, Wave.exe --diagnostics, WebView2 bootstrapper (подпись
+#                             Microsoft), Inno Setup 6.7.3 (закреплён SHA-256) -> dist\installer\Wave-Setup-<версия>.exe.
+#                             Затем проверки собранной папки и Wave.exe --diagnostics (S3: из пути с кириллицей, без
+#                             упакованного Deno и т.д.) и установщика (tests/installer/run_installer_checks.ps1):
+#                             установка для текущего пользователя и под стандартной учётной записью, запуск на WAVE_PORT,
+#                             e2e против установленного приложения, второй запуск, обновление поверх, удаление с
+#                             сохранением данных, тестовые сборки без WebView2. Сеть приложения в проверках закрыта.
+#                             Это НЕ проверка окна WebView2 глазами и воспроизведения YouTube (ручной чек-лист S4).
 name: CI
 
 on:
@@ -93,40 +97,69 @@ jobs:
         run: python tests/ci_annotate.py --summary --junit "${RUNNER_TEMP//\\//}/pytest.xml" --log "${RUNNER_TEMP//\\//}/run_checks.log"
 
   windows-build:
-    name: windows-build (PyInstaller spec)
+    name: windows-build (build_windows.bat, installer)
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
+        id: py
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: packaging/requirements-build.lock
+          cache-dependency-path: |
+            packaging/requirements-build.lock
+            requirements-dev.txt
+            constraints.txt
 
-      # S4: как build_windows.bat — только хэш-лок (все пакеты и хэши закреплены), без обновления pip;
-      # затем pip check и packaging/verify_build_env.py: Python 3.12 x64, окружение совпадает с локом
-      - name: Install runtime and build dependencies (packaging/requirements-build.lock, hashes required)
+      # Inno Setup 6.7.3 (последняя 6.x): официальный файл из релиза jrsoftware/issrc, SHA-256 закреплён,
+      # подпись Authenticode должна быть действительной. Ставится во временную папку, путь — через ISCC.
+      - name: Install Inno Setup 6.7.3 (pinned SHA-256, valid signature)
+        shell: pwsh
         run: |
-          # чистое окружение, как .venv-build в build_windows.bat: в нём только pip самого Python
-          python -m venv "$RUNNER_TEMP/venv-build"
-          echo "$RUNNER_TEMP\venv-build\Scripts" >> "$GITHUB_PATH"
-          PY="${RUNNER_TEMP//\\//}/venv-build/Scripts/python.exe"     # следующие шаги берут его из PATH
-          "$PY" -c "import sys; assert sys.prefix != sys.base_prefix, sys.prefix"
-          "$PY" -m pip install --require-hashes --no-deps -r packaging/requirements-build.lock
-          "$PY" -m pip check
-          "$PY" packaging/verify_build_env.py | tee "$RUNNER_TEMP/build-env.txt"
-          echo "::notice title=build environment::$(tail -n 1 "$RUNNER_TEMP/build-env.txt")"
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $sha = "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732"
+          $exe = Join-Path $env:RUNNER_TEMP "innosetup-6.7.3.exe"
+          $ProgressPreference = "SilentlyContinue"
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          $h = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $sha) { throw "innosetup-6.7.3.exe SHA-256 $h, expected $sha" }
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne "Valid") { throw "innosetup-6.7.3.exe signature: $($sig.Status) $($sig.StatusMessage)" }
+          $dir = Join-Path $env:RUNNER_TEMP "InnoSetup6"
+          $log = Join-Path $env:RUNNER_TEMP "innosetup-install.log"
+          $p = Start-Process $exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CURRENTUSER /DIR=`"$dir`" /LOG=`"$log`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Inno Setup install exit code $($p.ExitCode)" }
+          $iscc = Join-Path $dir "ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found in $dir" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "::notice title=Inno Setup::$((Get-Item $iscc).VersionInfo.ProductVersion) signed by $($sig.SignerCertificate.Subject -replace ',', ';')"
 
-      - name: Fetch pinned Deno (packaging/runtime/deno.lock, SHA-256 verified)
-        run: python packaging/fetch_runtime.py --platform windows-x86_64
-
-      - name: Build icon and dist\Wave (same commands as build_windows.bat, without the installer step)
+      # WIN-1: тот же скрипт, что у владельца. WAVE_BUILD_PYTHON — Python 3.12 из setup-python (py launcher
+      # на раннере может его не видеть); версию и разрядность проверяет verify_build_env.py.
+      - name: build_windows.bat (WIN-1)
+        shell: cmd
+        env:
+          WAVE_BUILD_PYTHON: ${{ steps.py.outputs.python-path }}
         run: |
-          python packaging/svg_to_ico.py frontend/assets/wave_icon.svg packaging/wave.ico
-          python -m PyInstaller --noconfirm --clean packaging/wave.spec
-          echo "::notice title=PyInstaller::$(python -m PyInstaller --version)"
+          call build_windows.bat > "%RUNNER_TEMP%\build_windows.log" 2>&1
+          set CODE=%ERRORLEVEL%
+          type "%RUNNER_TEMP%\build_windows.log"
+          exit /b %CODE%
+
+      - name: Report build_windows.bat result
+        if: always()
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP "build_windows.log"
+          if (-not (Test-Path $log)) { "::error title=build_windows.bat::no log"; exit 0 }
+          $lines = Get-Content $log -Encoding utf8
+          foreach ($pat in "Окружение сборки:", "Готово: Deno", "Диагностика собранного приложения", "Версия:", "Компилятор:", "Подпись:", "Готово: dist", "WebView2 bootstrapper", "ОШИБКА", "Сборка не удалась") {
+            $lines | Where-Object { $_ -like "*$pat*" } | Select-Object -First 2 | ForEach-Object { "::notice title=build_windows.bat::$($_ -replace '::', ': ')" }
+          }
+          if ($lines -match "Сборка не удалась") { "::error title=build_windows.bat tail::$(($lines | Select-Object -Last 25) -join ' | ')" }
 
       - name: Check build output
         shell: pwsh
@@ -260,3 +293,35 @@ jobs:
           $left = Get-Process -Name deno -ErrorAction SilentlyContinue
           if ($left) { $left | Format-Table Id, Path; throw "deno.exe processes left after Wave.exe exited" }
           "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); runs: dist $($a.ms) ms, Cyrillic path $($b.ms) ms (OK), missing runtime $($c.ms) ms (exit 1, clear message, PATH/cwd Deno ignored); README commands (cmd start /wait, Start-Process -Wait, also with -RedirectStandardOutput) return exit 0; no deno.exe left"
+
+      # WIN-3: те же файлы, но установщик считает WebView2 отсутствующим и вместо bootstrapper выполняет
+      # «cmd /c exit 0|1603». Компилируется отдельно (/DTestWebView2), выпускаемый установщик этого кода не содержит.
+      - name: Compile test installers without WebView2 (WIN-3)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $v = (python backend/version.py).Trim()
+          $out = Join-Path $env:RUNNER_TEMP "wv-test"
+          foreach ($mode in "ok", "fail") {
+            & $env:ISCC /Qp "/DAppVersion=$v" "/DTestWebView2=$mode" "/O$out" "/FWave-Setup-$v-webview2-$mode" installer\wave.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC TestWebView2=$mode exit $LASTEXITCODE" }
+          }
+          Get-ChildItem $out | ForEach-Object { "::notice title=test installer::$($_.Name) {0:N1} MB" -f ($_.Length / 1MB) }
+
+      - name: Test environment for e2e (Playwright Chromium)
+        run: |
+          python -m venv "$RUNNER_TEMP/venv-tests"
+          T="${RUNNER_TEMP//\\//}/venv-tests/Scripts/python.exe"
+          "$T" -m pip install -r requirements-dev.txt -c constraints.txt
+          "$T" -m playwright install chromium
+
+      - name: Installer checks (WIN-2, 3, 4, 8, 9, 13, 15)
+        shell: pwsh
+        timeout-minutes: 30
+        run: |
+          $v = (python backend/version.py).Trim()
+          $t = Join-Path $env:RUNNER_TEMP "wv-test"
+          pwsh -NoProfile -File tests\installer\run_installer_checks.ps1 -Installer "dist\installer\Wave-Setup-$v.exe" `
+            -TestInstallerOk "$t\Wave-Setup-$v-webview2-ok.exe" -TestInstallerFail "$t\Wave-Setup-$v-webview2-fail.exe" `
+            -Python "$env:RUNNER_TEMP\venv-tests\Scripts\python.exe" -Work "$env:RUNNER_TEMP\s4" -Results "$env:RUNNER_TEMP\s4-installer-results.json"
+          exit $LASTEXITCODE
