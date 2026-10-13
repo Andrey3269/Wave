@@ -194,3 +194,33 @@ def test_second_instance_does_not_start_a_backend(run_launcher):
     assert events == []
     assert "второй экземпляр завершается, backend не запускается" in log_text
     assert "Backend запущен" not in log_text
+
+
+# ---------------------------------------------------------------------------
+# Ошибка базы данных при запуске (S6)
+# ---------------------------------------------------------------------------
+def test_database_error_is_shown_on_the_start_page(run_launcher, wave_profile):
+    """База от более новой Wave: backend не стартует, окно показывает причину, а не общий текст; база не тронута."""
+    import sqlite3
+    con = sqlite3.connect(wave_profile.db_path)
+    con.execute("CREATE TABLE favorites (key TEXT PRIMARY KEY, data TEXT NOT NULL, added_at REAL NOT NULL)")
+    con.execute("PRAGMA user_version = 99")
+    con.commit()
+    con.close()
+    raw = wave_profile.db_path.read_bytes()
+    p, events, log_text = run_launcher(None)
+    pages = [e for e in events if e["event"] == "error_page"]
+    assert pages, (events, p.stdout, p.stderr)
+    assert "Wave не смог открыть базу данных" in pages[0]["html"]
+    assert "более новой версией Wave" in pages[0]["html"]
+    assert "более новой версией Wave" in log_text
+    assert wave_profile.db_path.read_bytes() == raw
+
+
+def test_startup_error_page_escapes_reason_and_falls_back(monkeypatch):
+    from persistence import db as store
+    monkeypatch.setattr(store, "_startup_error", "Файл C:\\Users\\<script>\\wave.db повреждён")
+    page = launcher.startup_error_page()
+    assert "Wave не смог открыть базу данных" in page and "&lt;script&gt;" in page and "<script>" not in page
+    monkeypatch.setattr(store, "_startup_error", None)
+    assert "Не удалось запустить служебную часть приложения." in launcher.startup_error_page()

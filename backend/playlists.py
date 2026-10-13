@@ -15,15 +15,7 @@ import library
 import userdata
 
 router = APIRouter(prefix="/api", tags=["playlists"])
-
-_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS playlists (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,"
-    " created_at REAL NOT NULL, updated_at REAL NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS playlist_tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    " playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE, position INTEGER NOT NULL,"
-    " key TEXT NOT NULL, data TEXT NOT NULL, added_at REAL NOT NULL, UNIQUE (playlist_id, key))",
-    "CREATE INDEX IF NOT EXISTS playlist_tracks_pl ON playlist_tracks(playlist_id, position)",
-)
+# Таблицы playlists и playlist_tracks создаёт persistence/migrations.py (версия схемы v1).
 
 
 class NameIn(BaseModel):
@@ -31,8 +23,7 @@ class NameIn(BaseModel):
 
 
 def init() -> None:
-    for sql in _SCHEMA:
-        library._q(sql)
+    """Схему создаёт library.init() (миграции); отдельной инициализации плейлистам не нужно."""
 
 
 def _clean(name: str) -> str:
@@ -63,13 +54,11 @@ def list_playlists():
 
 @router.post("/playlists", status_code=201)
 def create_playlist(body: NameIn):
-    now = time.time()
-    with library._lock:
-        cur = library._db.execute("INSERT INTO playlists (name, created_at, updated_at) VALUES (?, ?, ?)",
-                                  (_clean(body.name), now, now))
-        library._db.commit()
-        pid = cur.lastrowid
-    return {"id": pid, "name": _clean(body.name), "count": 0, "cover": None}
+    name, now = _clean(body.name), time.time()
+    with library.transaction() as db:
+        pid = db.execute("INSERT INTO playlists (name, created_at, updated_at) VALUES (?, ?, ?)",
+                         (name, now, now)).lastrowid
+    return {"id": pid, "name": name, "count": 0, "cover": None}
 
 
 @router.patch("/playlists/{pid}")

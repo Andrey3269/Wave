@@ -129,10 +129,9 @@ def reset_backend_state() -> None:
     js = m["jsruntime"]
     js.reset()                                           # кэш проверки и переменные окружения DENO_*
     js._status = healthy_runtime_status(js)
-    db = m["library"]._db
-    if db is not None:
-        db.close()
-        m["library"]._db = None
+    from persistence import db as _db                    # S6: соединение SQLite живёт в persistence/db.py
+    _db.close()
+    _db._startup_error = None
 
 
 @dataclass

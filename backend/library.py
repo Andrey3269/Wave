@@ -10,63 +10,29 @@ import logging
 import re
 import shutil
 import sqlite3
-import threading
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 import paths
+from persistence import db
 
 log = logging.getLogger("musicmeta.library")
-_db: sqlite3.Connection | None = None
-_lock = threading.Lock()
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS downloads (
-    key TEXT PRIMARY KEY,          -- "source:track_id"
-    source TEXT NOT NULL, track_id TEXT NOT NULL,
-    title TEXT, artist TEXT, album TEXT, duration INTEGER,
-    folder TEXT NOT NULL,          -- имя папки внутри каталога загрузок
-    audio TEXT NOT NULL, cover TEXT, lyrics TEXT,
-    size INTEGER, created_at REAL,
-    root TEXT                      -- каталог загрузок на момент скачивания
-)"""
+# Схема и её версии — persistence/migrations.py; соединение, блокировка и транзакции — persistence/db.py.
 
 
 def init() -> None:
-    global _db
-    _db = sqlite3.connect(paths.data_dir() / "wave.db", check_same_thread=False)
-    _db.row_factory = sqlite3.Row
-    _db.execute(_SCHEMA)
-    try:                                          # база от прошлой версии: добавляем колонку root
-        _db.execute("ALTER TABLE downloads ADD COLUMN root TEXT")
-    except sqlite3.OperationalError:
-        pass
-    _db.commit()
+    """Открывает wave.db (обновив схему до текущей версии, с резервной копией) — один раз на запуск backend."""
+    data = paths.data_dir()
+    db.open(data / "wave.db", data / "backups")
 
 
 def _q(sql: str, args: tuple = ()) -> list[sqlite3.Row]:
-    with _lock:
-        cur = _db.execute(sql, args)
-        rows = cur.fetchall()
-        _db.commit()
-    return rows
+    """Один запрос (адаптер на время перехода к persistence/*; новый код вызывает db.query)."""
+    return db.query(sql, args)
 
 
-@contextmanager
-def transaction() -> Iterator[sqlite3.Connection]:
-    """
-    Несколько запросов как одна операция: всё или ничего. Блокировка держится до конца блока,
-    поэтому чтение и запись внутри не перемежаются с другими запросами приложения.
-    Внутри блока используйте только переданное соединение (не `_q`: он берёт ту же блокировку).
-    """
-    with _lock:
-        try:
-            yield _db
-            _db.commit()
-        except BaseException:
-            _db.rollback()
-            raise
+# Несколько запросов как одна операция: всё или ничего (см. persistence.db.transaction).
+transaction = db.transaction
 
 
 # ---------- имена папок ----------

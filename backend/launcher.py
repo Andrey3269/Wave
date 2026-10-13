@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import base64
 import ctypes
+import html
 import json
 import logging
 import os
@@ -96,6 +97,18 @@ def splash() -> str:
 def error_page(title: str, text: str) -> str:
     return _page(f"<h1>{title}</h1><p>{text}</p><p>Подробности записаны в журнал: "
                  f"<br>{paths.data_dir() / 'logs' / 'wave.log'}</p>")
+
+
+def startup_error_page() -> str:
+    """Страница ошибки запуска. Если не открылась база данных (S6), показывается причина, а не общий текст."""
+    try:
+        from persistence import db as store          # тот же процесс, что и backend
+        reason = store.startup_error()
+    except Exception:                                # noqa: BLE001 — страница ошибки не должна сама падать
+        reason = None
+    if reason:
+        return error_page("Wave не смог открыть базу данных", html.escape(reason))
+    return error_page("Wave не смог запуститься", "Не удалось запустить служебную часть приложения.")
 
 
 _HEADLESS = False                        # режим --diagnostics: никаких окон (в том числе MessageBox)
@@ -278,7 +291,7 @@ def boot(window, backend: Backend, closing: threading.Event, port: int = 0) -> N
             raise RuntimeError("backend не ответил на проверку здоровья")
     except Exception:
         log.exception("Не удалось запустить backend")
-        window.load_html(error_page("Wave не смог запуститься", "Не удалось запустить служебную часть приложения."))
+        window.load_html(startup_error_page())
         return
     window.load_url(backend.url)
     threading.Thread(target=watchdog, args=(window, backend, closing), name="wave-watchdog", daemon=True).start()

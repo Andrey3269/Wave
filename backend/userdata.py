@@ -22,13 +22,7 @@ import paths
 log = logging.getLogger("musicmeta.user")
 router = APIRouter(prefix="/api", tags=["user"])
 
-_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS favorites (key TEXT PRIMARY KEY, data TEXT NOT NULL, added_at REAL NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL,"
-    " data TEXT NOT NULL, played_at REAL NOT NULL, skipped INTEGER NOT NULL DEFAULT 0)",
-    "CREATE INDEX IF NOT EXISTS history_key ON history(key)",
-    "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-)
+# Таблицы favorites, history, settings создаёт persistence/migrations.py (версия схемы v1).
 _cache_clearers: list[Callable[[], None]] = []
 
 
@@ -174,8 +168,7 @@ def _read_covers(raw: str | None) -> dict[str, str]:
 
 
 def init() -> None:
-    for sql in _SCHEMA:
-        _q(sql)
+    """Вызывается после library.init(): база уже открыта и обновлена до текущей схемы."""
     saved = get_setting("downloads_dir")
     if saved:                                   # возвращаем выбранную пользователем папку загрузок
         try:

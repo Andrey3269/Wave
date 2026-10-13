@@ -1,6 +1,6 @@
 """
-Схема SQLite «как есть» (backend/library.py, userdata.py, playlists.py) — база для будущих миграций (S6).
-Если схема меняется, этот тест обновляется вместе с миграцией и тестом миграции старой базы.
+Схема SQLite версии v1 (backend/persistence/migrations.py, S6) — та же, что создавал код до S6.
+Если схема меняется, этот тест обновляется вместе с новой миграцией и тестом в test_db_migrations.py.
 """
 from __future__ import annotations
 
@@ -51,9 +51,10 @@ def test_schema_v0(db):
     assert indexes == {"history_key", "playlist_tracks_pl"}
 
 
-def test_no_schema_version_yet(db):
-    """M5: версионирования схемы нет (user_version = 0). После S6 здесь будет номер текущей версии."""
-    assert db.sql("PRAGMA user_version") == [(0,)]
+def test_schema_version_is_current(db):
+    """S6: версия схемы записана в user_version (до S6 было 0 — версионирования не было)."""
+    from persistence import migrations
+    assert db.sql("PRAGMA user_version") == [(migrations.CURRENT_VERSION,)] == [(1,)]
 
 
 def test_init_is_idempotent_and_keeps_data(db):
