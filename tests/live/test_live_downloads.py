@@ -1,28 +1,27 @@
 """
-LIVE-8 (S5): признаки разрешения на сохранение у настоящих источников. По умолчанию НЕ запускаются.
+LIVE-8 (S5): настоящая загрузка через приложение без подмен. По умолчанию НЕ запускается.
 
     python -m pytest -m live -rP tests/live/test_live_downloads.py
 
 Нужен доступ к YouTube и SoundCloud; для YouTube — Deno, как в LIVE-2 (WAVE_JS_RUNTIME или deno в PATH).
-Цели публичные (tests/live_targets.json), без входа в аккаунт. Профиль временный. Ссылки на файлы в вывод
-не попадают: печатается только итог одной строкой JSON.
+Цели публичные (tests/live_targets.json), без входа в аккаунт. Профиль и каталог загрузок временные
+(tests/conftest.py). Ссылки на поток в вывод не попадают: печатается итог одной строкой JSON.
 
-LIVE-8a — YouTube: видео под Creative Commons получает license «Creative Commons…», обычный клип — нет.
-           Если YouTube перестал отдавать строку лицензии, тест падает: тогда загрузка YouTube в Wave
-           фактически недоступна для всех треков, и это нужно знать (reports/S5.md).
-LIVE-8b — SoundCloud: у трека есть поле downloadable; фиксируется, что отвечает tracks/{id}/download
-           без входа в аккаунт (ожидаемо 401 — auth_required, либо ссылка на исходный файл).
+LIVE-8a — YouTube Music: POST /api/downloads → done; аудио, metadata.json, запись в «Скачанных»;
+           трек играет с диска (206) без нового резолва.
+LIVE-8b — SoundCloud: то же для публичного трека через штатный поток (прогрессивный формат).
 """
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
-import download_policy
+import downloads
 import jsruntime
-import soundcloud
+import paths
 import stream
 
 pytestmark = pytest.mark.live
@@ -39,25 +38,47 @@ def real_runtime():
     jsruntime.GUARD.terminate_all()
 
 
-def test_live8a_youtube_license(real_runtime):
-    cc = stream._extract_sync("yt", TARGETS["youtube_cc_video_id"]).license
-    std = stream._extract_sync("yt", TARGETS["youtube_video_id"]).license
-    print(json.dumps({"live": "8a", "cc_video_license": cc, "standard_video_license": std}, ensure_ascii=False))
-    assert download_policy.is_creative_commons(cc), f"YouTube не сообщил лицензию CC для видео под CC: {cc!r}"
-    assert not download_policy.is_creative_commons(std)
+def _download_and_play(source: str, track_id: str, monkeypatch) -> dict:
+    from fastapi.testclient import TestClient
+
+    import main
+
+    resolves = []
+    original = stream._extract_sync
+    monkeypatch.setattr(stream, "_extract_sync", lambda s, i: resolves.append(i) or original(s, i))
+    req = {"source": source, "id": track_id, "title": f"live-{source}", "artist": "Wave live test",
+           "album": None, "duration": None, "cover": None}
+    with TestClient(main.app, base_url="http://127.0.0.1") as c:
+        t0 = time.monotonic()
+        assert c.post("/api/downloads", json=req).status_code == 202
+        key = f"{source}:{track_id}"
+        while time.monotonic() - t0 < 180:
+            job = c.get("/api/downloads/jobs").json().get(key)
+            if job and job["state"] not in downloads.ACTIVE:
+                break
+            time.sleep(0.5)
+        took = round(time.monotonic() - t0, 1)
+        assert job and job["state"] == "done", f"загрузка не завершилась: {job}"
+
+        [item] = [t for t in c.get("/api/downloads").json()["items"] if t["id"] == track_id]
+        folder = next(p for p in paths.downloads_dir().iterdir() if p.name.endswith(f"[{source}-{track_id}]"))
+        meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
+        audio = folder / meta["audio"]
+        assert audio.stat().st_size == job["total"] > 0
+
+        before = len(resolves)
+        play = c.get(f"/api/stream/{source}/{track_id}", headers={"Range": "bytes=0-1023"})
+        assert play.status_code == 206 and len(play.content) == 1024
+        assert len(resolves) == before, "скачанный трек должен играть с диска без резолва"
+    return {"seconds": took, "audio": meta["audio"], "bytes": job["total"], "lyrics": meta["lyrics"] is not None,
+            "listed": bool(item)}
 
 
-def test_live8b_soundcloud_creator_download():
-    track_id = TARGETS["soundcloud_downloadable_track_id"]
-    info = soundcloud.api_get(f"tracks/{track_id}")
-    outcome = {"live": "8b", "downloadable": info.get("downloadable"),
-               "has_downloads_left": info.get("has_downloads_left"), "license": info.get("license")}
-    try:
-        url = soundcloud.download_link(track_id)
-        outcome["link"] = "получена (https)" if url.startswith("https://") else "получена (не https)"
-    except soundcloud.DownloadLinkError as exc:
-        outcome["link_error"] = exc.kind
-        outcome["status"] = exc.status
-    print(json.dumps(outcome, ensure_ascii=False))
-    assert "downloadable" in info, "SoundCloud перестал отдавать поле downloadable"
-    assert "link" in outcome or outcome["link_error"] in ("auth_required", "not_available", "rate_limited")
+def test_live8a_youtube_download(real_runtime, monkeypatch):
+    out = _download_and_play("yt", TARGETS["youtube_video_id"], monkeypatch)
+    print(json.dumps({"live": "8a", **out}, ensure_ascii=False))
+
+
+def test_live8b_soundcloud_download(monkeypatch):
+    out = _download_and_play("sc", TARGETS["soundcloud_track_id"], monkeypatch)
+    print(json.dumps({"live": "8b", **out}, ensure_ascii=False))

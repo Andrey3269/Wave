@@ -185,7 +185,7 @@ class FakeResolver:
         self.expires_in = 3600.0
         self.headers = {"User-Agent": "test-agent", "Referer": "https://www.youtube.com/"}
         self.gate: threading.Event | None = None            # если задан, резолв ждёт события
-        self.licenses: dict[str, str] = {}                   # "source:id" -> поле license yt-dlp (по умолчанию нет)
+        self.previews: set[str] = set()                      # "source:id", для которых источник отдаёт лишь фрагмент
         self._lock = threading.Lock()
 
     def fail(self, source: str, track_id: str, *errors: Exception) -> None:
@@ -207,7 +207,7 @@ class FakeResolver:
         if err is not None:
             raise err
         return self._stream.Resolved(url=f"https://{CDN_HOST}/{source}/{track_id}?v={n}", headers=dict(self.headers),
-                                     expires_at=time.time() + self.expires_in, license=self.licenses.get(key))
+                                     expires_at=time.time() + self.expires_in, preview=key in self.previews)
 
 
 # ---------------------------------------------------------------------------
@@ -275,13 +275,11 @@ class FakeYTMusic:
 
 
 class FakeSoundCloud:
-    """Двойник soundcloud.search_tracks, soundcloud.api_get и soundcloud.download_link (неофициальный API v2)."""
+    """Двойник soundcloud.search_tracks и soundcloud.api_get (неофициальный API v2)."""
 
     def __init__(self):
         self.tracks: dict[str, list] = {}          # запрос -> «сырые» треки; "*" — по умолчанию
         self.responses: dict[str, Any] = {}        # путь API -> ответ (dict) или исключение
-        # id трека -> очередь ответов tracks/{id}/download: str (redirectUri) или исключение
-        self.download_links: dict[str, deque] = defaultdict(deque)
         self.calls: list[tuple] = []
         self.search_error: Exception | None = None
         self.search_sleep = 0.0
@@ -307,17 +305,6 @@ class FakeSoundCloud:
         if callable(resp):
             return resp(query or {})
         return json.loads(json.dumps(resp))
-
-    def download_link(self, track_id: str) -> str:
-        with self._lock:
-            self.calls.append(("download_link", track_id))
-            q = self.download_links.get(track_id)
-            item = q.popleft() if q and len(q) > 1 else (q[0] if q else None)   # последний ответ повторяется
-        if item is None:
-            raise RuntimeError(f"SoundCloud: нет ссылки на файл {track_id} (тест)")
-        if isinstance(item, Exception):
-            raise item
-        return item
 
     def count(self, method: str) -> int:
         return sum(1 for c in self.calls if c[0] == method)
@@ -346,7 +333,6 @@ class ApiHarness:
         monkeypatch.setattr(modules["main"], "sc_search_raw", self.sc.search_tracks)
         monkeypatch.setattr(modules["soundcloud"], "search_tracks", self.sc.search_tracks)
         monkeypatch.setattr(modules["soundcloud"], "api_get", self.sc.api_get)
-        monkeypatch.setattr(modules["soundcloud"], "download_link", self.sc.download_link)
         self.http = None
 
     def _make_ytm(self):

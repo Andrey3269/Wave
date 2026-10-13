@@ -1,10 +1,11 @@
 """
-Разрешение источника на сохранение трека (backend/download_policy.py, S5).
+Какие треки скачиваются (backend/download_policy.py, S5, решение владельца 2026-10-13).
 
-YouTube: только видео под лицензией Creative Commons (поле license из того же резолва yt-dlp).
-SoundCloud: только если автор включил скачивание (downloadable, has_downloads_left); сохраняется исходный
-файл автора по ссылке tracks/{id}/download. Отказ — задача в состоянии error с понятной причиной и кодом,
-без файлов на диске и без обращения к CDN. Уже скачанные треки политика не касается.
+Трек YouTube Music или SoundCloud скачивается, если его аудиопоток штатно получен тем же резолвером, что и для
+воспроизведения; сохраняется этот поток в исходном формате. Лицензия Creative Commons и признак `downloadable`
+SoundCloud не проверяются. Отказ — только если поток получить нельзя (ошибка резолвера как есть) или источник
+отдаёт лишь фрагмент (`preview_only`): задача в состоянии error с понятной причиной и кодом, без файлов на диске
+и без обращения к CDN. Уже скачанные треки не проверяются и играют с диска.
 Сети нет: резолвер, SoundCloud и CDN подменены (tests/wavetest/fakes.py).
 """
 from __future__ import annotations
@@ -16,24 +17,24 @@ import pytest
 
 import downloads
 import library
-import soundcloud
 import stream
 from wavetest.fakes import audio_bytes
 
 YT = "AAAAAAAAAA1"
 SC = "123456789"
-YT_REQ = {"source": "yt", "id": YT, "title": "Песня", "artist": "Артист", "album": None, "duration": 100, "cover": None}
+YT_REQ = {"source": "yt", "id": YT, "title": "Песня", "artist": "Артист", "album": "Альбом", "duration": 100,
+          "cover": None}
 SC_REQ = {"source": "sc", "id": SC, "title": "Demo", "artist": "Indie Author", "album": None, "duration": 100,
           "cover": None}
+REQS = {"yt": YT_REQ, "sc": SC_REQ}
 DATA = audio_bytes(9_000, seed=11)
-CC = "Creative Commons Attribution license (reuse allowed)"
-ORIGINAL = f"https://cdn.test/sc-original/{SC}/demo.wav"
 
 
 @pytest.fixture
 def api_dl(api, monkeypatch):
     monkeypatch.setattr(downloads, "DL_CHUNK", 4096)
     api.net.add_file(f"/yt/{YT}", DATA, "audio/mp4")
+    api.net.add_file(f"/sc/{SC}", DATA, "audio/mpeg")
     return api
 
 
@@ -52,73 +53,98 @@ def nothing_saved(api):
     assert api.profile.sql("SELECT COUNT(*) FROM downloads") == [(0,)]
 
 
-def sc_track(**over):
-    info = {"id": int(SC), "kind": "track", "title": "Demo", "downloadable": True, "has_downloads_left": True,
-            "license": "cc-by", "policy": "ALLOW", "streamable": True}
-    info.update(over)
-    return info
-
-
 # ---------------------------------------------------------------------------
-# YouTube
+# Воспроизводимый трек скачивается
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("lic, code, phrase", [
-    (None, "license_unknown", "не сообщил лицензию"),
-    ("Standard YouTube License", "download_not_permitted", "Creative Commons"),
-    ("", "license_unknown", "не сообщил лицензию"),
+@pytest.mark.parametrize("source, track_id, audio, page", [
+    ("yt", YT, "audio.m4a", f"https://www.youtube.com/watch?v={YT}"),
+    ("sc", SC, "audio.mp3", f"https://api.soundcloud.com/tracks/{SC}"),
 ])
-def test_youtube_without_creative_commons_is_refused(api_dl, lic, code, phrase):
-    if lic is not None:
-        api_dl.resolver.licenses[f"yt:{YT}"] = lic
-    r = api_dl.post("/api/downloads", json=YT_REQ)
-    assert r.status_code == 202 and r.json()["state"] == "preparing"
-    job = job_of(api_dl, f"yt:{YT}")
-    assert job["state"] == "error" and job["code"] == code and phrase in job["error"]
-    assert "Слушать его можно" in job["error"]                      # причина не звучит как поломка
-    assert not api_dl.net.cdn_requests()                           # ни одного байта аудио не скачано
-    nothing_saved(api_dl)
-
-
-def test_youtube_creative_commons_is_saved_with_basis(api_dl):
-    api_dl.resolver.licenses[f"yt:{YT}"] = CC
-    api_dl.post("/api/downloads", json=YT_REQ)
-    job = job_of(api_dl, f"yt:{YT}")
-    assert job["state"] == "done" and job["code"] is None
+def test_playable_track_is_downloaded_from_its_stream(api_dl, source, track_id, audio, page):
+    """Без лицензии Creative Commons и без признака downloadable: сохраняется штатный поток в исходном формате."""
+    key = f"{source}:{track_id}"
+    api_dl.post("/api/downloads", json=REQS[source])
+    job = job_of(api_dl, key)
+    assert job["state"] == "done" and job["code"] is None and job["error"] is None
     assert job["received"] == job["total"] == len(DATA)
+
     [folder] = api_dl.profile.downloads.iterdir()
+    assert (folder / audio).read_bytes() == DATA
     meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
-    assert meta["permission"] == "creative_commons" and meta["license"] == CC
-    assert api_dl.resolver.calls[f"yt:{YT}"] == 1                  # проверка и загрузка — один резолв
+    assert meta["source"] == source and meta["audio"] == audio and meta["source_url"] == page
+    assert set(meta) == {"id", "source", "title", "artist", "album", "duration", "source_url", "audio", "cover",
+                         "lyrics"}                                      # формат metadata.json как до S5
+    assert api_dl.resolver.calls[key] == 1                              # проверка и загрузка — один резолв
+    assert api_dl.net.cdn_requests(f"/{source}/{track_id}")             # байты — из того же потока, что у плеера
+    assert api_dl.sc.count("api_get") == 0                              # downloadable SoundCloud не запрашивается
 
 
-def test_request_body_cannot_grant_permission(api_dl):
-    """Поля «разрешения» в теле запроса игнорируются: решает только источник."""
-    body = {**YT_REQ, "license": CC, "permission": "creative_commons", "allowed": True}
-    api_dl.post("/api/downloads", json=body)
-    assert job_of(api_dl, f"yt:{YT}")["code"] == "license_unknown"
+def test_soundcloud_download_plays_offline_without_soundcloud(api_dl):
+    api_dl.post("/api/downloads", json=SC_REQ)
+    assert job_of(api_dl, f"sc:{SC}")["state"] == "done"
+    before = api_dl.resolver.total()
+    api_dl.resolver.fail("sc", SC, stream.DownloadError("Unable to download JSON metadata: <urlopen error "
+                                                        "[Errno 11001] getaddrinfo failed>"))
+    play = api_dl.get(f"/api/stream/sc/{SC}", headers={"Range": "bytes=0-99"})
+    assert play.status_code == 206 and play.content == DATA[:100]
+    assert play.headers["content-type"].startswith("audio/mpeg")
+    assert api_dl.resolver.total() == before                            # без обращения к источнику
+
+
+# ---------------------------------------------------------------------------
+# Поток получить нельзя — понятная причина, ничего не сохранено
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("source, track_id, exc, code, phrase", [
+    ("yt", YT, stream.DownloadError("ERROR: [youtube] x: Video unavailable"), "unavailable", "недоступен"),
+    ("yt", YT, stream.DownloadError("Sign in to confirm your age"), "age_restricted", "по возрасту"),
+    ("yt", YT, stream.DownloadError("Sign in to confirm you're not a bot"), "bot_check", "не от бота"),
+    ("yt", YT, stream.DownloadError("HTTP Error 429: Too Many Requests"), "rate_limited", "ограничил"),
+    ("sc", SC, stream.DownloadError("<urlopen error [Errno 11001] getaddrinfo failed>"), "network", "Нет связи"),
+    ("sc", SC, stream.DownloadError("ERROR: [soundcloud] 404: Not Found"), "unavailable", "недоступен"),
+    ("sc", SC, stream.StreamUnavailable("SoundCloud: только HLS-поток (m3u8_native)"), "no_direct_stream",
+     "нет прямого аудиопотока"),
+])
+def test_unavailable_stream_is_reported(api_dl, source, track_id, exc, code, phrase):
+    api_dl.resolver.fail(source, track_id, exc)
+    r = api_dl.post("/api/downloads", json=REQS[source])
+    assert r.status_code == 202 and r.json()["state"] == "preparing"
+    job = job_of(api_dl, f"{source}:{track_id}")
+    assert job["state"] == "error" and job["code"] == code and phrase in job["error"]
+    assert not api_dl.net.cdn_requests()                                # ни одного байта аудио
     nothing_saved(api_dl)
 
 
-def test_youtube_resolve_error_is_reported_as_is(api_dl):
-    api_dl.resolver.fail("yt", YT, stream.DownloadError("Sign in to confirm you're not a bot"))
+def test_download_error_matches_playback_error(api_dl):
+    """Текст причины тот же, что получает плеер для этого трека."""
+    api_dl.resolver.fail("yt", YT, stream.DownloadError("Video unavailable"), stream.DownloadError("Video unavailable"))
     api_dl.post("/api/downloads", json=YT_REQ)
     job = job_of(api_dl, f"yt:{YT}")
-    assert job["state"] == "error" and job["code"] == "bot_check" and "не от бота" in job["error"]
+    play = api_dl.get(f"/api/stream/yt/{YT}", headers={"Range": "bytes=0-1"})
+    assert play.status_code == 404
+    assert play.json()["detail"] == job["error"] and play.headers[stream.ERROR_HEADER] == job["code"]
+
+
+def test_preview_only_is_not_saved_as_full_track(api_dl):
+    """SoundCloud Go+: источник отдаёт 30-секундный фрагмент — его не сохраняем под видом полного трека."""
+    api_dl.resolver.previews.add(f"sc:{SC}")
+    api_dl.post("/api/downloads", json=SC_REQ)
+    job = job_of(api_dl, f"sc:{SC}")
+    assert job["state"] == "error" and job["code"] == "preview_only" and "фрагмент" in job["error"]
+    assert not api_dl.net.cdn_requests()
     nothing_saved(api_dl)
 
 
-def test_refused_track_can_be_requested_again(api_dl):
-    """После отказа задача завершена: повторный запрос снова проверяет разрешение (лицензия могла смениться)."""
+def test_failed_track_can_be_requested_again(api_dl):
+    """После временной ошибки задача завершена, повторный запрос снова получает поток и скачивает трек."""
+    api_dl.resolver.fail("yt", YT, stream.DownloadError("HTTP Error 429: Too Many Requests"))
     api_dl.post("/api/downloads", json=YT_REQ)
-    assert job_of(api_dl, f"yt:{YT}")["state"] == "error"
-    stream._cache.clear()
-    api_dl.resolver.licenses[f"yt:{YT}"] = CC
+    assert job_of(api_dl, f"yt:{YT}")["code"] == "rate_limited"
     api_dl.post("/api/downloads", json=YT_REQ)
     assert job_of(api_dl, f"yt:{YT}")["state"] == "done"
 
 
-def test_existing_download_is_kept_and_plays_whatever_the_policy(api_dl):
-    """Скачанное раньше (до S5 или под прежними правилами) не удаляется и играет с диска."""
+def test_existing_download_is_kept_and_plays_without_the_source(api_dl):
+    """Скачанное раньше не проверяется повторно, не удаляется и играет с диска без резолва."""
     folder = api_dl.profile.downloads / library.safe_folder("Артист", "Песня", "yt", YT)
     folder.mkdir()
     (folder / "audio.m4a").write_bytes(DATA)
@@ -131,151 +157,3 @@ def test_existing_download_is_kept_and_plays_whatever_the_policy(api_dl):
     play = api_dl.get(f"/api/stream/yt/{YT}", headers={"Range": "bytes=10-19"})
     assert play.status_code == 206 and play.content == DATA[10:20]
     assert [t["id"] for t in api_dl.get("/api/downloads").json()["items"]] == [YT]
-
-
-# ---------------------------------------------------------------------------
-# SoundCloud
-# ---------------------------------------------------------------------------
-@pytest.fixture
-def sc_ok(api, monkeypatch):
-    monkeypatch.setattr(downloads, "DL_CHUNK", 4096)
-    api.sc.responses[f"tracks/{SC}"] = sc_track()
-    api.sc.download_links[SC].append(ORIGINAL)
-    api.net.add_file(f"/sc-original/{SC}/demo.wav", DATA, "audio/wav")
-    return api
-
-
-def test_soundcloud_original_file_is_saved(sc_ok):
-    r = sc_ok.post("/api/downloads", json=SC_REQ)
-    assert r.status_code == 202
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["state"] == "done", job
-    [folder] = sc_ok.profile.downloads.iterdir()
-    assert folder.name == f"Indie Author - Demo [sc-{SC}]"
-    assert (folder / "audio.wav").read_bytes() == DATA                   # исходный формат, без перекодирования
-    meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
-    assert meta["permission"] == "creator_download" and meta["license"] == "cc-by" and meta["audio"] == "audio.wav"
-    assert sc_ok.resolver.total() == 0                                  # поток для воспроизведения не сохраняется
-    assert [r.headers["range"] for r in sc_ok.net.cdn_requests()] == ["bytes=0-4095", "bytes=4096-8191",
-                                                                      "bytes=8192-12287"]
-    play = sc_ok.get(f"/api/stream/sc/{SC}", headers={"Range": "bytes=0-9"})
-    assert play.status_code == 206 and play.content == DATA[:10] and play.headers["content-type"] == "audio/wav"
-
-
-@pytest.mark.parametrize("over, code, phrase", [
-    ({"downloadable": False}, "download_not_permitted", "Автор не разрешил"),
-    ({"downloadable": None}, "download_not_permitted", "Автор не разрешил"),
-    ({"has_downloads_left": False}, "download_limit_reached", "Лимит скачиваний"),
-])
-def test_soundcloud_refusals_from_track_flags(sc_ok, over, code, phrase):
-    sc_ok.sc.responses[f"tracks/{SC}"] = sc_track(**over)
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["state"] == "error" and job["code"] == code and phrase in job["error"]
-    assert sc_ok.sc.count("download_link") == 0 and not sc_ok.net.cdn_requests()
-    nothing_saved(sc_ok)
-
-
-def test_soundcloud_missing_flag_is_not_assumed(sc_ok):
-    info = sc_track()
-    del info["downloadable"]
-    sc_ok.sc.responses[f"tracks/{SC}"] = info
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["code"] == "permission_unknown" and "не сообщил" in job["error"]
-    nothing_saved(sc_ok)
-
-
-@pytest.mark.parametrize("kind, code, phrase", [
-    ("auth_required", "auth_required", "только вошедшим пользователям"),
-    ("not_available", "download_not_permitted", "не выдал файл"),
-    ("rate_limited", "rate_limited", "ограничил число запросов"),
-    ("failed", "source_failed", "Попробуйте позже"),
-])
-def test_soundcloud_download_link_errors(sc_ok, kind, code, phrase):
-    sc_ok.sc.download_links[SC].clear()
-    sc_ok.sc.download_links[SC].append(soundcloud.DownloadLinkError(kind, 401))
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["state"] == "error" and job["code"] == code and phrase in job["error"]
-    nothing_saved(sc_ok)
-
-
-def test_soundcloud_unreachable(sc_ok):
-    sc_ok.sc.responses[f"tracks/{SC}"] = RuntimeError("timeout")
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["code"] == "source_unavailable" and "не ответил" in job["error"]
-    nothing_saved(sc_ok)
-
-
-def test_soundcloud_link_must_be_https(sc_ok):
-    sc_ok.sc.download_links[SC].clear()
-    sc_ok.sc.download_links[SC].append("http://cdn.test/sc-original/x.wav")
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    assert job_of(sc_ok, f"sc:{SC}")["code"] == "source_failed"
-    assert not sc_ok.net.cdn_requests()
-    nothing_saved(sc_ok)
-
-
-def test_soundcloud_unplayable_original_format_is_not_saved(sc_ok):
-    url = f"https://cdn.test/sc-original/{SC}/demo.aiff"
-    sc_ok.sc.download_links[SC].clear()
-    sc_ok.sc.download_links[SC].append(url)
-    sc_ok.net.add_file(f"/sc-original/{SC}/demo.aiff", DATA, "audio/aiff")
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["state"] == "error" and job["code"] == "unsupported_format"
-    nothing_saved(sc_ok)
-
-
-def test_soundcloud_format_from_content_disposition(sc_ok):
-    url = f"https://cdn.test/sc-original/{SC}/blob"
-    sc_ok.sc.download_links[SC].clear()
-    sc_ok.sc.download_links[SC].append(url)
-
-    def serve(request):
-        resp = sc_ok.net.serve_file(request)
-        resp.headers["Content-Type"] = "application/octet-stream"
-        resp.headers["Content-Disposition"] = 'attachment; filename="Demo (master).flac"'
-        return resp
-
-    sc_ok.net.add_file(f"/sc-original/{SC}/blob", DATA, None)
-    for _ in range(3):
-        sc_ok.net.queue(f"/sc-original/{SC}/blob", serve)
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    assert job_of(sc_ok, f"sc:{SC}")["state"] == "done"
-    [folder] = sc_ok.profile.downloads.iterdir()
-    assert (folder / "audio.flac").read_bytes() == DATA
-
-
-def test_soundcloud_expired_link_is_renewed_once(sc_ok):
-    renewed = f"https://cdn.test/sc-original/{SC}/renewed.wav"
-    sc_ok.sc.download_links[SC].append(renewed)
-    sc_ok.net.add_file(f"/sc-original/{SC}/renewed.wav", DATA, "audio/wav")
-    sc_ok.net.queue(f"/sc-original/{SC}/demo.wav", sc_ok.net.serve_file, 403)   # протухла после первой порции
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["state"] == "done", job
-    assert sc_ok.sc.count("download_link") == 2
-    [folder] = sc_ok.profile.downloads.iterdir()
-    assert (folder / "audio.wav").read_bytes() == DATA
-
-
-def test_soundcloud_link_failing_twice_fails_cleanly(sc_ok):
-    sc_ok.net.queue(f"/sc-original/{SC}/demo.wav", 403, 403)
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    job = job_of(sc_ok, f"sc:{SC}")
-    assert job["state"] == "error"
-    nothing_saved(sc_ok)
-
-
-def test_soundcloud_download_plays_offline_without_soundcloud(sc_ok):
-    sc_ok.post("/api/downloads", json=SC_REQ)
-    assert job_of(sc_ok, f"sc:{SC}")["state"] == "done"
-    sc_ok.sc.responses.clear()
-    sc_ok.sc.download_links.clear()
-    calls = len(sc_ok.sc.calls)
-    play = sc_ok.get(f"/api/stream/sc/{SC}", headers={"Range": "bytes=0-"})
-    assert play.status_code == 206
-    assert len(sc_ok.sc.calls) == calls and sc_ok.resolver.total() == 0

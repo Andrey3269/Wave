@@ -64,10 +64,6 @@ DEFAULT_TTL = 30 * 60             # TTL ссылки, если в ней нет 
 EXPIRY_MARGIN = 120               # обновляем ссылку за 2 минуты до истечения
 MAX_PARALLEL_RESOLVES = 4         # одновременных запусков yt-dlp
 STALE_STATUSES = {401, 403, 404, 410}  # ответы CDN при протухшей ссылке
-# Типы скачанных файлов, которые отдаются с диска. Исходный файл автора SoundCloud (S5) бывает
-# WAV или FLAC: WebView2 (Chromium) их воспроизводит. Набор совпадает с downloads.AUDIO_EXT.
-LOCAL_MIME = {".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".webm": "audio/webm", ".ogg": "audio/ogg",
-              ".opus": "audio/ogg", ".wav": "audio/wav", ".flac": "audio/flac"}
 
 # Опционально: куки (если YouTube просит подтвердить, что вы не бот) и прокси.
 # ВАЖНО: если резолвим через прокси, то и качать надо через него же.
@@ -215,10 +211,9 @@ class Resolved:
     url: str
     headers: dict[str, str]
     expires_at: float             # unix-время
-    # Лицензия, которую источник сообщил о треке (поле `license` yt-dlp), или None. Для YouTube это
-    # строка вроде "Creative Commons Attribution license (reuse allowed)". По ней download_policy
-    # решает, можно ли сохранить трек на устройство (S5). Воспроизведению она не нужна.
-    license: str | None = None
+    # Источник отдал только фрагмент (SoundCloud Go+: 30-секундный превью, format_id yt-dlp с «preview»).
+    # Загрузка такой трек не сохраняет (download_policy, S5); воспроизведение этим полем не управляется.
+    preview: bool = False
 
     def alive(self) -> bool:
         return time.time() < self.expires_at
@@ -355,9 +350,8 @@ def _extract_sync(source: str, track_id: str) -> Resolved:
 
     raw_headers = fmt.get("http_headers") or info.get("http_headers") or {}
     headers = {k: v for k, v in raw_headers.items() if k.lower() in FORWARD_HEADERS}
-    lic = info.get("license")
     return Resolved(url=url, headers=headers, expires_at=_url_expiry(url),
-                    license=lic.strip() if isinstance(lic, str) and lic.strip() else None)
+                    preview="preview" in str(fmt.get("format_id") or "").lower())
 
 
 async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Resolved:
@@ -583,7 +577,8 @@ async def stream_track(source: str, track_id: str, request: Request, warm: int =
     if local:
         if warm:
             return Response(status_code=204)
-        return FileResponse(local, media_type=LOCAL_MIME.get(local.suffix.lower(), "audio/mp4"))
+        mime = {".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".webm": "audio/webm", ".ogg": "audio/ogg"}
+        return FileResponse(local, media_type=mime.get(local.suffix, "audio/mp4"))
 
     # Прогрев (?warm=1): заранее получить ссылку и первую порцию. Ответ уходит сразу.
     if warm:

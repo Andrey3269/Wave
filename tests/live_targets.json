@@ -4,8 +4,6 @@
   "youtube_video_id": "dQw4w9WgXcQ",
   "_youtube_video_id": "Публичный официальный клип (Rick Astley — Never Gonna Give You Up) для LIVE-2/3/4: без входа и возрастных ограничений.",
   "lyrics": {"artist": "Daft Punk", "title": "Get Lucky", "duration": 369},
-  "youtube_cc_video_id": "M4gD1WSo5mA",
-  "_youtube_cc_video_id": "Публичная лекция под лицензией Creative Commons Attribution (её же использует набор тестов yt-dlp) для LIVE-8: поле license.",
-  "soundcloud_downloadable_track_id": "343609555",
-  "_soundcloud_downloadable_track_id": "Публичный трек SoundCloud с включённым автором скачиванием (из набора тестов yt-dlp, «downloadable song») для LIVE-8."
+  "soundcloud_track_id": "343609555",
+  "_soundcloud_track_id": "Публичный трек SoundCloud с прогрессивным потоком (из набора тестов yt-dlp) для LIVE-8b: загрузка через штатный поток."
 }

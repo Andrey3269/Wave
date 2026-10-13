@@ -2,13 +2,13 @@
 Загрузки: трек, обложка, текст и metadata.json сохраняются в отдельную папку.
 
   Downloads/Wave/Artist - Title [yt-ID]/
-      audio.m4a | audio.mp3 | ...  (формат источника как есть, ffmpeg не нужен)
+      audio.m4a | audio.mp3   (формат потока источника как есть, ffmpeg не нужен)
       cover.jpg
       lyrics.json             (только если текст найден)
       metadata.json
 
 Ход загрузки (состояние задачи в /api/downloads/jobs):
-  preparing    — проверка разрешения источника (download_policy) и получение ссылки;
+  preparing    — штатное получение потока тем же резолвером, что и для воспроизведения (download_policy);
   downloading  — аудио порциями с Range, progress = доля от размера (received/total в байтах);
   processing   — обложка и текст (их отсутствие или сбой загрузку не отменяет), metadata.json;
   done         — папка перенесена на место, запись в SQLite (library.py), трек в «Скачанных»;
@@ -24,14 +24,11 @@ import asyncio
 import json
 import logging
 import os
-import re
 import shutil
 import time
-from pathlib import PurePosixPath
-from typing import Awaitable, Callable, Literal
-from urllib.parse import unquote, urlparse
+from typing import Literal
+from urllib.parse import urlparse
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -40,7 +37,7 @@ import download_policy
 import library
 import paths
 from lyrics import fetch_lyrics
-from stream import CHUNK_SIZE, CONTENT_RANGE_RE, ERROR_HEADER, LOCAL_MIME, SOURCES, STALE_STATUSES, _connect
+from stream import CHUNK_SIZE, CONTENT_RANGE_RE, ERROR_HEADER, SOURCES, _connect
 
 log = logging.getLogger("musicmeta.downloads")
 router = APIRouter(prefix="/api", tags=["downloads"])
@@ -49,19 +46,9 @@ DL_CHUNK = 4 * 1024 * 1024                    # скачиваем порция�
 ACTIVE = {"preparing", "downloading", "processing"}
 COVER_HOSTS = ("googleusercontent.com", "ytimg.com", "ggpht.com", "sndcdn.com")   # откуда разрешено брать обложки
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
-# Исходный файл автора (SoundCloud) сохраняется как есть, но только в формате, который играет плеер
-# (WebView2/Chromium); тот же набор отдаёт с диска stream.LOCAL_MIME. AIFF, ALAC и т. п. не сохраняем.
-AUDIO_EXT = frozenset(LOCAL_MIME)
-ORIGINAL_TYPES = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav", "audio/vnd.wave": ".wav",
-                  "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/mpeg": ".mp3", "audio/mp3": ".mp3",
-                  "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/ogg": ".ogg", "audio/opus": ".opus",
-                  "audio/webm": ".webm"}
-_DISPOSITION = re.compile(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", re.IGNORECASE)
 
 jobs: dict[str, dict] = {}
 _background: set[asyncio.Task] = set()
-
-Opener = Callable[[str], Awaitable[httpx.Response]]   # открыть поток на диапазон "bytes=a-b"
 
 
 class DownloadRequest(BaseModel):
@@ -78,52 +65,12 @@ def _ext(content_type: str) -> str:
     return next((e for k, e in EXT.items() if k in content_type), ".m4a")
 
 
-def _original_ext(resp: httpx.Response) -> str:
-    """Расширение исходного файла: имя из Content-Disposition, путь ссылки, затем Content-Type."""
-    names = [m.group(1) for m in [_DISPOSITION.search(resp.headers.get("content-disposition", ""))] if m]
-    names.append(unquote(urlparse(str(resp.request.url)).path) if resp.request else "")
-    for name in names:
-        suffix = PurePosixPath(name.strip()).suffix.lower()
-        if suffix in AUDIO_EXT:
-            return suffix
-    ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-    if ctype in ORIGINAL_TYPES:
-        return ORIGINAL_TYPES[ctype]
-    raise download_policy.refuse(415, "unsupported_format", "Исходный файл автора в формате, который плеер Wave "
-                                                            "не воспроизводит, поэтому он не сохранён.")
-
-
-def _opener(client: httpx.AsyncClient, rs, req: DownloadRequest, perm: download_policy.Permission) -> Opener:
-    """Откуда качать: поток резолвера (YouTube) или исходный файл автора по ссылке SoundCloud."""
-    if perm.url is None:
-        return lambda rng: _connect(client, rs, req.source, req.id, rng)
-
-    state = {"url": perm.url, "renewed": False}
-
-    async def open_original(rng: str) -> httpx.Response:
-        while True:
-            try:
-                up = await client.send(client.build_request("GET", state["url"], headers={
-                    "Range": rng, "Accept-Encoding": "identity"}), stream=True)
-            except httpx.HTTPError as exc:
-                log.info("Исходный файл %s:%s: нет соединения: %r", req.source, req.id, exc)
-                raise download_policy.refuse(503, "network", "Нет связи с SoundCloud. Проверьте подключение "
-                                                             "к интернету и повторите.") from exc
-            if up.status_code in STALE_STATUSES and not state["renewed"]:
-                await up.aclose()                       # ссылка протухла: одна попытка со свежей
-                state.update(url=await download_policy.sc_original_url(req.id), renewed=True)
-                continue
-            return up
-
-    return open_original
-
-
-async def _download_audio(open_range: Opener, dest, job: dict, original: bool = False) -> str:
+async def _download_audio(client, rs, req: DownloadRequest, dest, job: dict) -> str:
     """Качает аудио порциями с Range; возвращает расширение файла."""
     pos, total, ext = 0, None, ".m4a"
     with open(dest, "wb") as f:
         while total is None or pos < total:
-            up = await open_range(f"bytes={pos}-{pos + DL_CHUNK - 1}")
+            up = await _connect(client, rs, req.source, req.id, f"bytes={pos}-{pos + DL_CHUNK - 1}")
             got, whole = 0, False
             try:
                 if up.status_code == 206:
@@ -134,7 +81,7 @@ async def _download_audio(open_range: Opener, dest, job: dict, original: bool = 
                 else:
                     raise RuntimeError(f"Источник вернул HTTP {up.status_code}")
                 if pos == 0:
-                    ext = _original_ext(up) if original else _ext(up.headers.get("content-type", ""))
+                    ext = _ext(up.headers.get("content-type", ""))
                 job["total"] = total
                 async for chunk in up.aiter_raw(CHUNK_SIZE):
                     f.write(chunk)
@@ -185,15 +132,14 @@ async def _run(client, rs, req: DownloadRequest) -> None:
     target = library.folder_path(name)
     tmp = target.with_name(target.name + ".part")
     try:
-        # preparing: разрешение источника на сохранение (воспроизводимость им не считается)
-        perm = await download_policy.check(rs, req.source, req.id)
+        # preparing: поток получен штатно (тем же резолвером, что и для воспроизведения) и это не фрагмент
+        await download_policy.check(rs, req.source, req.id)
 
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir(parents=True)
 
         job["state"] = "downloading"
-        ext = await _download_audio(_opener(client, rs, req, perm), tmp / "audio.part", job,
-                                    original=perm.url is not None)
+        ext = await _download_audio(client, rs, req, tmp / "audio.part", job)
         audio = f"audio{ext}"
         os.replace(tmp / "audio.part", tmp / audio)
 
@@ -207,9 +153,7 @@ async def _run(client, rs, req: DownloadRequest) -> None:
 
         meta = {"id": req.id, "source": req.source, "title": req.title, "artist": req.artist,
                 "album": req.album, "duration": req.duration, "source_url": SOURCES[req.source].page_url(req.id),
-                "audio": audio, "cover": cover, "lyrics": lyrics_file,
-                # Почему сохранение разрешено (S5): creative_commons (YouTube) | creator_download (SoundCloud)
-                "permission": perm.basis, "license": perm.license}
+                "audio": audio, "cover": cover, "lyrics": lyrics_file}
         (tmp / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
         shutil.rmtree(target, ignore_errors=True)
