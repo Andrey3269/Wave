@@ -20,6 +20,7 @@ import re
 import struct
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -129,6 +130,39 @@ def backend_values(page) -> dict:
     return page.evaluate("fetch('/api/settings').then(r => r.json())")
 
 
+SAVE_TIMEOUT_MS = 10_000          # верхняя граница ожидания записи (пауза записи громкости в app.js — 400 мс)
+
+
+def wait_backend(page, expect: dict, timeout_ms: int = SAVE_TIMEOUT_MS) -> tuple[dict, bool]:
+    """
+    Ждёт, пока backend отдаст ожидаемые значения (числа — с точностью 0,002), не дольше timeout_ms.
+    Возвращает (последние значения, дождались ли). Проверки делаются после этого и не ослабляются:
+    если не дождались, они упадут, а фактические значения будут напечатаны.
+    """
+    def ok(v: dict) -> bool:
+        return all(abs(v[k] - x) < 0.002 if isinstance(x, float) else v[k] == x for k, x in expect.items())
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        v = backend_values(page)["values"]
+        if ok(v):
+            return v, True
+        if time.monotonic() >= deadline:
+            return v, False
+        page.wait_for_timeout(100)
+
+
+def diag(v: dict, keys: tuple[str, ...], waited: bool) -> str:
+    """Фактические значения для сообщения о провале (только при провале)."""
+    got = ", ".join(f"{k}={v.get(k)!r}" for k in keys)
+    return f"фактически: {got}" + ("" if waited else f"; ожидание {SAVE_TIMEOUT_MS} мс истекло")
+
+
+def check_eq(v: dict, expect: dict, msg: str, waited: bool) -> None:
+    ok = all(abs(v[k] - x) < 0.002 if isinstance(x, float) else v[k] == x for k, x in expect.items())
+    check(ok, msg if ok else f"{msg} — {diag(v, tuple(expect), waited)}")
+
+
 def open_page(page) -> None:
     page.goto(BASE)
     page.wait_for_function("document.body.dataset.settings === 'ready'", timeout=15000)
@@ -159,12 +193,14 @@ def mode_set(page) -> None:
     page.dispatch_event("#set-name", "change")
     page.select_option("#set-theme", "light")
     page.wait_for_function("document.documentElement.dataset.theme === 'light'")
-    page.wait_for_timeout(900)                               # запись громкости идёт с паузой (debounce)
-    v = backend_values(page)["values"]
-    check(abs(v["volume"] - vol) < 0.002, "громкость записана в backend")
-    check(v["last_volume"] >= 0.05 and abs(v["last_volume"] - vol) < 0.002, "последняя слышимая громкость записана")
-    check(v["lyrics_visible"] is False, "видимость текста записана")
-    check(v["profile_name"] == NAME and v["theme"] == "light", "имя профиля и тема записаны")
+    # Вместо фиксированной паузы — ограниченное ожидание фактической записи всех значений в backend
+    expect = {"volume": round(vol, 3), "last_volume": round(vol, 3), "lyrics_visible": False,
+              "profile_name": NAME, "theme": "light"}
+    v, waited = wait_backend(page, expect)
+    check_eq(v, {"volume": expect["volume"]}, "громкость записана в backend", waited)
+    check_eq(v, {"last_volume": expect["last_volume"]}, "последняя слышимая громкость записана", waited)
+    check_eq(v, {"lyrics_visible": False}, "видимость текста записана", waited)
+    check_eq(v, {"profile_name": NAME, "theme": "light"}, "имя профиля и тема записаны", waited)
     check(any("/c" in c for c in v["mix_covers"].values()), "обложка открытого ранее микса хранится в backend")
     STATE.write_text(json.dumps(v), encoding="utf-8")
 
