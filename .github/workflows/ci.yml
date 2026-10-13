@@ -2,10 +2,14 @@
 #
 #   checks (ubuntu, windows): python tests/run_checks.py — гигиена git, compileall, pyflakes, node --check,
 #                             pytest (unit + API, без сети, временный профиль), e2e в Playwright Chromium
-#                             (не WebView2), проверка, что рабочий каталог не изменился.
-#   windows-build:            PyInstaller собирает dist\Wave по packaging/wave.spec и проверяется состав папки.
-#                             Это проверка spec, а не запуск приложения: окно WebView2, воспроизведение и
-#                             установщик здесь не проверяются (ручной чек-лист TEST_STRATEGY §8, этапы S3–S4).
+#                             (не WebView2), проверка, что рабочий каталог не изменился. Перед этим отдельный шаг
+#                             скачивает закреплённый Deno со сверкой SHA-256 (fetch_runtime.py) для тестов
+#                             tests/unit/test_jsruntime_real.py; сами тесты в сеть не ходят.
+#   windows-build:            Deno по packaging/runtime/deno.lock (сверка SHA-256), PyInstaller собирает dist\Wave,
+#                             проверяется состав папки, затем собранный Wave.exe --diagnostics (без окна и сети):
+#                             из папки сборки, из пути с пробелами и кириллицей, без упакованного Deno (ожидается
+#                             понятная ошибка, системный Deno не подхватывается), после — нет процессов deno.exe.
+#                             Это НЕ проверка WebView2 и воспроизведения YouTube (TEST_STRATEGY §8: WIN-6, LIVE-2).
 name: CI
 
 on:
@@ -68,6 +72,14 @@ jobs:
         if: runner.os == 'Windows'
         run: python -m playwright install chromium
 
+      # Настоящий Deno для test_jsruntime_real.py: тот же скрипт и та же сверка SHA-256, что при сборке
+      - name: Prepare pinned Deno for runtime tests (download + SHA-256)
+        run: |
+          case "$RUNNER_OS" in Windows) P=windows-x86_64; N=deno.exe;; *) P=linux-x86_64; N=deno;; esac
+          T="${RUNNER_TEMP//\\//}"
+          python packaging/fetch_runtime.py --platform "$P" --dest "$T/deno" --cache "$T/deno-downloads"
+          echo "WAVE_TEST_REAL_DENO=$T/deno/$N" >> "$GITHUB_ENV"
+
       - name: Run all checks
         run: |
           # PYTEST_ADDOPTS разбирается как командная строка POSIX: обратные слэши Windows-пути нужно заменить
@@ -100,10 +112,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt -r packaging/requirements-build.txt -c constraints.txt
 
+      - name: Fetch pinned Deno (packaging/runtime/deno.lock, SHA-256 verified)
+        run: python packaging/fetch_runtime.py --platform windows-x86_64
+
       - name: Build icon and dist\Wave (same commands as build_windows.bat, without the installer step)
         run: |
           python packaging/svg_to_ico.py frontend/assets/wave_icon.svg packaging/wave.ico
           python -m PyInstaller --noconfirm --clean packaging/wave.spec
+          echo "::notice title=PyInstaller::$(python -m PyInstaller --version)"
 
       - name: Check build output
         shell: pwsh
@@ -114,5 +130,72 @@ jobs:
           if (-not $index) { throw "frontend\index.html is not bundled" }
           $forbidden = Get-ChildItem -Path "dist\Wave" -Recurse -File -Include *.db,*.db-wal,*.db-shm,*.log,.env,cookies*.txt,*.m4a,*.mp3
           if ($forbidden) { $forbidden | ForEach-Object { $_.FullName }; throw "user data or secrets in dist" }
-          $size = (Get-ChildItem -Path "dist\Wave" -Recurse -File | Measure-Object -Property Length -Sum).Sum
-          "dist\Wave: {0:N1} MB" -f ($size / 1MB)
+          # S3: упакованный Deno — ровно файл из deno.lock; lock, лицензии и скрипты yt-dlp-ejs на месте
+          $lock = Get-Content "packaging\runtime\deno.lock" -Raw -Encoding utf8 | ConvertFrom-Json
+          $deno = "dist\Wave\_internal\runtime\deno\deno.exe"
+          if (-not (Test-Path $deno)) { throw "$deno not found" }
+          $hash = (Get-FileHash $deno -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $lock.platforms.'windows-x86_64'.member_sha256) { throw "deno.exe SHA-256 $hash does not match deno.lock" }
+          foreach ($f in "runtime\deno.lock", "licenses\THIRD_PARTY_NOTICES.txt", "licenses\deno\LICENSE.md", "licenses\v8\LICENSE",
+                         "licenses\yt-dlp\LICENSE", "licenses\yt-dlp-ejs\LICENSE", "yt_dlp_ejs\yt\solver\core.min.js", "yt_dlp_ejs\yt\solver\lib.min.js") {
+            if (-not (Test-Path "dist\Wave\_internal\$f")) { throw "$f is not bundled" }
+          }
+          $gpl = Get-ChildItem -Path "dist\Wave\_internal" -Directory -Filter "mutagen*"
+          if ($gpl) { throw "mutagen (GPL) must not be bundled" }
+          $mb = { param($p) (Get-ChildItem -Path $p -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB }
+          $total = & $mb "dist\Wave"; $runtime = & $mb "dist\Wave\_internal\runtime"; $ejs = & $mb "dist\Wave\_internal\yt_dlp_ejs"
+          "::notice title=dist\Wave size::total {0:N1} MB; runtime\deno {1:N1} MB; yt_dlp_ejs {2:N2} MB; without S3 additions {3:N1} MB" -f $total, $runtime, $ejs, ($total - $runtime - $ejs)
+
+      # Собранный Wave.exe без окна и без сети. Оконная программа: Start-Process -Wait даёт код возврата,
+      # -RedirectStandardOutput проверяет вывод через перенаправленный дескриптор (launcher._cli_stream).
+      - name: Diagnostics of the built app (Wave.exe --diagnostics)
+        shell: pwsh
+        env:
+          WAVE_DATA_DIR: ${{ runner.temp }}\wave-data
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content "packaging\runtime\deno.lock" -Raw -Encoding utf8 | ConvertFrom-Json
+          function Diag([string]$exe, [string]$name, [string]$cwd) {
+            $json = Join-Path $env:RUNNER_TEMP "diag-$name.json"; $txt = Join-Path $env:RUNNER_TEMP "diag-$name.txt"
+            $t = [Diagnostics.Stopwatch]::StartNew()
+            $p = Start-Process -FilePath $exe -ArgumentList "--diagnostics --output `"$json`"" -WorkingDirectory $cwd `
+                 -Wait -PassThru -RedirectStandardOutput $txt
+            $t.Stop()
+            $text = Get-Content $txt -Raw -Encoding utf8
+            Write-Host "--- $name (exit $($p.ExitCode), $([int]$t.Elapsed.TotalMilliseconds) ms)"; Write-Host $text
+            return @{ code = $p.ExitCode; report = (Get-Content $json -Raw -Encoding utf8 | ConvertFrom-Json); text = $text }
+          }
+          function AssertOk($r, [string]$name) {
+            $rt = $r.report.js_runtime
+            if ($r.code -ne 0) { throw "${name}: exit code $($r.code)" }
+            if (-not $r.report.app.frozen) { throw "${name}: not frozen" }
+            if ($rt.source -ne "bundled" -or -not $rt.ok -or $rt.version -ne $lock.version) { throw "${name}: runtime $($rt | ConvertTo-Json -Compress)" }
+            if (-not $r.report.solver.usable -or $r.report.solver.ejs_version -ne $r.report.solver.builtin_version) { throw "${name}: yt-dlp-ejs not usable" }
+            if ($r.report.issues.Count -ne 0) { throw "${name}: issues $($r.report.issues | ConvertTo-Json -Compress)" }
+            if ($r.text -notmatch "supported=true") { throw "${name}: text report not written to redirected stdout" }
+          }
+          # 1) из папки сборки
+          $a = Diag "dist\Wave\Wave.exe" "dist" (Get-Location).Path
+          AssertOk $a "dist"
+          # 2) копия в пути с пробелами и кириллицей, запуск из другого текущего каталога
+          $app = Join-Path $env:RUNNER_TEMP "Мои программы\Волна Тест"
+          New-Item -ItemType Directory -Force -Path (Split-Path $app) | Out-Null
+          Copy-Item "dist\Wave" $app -Recurse
+          $b = Diag (Join-Path $app "Wave.exe") "cyrillic" $env:RUNNER_TEMP
+          AssertOk $b "cyrillic"
+          if ($b.report.js_runtime.path -notlike "<app>*") { throw "path is not shown relative to the app" }
+          # 3) без упакованного Deno: понятная ошибка; Deno в PATH и в текущем каталоге НЕ подхватывается
+          Remove-Item (Join-Path $app "_internal\runtime\deno\deno.exe")
+          $decoy = Join-Path $env:RUNNER_TEMP "decoy"; New-Item -ItemType Directory -Force -Path $decoy | Out-Null
+          Copy-Item "dist\Wave\_internal\runtime\deno\deno.exe" $decoy
+          $env:PATH = "$decoy;$env:PATH"
+          $c = Diag (Join-Path $app "Wave.exe") "no-runtime" $decoy
+          if ($c.code -ne 1) { throw "no-runtime: expected exit code 1, got $($c.code)" }
+          $issue = $c.report.issues | Where-Object { $_.code -eq "js_runtime_unavailable" }
+          if (-not $issue -or $issue.message -notmatch "Переустановите") { throw "no-runtime: no clear message" }
+          if ($c.report.js_runtime.source -ne "bundled") { throw "no-runtime: system/cwd Deno was used" }
+          # 4) после всех запусков не осталось процессов deno.exe
+          Start-Sleep -Seconds 1
+          $left = Get-Process -Name deno -ErrorAction SilentlyContinue
+          if ($left) { $left | Format-Table Id, Path; throw "deno.exe processes left after Wave.exe exited" }
+          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); Cyrillic path OK; missing runtime -> exit 1; no deno.exe left"

@@ -1,0 +1,32 @@
+{
+  "_comment": "Закреплённый JS-runtime Deno для yt-dlp (S3). Загружает и проверяет packaging/fetch_runtime.py. Значения сверены 2026-10-13: sha256 архивов совпадает с официальными файлами <url>.sha256sum релиза; member_sha256 — SHA-256 исполняемого файла внутри проверенного архива. Обновление — отдельным коммитом с той же сверкой и live-проверкой LIVE-2.",
+  "schema": 1,
+  "name": "deno",
+  "version": "2.9.7",
+  "released": "2026-09-16",
+  "release_page": "https://github.com/denoland/deno/releases/tag/v2.9.7",
+  "license": "MIT",
+  "license_file": "licenses/deno/LICENSE.md",
+  "platforms": {
+    "windows-x86_64": {
+      "target": "x86_64-pc-windows-msvc",
+      "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-pc-windows-msvc.zip",
+      "archive": "zip",
+      "size": 42630221,
+      "sha256": "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238",
+      "member": "deno.exe",
+      "member_size": 97462048,
+      "member_sha256": "e020f3e232bd16e33768dee528e5983349c962952051ced0a5d58ad42f5d9b33"
+    },
+    "linux-x86_64": {
+      "target": "x86_64-unknown-linux-gnu",
+      "url": "https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-unknown-linux-gnu.zip",
+      "archive": "zip",
+      "size": 41596794,
+      "sha256": "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490",
+      "member": "deno",
+      "member_size": 95830104,
+      "member_sha256": "ce6a052beb97c2b92de67077e3f3924ba7c9661ede0d8dc2f66a116a3c841f21"
+    }
+  }
+}

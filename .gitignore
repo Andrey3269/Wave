@@ -23,6 +23,9 @@ dist/
 installer/MicrosoftEdgeWebview2Setup.exe
 packaging/runtime/**/*.exe
 packaging/runtime/**/*.zip
+# Deno, подготовленный packaging/fetch_runtime.py (в git — только packaging/runtime/deno.lock)
+packaging/runtime/deno/
+packaging/runtime/downloads/
 
 # Пользовательские данные: базы, журналы, скачанная музыка
 *.db

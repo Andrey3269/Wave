@@ -12,8 +12,23 @@ call ".venv-build\Scripts\activate.bat" || goto :fail
 python -m pip install --upgrade pip || goto :fail
 pip install -r backend\requirements.txt -r packaging\requirements-build.txt -c constraints.txt || goto :fail
 
+rem JS-runtime Deno для YouTube: официальный архив по packaging\runtime\deno.lock, сверка SHA-256 до распаковки.
+rem Повторная сборка ничего не скачивает, если подготовленный файл уже проверен.
+python packaging\fetch_runtime.py --platform windows-x86_64 || goto :fail
+
 python packaging\svg_to_ico.py frontend\assets\wave_icon.svg packaging\wave.ico || goto :fail
 python -m PyInstaller --noconfirm --clean packaging\wave.spec || goto :fail
+
+rem Самопроверка собранной папки без окна и без сети: упакованный Deno найден и поддерживается,
+rem скрипты yt-dlp-ejs на месте. Воспроизведение этим не проверяется (TEST_STRATEGY: WIN-6, LIVE-2).
+rem Wave.exe — оконная программа, поэтому start /wait (иначе cmd не ждёт и не получает код возврата).
+if not exist "build" mkdir build
+start "" /wait "dist\Wave\Wave.exe" --diagnostics --output "build\diagnostics.json"
+if errorlevel 1 (
+  echo Диагностика собранного приложения нашла проблему. Отчёт: build\diagnostics.json
+  goto :fail
+)
+echo Диагностика собранного приложения: OK ^(build\diagnostics.json^)
 
 if not exist "installer\MicrosoftEdgeWebview2Setup.exe" (
   powershell -NoProfile -Command "Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile 'installer\MicrosoftEdgeWebview2Setup.exe'" || goto :fail
