@@ -29,20 +29,28 @@ def top_level(name: str) -> str:
 
 def distributions_for(module_names: list[str], file_names: list[str]) -> dict[str, metadata.Distribution]:
     """Дистрибутивы, к которым относятся модули и файлы сборки: {нормализованное имя: Distribution}."""
+    return {k: d for k, (d, _why) in distributions_with_reasons(module_names, file_names).items()}
+
+
+def distributions_with_reasons(module_names: list[str], file_names: list[str]
+                               ) -> dict[str, tuple[metadata.Distribution, list[str]]]:
+    """То же, с основанием: какие модули или файлы сборки привели к каждому дистрибутиву (до 3 примеров)."""
     by_top = metadata.packages_distributions()
-    names: set[str] = set()
-    for mod in module_names:
-        names.update(by_top.get(top_level(mod), []))
-    tops = {top_level(f.replace("\\", "/")) for f in file_names}
-    for top in tops:
-        names.update(by_top.get(top, []))
-    found: dict[str, metadata.Distribution] = {}
-    for n in names:
+    reasons: dict[str, list[str]] = {}
+    for item in [*module_names, *(f.replace("\\", "/") for f in file_names)]:
+        for n in by_top.get(top_level(item), []):
+            reasons.setdefault(n, [])
+            if len(reasons[n]) < 3 and item not in reasons[n]:
+                reasons[n].append(item)
+    found: dict[str, tuple[metadata.Distribution, list[str]]] = {}
+    for n, why in reasons.items():
         try:
             d = metadata.distribution(n)
         except metadata.PackageNotFoundError:
             continue
-        found[norm(d.metadata["Name"])] = d
+        key = norm(d.metadata["Name"])
+        prev = found.get(key, (d, []))[1]
+        found[key] = (d, (prev + why)[:3])
     return found
 
 
@@ -88,7 +96,8 @@ def collect(module_names: list[str], file_names: list[str], workdir: Path,
     extra — компоненты не из pip (имя, версия, примечание), например SDK внутри пакетов.
     """
     workdir = Path(workdir)
-    dists = distributions_for(module_names, file_names)
+    found = distributions_with_reasons(module_names, file_names)
+    dists = {k: d for k, (d, _w) in found.items()}
     toc: list[tuple[str, str, str]] = []
     lines = ["Wave / «ВОЛНА»: Python и Python-пакеты в этой сборке",
              "=" * 60, "",
@@ -111,7 +120,7 @@ def collect(module_names: list[str], file_names: list[str], workdir: Path,
         shown = ", ".join(f.name for f in files) if files else "ФАЙЛОВ ЛИЦЕНЗИИ В ПАКЕТЕ НЕТ"
         if not files:
             no_text.append(name)
-        lines.append(f"{name} {version} — {license_expression(d)}; файлы: {shown}")
+        lines.append(f"{name} {version} — {license_expression(d)}; файлы: {shown}; в сборке: {', '.join(found[key][1])}")
     for name, version, note in extra:
         lines.append(f"{name} {version} — {note}")
     if no_text:
