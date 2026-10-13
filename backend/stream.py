@@ -31,12 +31,16 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
+import jsruntime
 import library
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 log = logging.getLogger("musicmeta.stream")
 router = APIRouter(prefix="/api/stream", tags=["stream"])
+
+# Дочерние процессы yt-dlp (JS-runtime Deno): без окна консоли, с таймаутом и завершением при выходе
+jsruntime.install_process_guard()
 
 # ---------------------------------------------------------------------------
 # Константы и настройки
@@ -180,6 +184,28 @@ def _resolve_error(source: str, exc: DownloadError) -> HTTPException:
     return _err(502, "resolve_failed", f"Не удалось получить аудиопоток от {label}. Попробуйте позже.")
 
 
+# Ошибки, за которыми может стоять JS-runtime. Возраст, проверка на бота, лимит запросов, сеть и
+# «трек недоступен» — настоящие причины, их не подменяем (S3, требование 13).
+_RUNTIME_KINDS = {"extractor", "resolve_failed", "internal"}
+
+
+def _runtime_error(source: str, err: HTTPException, js_issue: str | None) -> HTTPException:
+    """
+    YouTube без JS-runtime работает в урезанном режиме и падает с общей ошибкой формата. Если runtime
+    недоступен — говорим об этом (а не «трек недоступен»); если доступен, но yt-dlp сообщил о сбое
+    решения JS-задачи — тоже отдельный текст. Подробности — в журнале (jsruntime.YtDlpLogger).
+    """
+    if source != "yt" or err.headers.get(ERROR_HEADER) not in _RUNTIME_KINDS:
+        return err
+    st = jsruntime.status()
+    if not st.ok:
+        return _err(503, "js_runtime", jsruntime.user_message(st))
+    if js_issue:
+        return _err(502, "js_runtime_failed", "Компонент воспроизведения YouTube не смог обработать ответ YouTube. "
+                                              "Обычно помогает обновление приложения; подробности — в журнале.")
+    return err
+
+
 @dataclass(slots=True)
 class Resolved:
     url: str
@@ -255,7 +281,8 @@ def ydl_opts(fmt: str = "bestaudio/best") -> dict:
     opts: dict = {
         "format": fmt,
         "quiet": True,
-        "no_warnings": True,
+        # Предупреждения yt-dlp (в т.ч. о JS-runtime и решении JS-задач) — в журнал Wave, не в консоль
+        "logger": jsruntime.YDL_LOGGER,
         "noplaylist": True,
         "skip_download": True,
         # Нормальный резолв ~3 с. Если запрос завис, лучше оборвать его за 7 с и повторить,
@@ -274,6 +301,8 @@ def ydl_opts(fmt: str = "bestaudio/best") -> dict:
         opts["proxy"] = YTDLP_PROXY
     else:
         opts["source_address"] = "0.0.0.0"  # только IPv4: тот же IP, что и у httpx
+    # JS-runtime для задач плеера YouTube: всегда явный путь (или пустой словарь, если runtime нет)
+    opts.update(jsruntime.ydl_options())
     return opts
 
 
@@ -285,16 +314,28 @@ _tls = threading.local()
 
 
 def _get_ydl(source: str) -> YoutubeDL:
-    ydls: dict[str, YoutubeDL] = _tls.__dict__.setdefault("ydls", {})
-    if source not in ydls:
-        ydls[source] = YoutubeDL(ydl_opts(SOURCES[source].fmt))
-    return ydls[source]
+    # Экземпляр пересоздаётся, если сменился JS-runtime (например, его нашли при повторной проверке)
+    key = jsruntime.config_key()
+    ydls: dict[str, tuple[YoutubeDL, str]] = _tls.__dict__.setdefault("ydls", {})
+    cached = ydls.get(source)
+    if cached is None or cached[1] != key:
+        if cached is not None:
+            cached[0].close()
+        ydls[source] = (YoutubeDL(ydl_opts(SOURCES[source].fmt)), key)
+    return ydls[source][0]
 
 
 def _extract_sync(source: str, track_id: str) -> Resolved:
     """Блокирующий вызов yt-dlp (выполняется в потоке пула _resolve_pool)."""
     cfg = SOURCES[source]
-    info = _get_ydl(source).extract_info(cfg.page_url(track_id), download=False)
+    ydl = _get_ydl(source)
+    jsruntime.YDL_LOGGER.begin()
+    try:
+        info = ydl.extract_info(cfg.page_url(track_id), download=False)
+    except DownloadError as exc:
+        # Было ли предупреждение о JS-задачах в этом извлечении: по нему ошибка отличается от «трек недоступен»
+        exc.wave_js_issue = jsruntime.YDL_LOGGER.take_js_issue()
+        raise
 
     # При выборе одного формата url лежит на верхнем уровне; на случай слияния берём первый.
     fmt = (info.get("requested_formats") or [info])[0]
@@ -322,12 +363,12 @@ async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Re
             log.warning("Нет прямого потока %s: %s", key, exc)
             raise _err(404, "no_direct_stream", "Для этого трека нет прямого аудиопотока") from exc
         except DownloadError as exc:
-            err = _resolve_error(source, exc)
+            err = _runtime_error(source, _resolve_error(source, exc), getattr(exc, "wave_js_issue", None))
             log.warning("yt-dlp: %s -> %s [%s]", key, exc, err.headers[ERROR_HEADER])
             raise err from exc
         except Exception as exc:
             log.exception("Сбой резолвера для %s", key)
-            raise _err(502, "internal", "Внутренняя ошибка резолвера") from exc
+            raise _runtime_error(source, _err(502, "internal", "Внутренняя ошибка резолвера"), None) from exc
 
     _cache[key] = res
     if len(_cache) > 512:  # чистим протухшие записи

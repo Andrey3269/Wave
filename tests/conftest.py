@@ -82,6 +82,7 @@ def _backend():
     """Ленивый импорт backend (main тянет все модули). Возвращает словарь модулей."""
     import catalog
     import downloads
+    import jsruntime
     import library
     import lyrics
     import main
@@ -91,9 +92,21 @@ def _backend():
     import soundcloud
     import stream
     import userdata
-    return {"catalog": catalog, "downloads": downloads, "library": library, "lyrics": lyrics, "main": main,
-            "paths": paths, "playlists": playlists, "recs": recs, "soundcloud": soundcloud, "stream": stream,
-            "userdata": userdata}
+    return {"catalog": catalog, "downloads": downloads, "jsruntime": jsruntime, "library": library, "lyrics": lyrics,
+            "main": main, "paths": paths, "playlists": playlists, "recs": recs, "soundcloud": soundcloud,
+            "stream": stream, "userdata": userdata}
+
+
+# Статус JS-runtime по умолчанию в тестах: «исправен» (как в правильно собранном приложении), чтобы тесты
+# резолвера не зависели от того, установлен ли Deno на машине. Состояния «нет», «сломан», «старый»
+# проверяют tests/unit/test_jsruntime.py и tests/api/test_js_runtime_errors.py явно.
+FAKE_RUNTIME_PATH = "/wave-test/runtime/deno/deno"
+
+
+def healthy_runtime_status(jsruntime):
+    from pathlib import Path as _P
+    return jsruntime.RuntimeStatus(True, source="bundled", path=_P(FAKE_RUNTIME_PATH), version="2.9.7",
+                                   checked_at=0.0)
 
 
 def reset_backend_state() -> None:
@@ -112,6 +125,10 @@ def reset_backend_state() -> None:
     m["downloads"]._background.clear()
     m["paths"].set_downloads_dir(None)
     m["soundcloud"]._ie = None
+    st._tls.__dict__.pop("ydls", None)                   # экземпляры YoutubeDL, созданные в потоке теста
+    js = m["jsruntime"]
+    js.reset()                                           # кэш проверки и переменные окружения DENO_*
+    js._status = healthy_runtime_status(js)
     db = m["library"]._db
     if db is not None:
         db.close()

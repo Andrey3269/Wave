@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from ytmusicapi import YTMusic
 
 import catalog
+import jsruntime
 import library
 import paths
 import playlists
@@ -289,6 +290,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.resolver.aclose()  # отменяем резолвы и прогрев этого запуска до закрытия клиента
+        # Потоки резолвера не отменить, но их дочерние процессы (Deno) завершаем: резолвы этого запуска
+        # уже никому не нужны, а процесс не должен пережить остановку backend (S3, находка L8)
+        await asyncio.to_thread(jsruntime.terminate_children)
         await app.state.http.aclose()
         _cache.clear()
 

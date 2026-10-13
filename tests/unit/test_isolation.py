@@ -52,6 +52,16 @@ def test_write_outside_temp_is_blocked(wave_profile):
     assert harness_conf.take_guard_violations(), "нарушение должно быть записано"
 
 
+def test_devnull_is_allowed_but_neighbours_are_not(wave_profile):
+    """subprocess.DEVNULL (запуск JS-runtime, S3) пишет в os.devnull — это не запись в профиль."""
+    with open(os.devnull, "w") as f:
+        f.write("x")
+    assert not harness_conf.take_guard_violations()
+    with pytest.raises(harness_conf.GuardViolation):
+        open(_outside_path().with_name(os.path.basename(os.devnull)), "w")
+    assert harness_conf.take_guard_violations()
+
+
 def test_sqlite_outside_temp_is_blocked(wave_profile):
     with pytest.raises(harness_conf.GuardViolation):
         sqlite3.connect(harness_conf.REAL_LOCATIONS["data"] / "wave.db")

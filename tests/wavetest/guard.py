@@ -106,6 +106,8 @@ def _inside_allowed(path) -> bool:
         path = os.fsdecode(path)
     if path in (":memory:", "") or str(path).startswith("file::memory:"):
         return True
+    if os.fspath(path) == os.devnull:    # subprocess.DEVNULL: запись в никуда (S3, запуск JS-runtime)
+        return True
     p = _norm(os.path.abspath(os.fspath(path)))
     return any(p == r or p.startswith(r + os.sep) for r in _ALLOWED_ROOTS)
 

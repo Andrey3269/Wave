@@ -5,7 +5,12 @@ Wave Desktop: окно (pywebview / Microsoft Edge WebView2) + встроенн�
     окно с заставкой -> backend (FastAPI/uvicorn в потоке) на свободном порту 127.0.0.1
     -> проверка /api/health -> окно загружает интерфейс
 Порядок закрытия:
-    закрыли окно -> остановка backend -> выход (дочерних процессов нет: yt-dlp работает внутри процесса).
+    закрыли окно -> остановка backend -> завершение дочерних процессов -> выход.
+
+Дочерние процессы (находка L8): yt-dlp запускает JS-runtime Deno (runtime/deno/deno.exe) для задач плеера
+YouTube. Они учитываются в jsruntime.GUARD: без окна консоли, не дольше jsruntime.PROCESS_TIMEOUT, завершаются
+при остановке backend и при выходе; на Windows ещё и состоят в Job Object с KILL_ON_JOB_CLOSE, поэтому
+не переживают Wave даже при аварийном завершении.
 
 Запуск в разработке: python backend/launcher.py (нужен pywebview).
 """
@@ -27,6 +32,7 @@ for _name in ("stdout", "stderr"):
         setattr(sys, _name, open(os.devnull, "w", encoding="utf-8"))
 
 import applog  # noqa: E402
+import jsruntime  # noqa: E402
 import paths  # noqa: E402
 
 APP_NAME = "Wave"
@@ -234,6 +240,16 @@ def boot(window, backend: Backend, closing: threading.Event) -> None:
         return
     window.load_url(backend.url)
     threading.Thread(target=watchdog, args=(window, backend, closing), name="wave-watchdog", daemon=True).start()
+    # Проверить JS-runtime заранее: версия попадает в журнал при каждом запуске, а первый трек YouTube
+    # не ждёт проверки. Сбой не мешает интерфейсу: YouTube сообщит о компоненте при воспроизведении.
+    threading.Thread(target=_check_runtime, name="wave-jsruntime", daemon=True).start()
+
+
+def _check_runtime() -> None:
+    try:
+        jsruntime.status()
+    except Exception:
+        log.exception("Проверка JS-runtime не удалась")
 
 
 def main() -> int:
@@ -260,9 +276,10 @@ def main() -> int:
     webview.start(boot, (window, backend, closing), gui="edgechromium" if IS_WIN else None,
                   storage_path=str(storage), private_mode=False, debug=bool(os.getenv("WAVE_DEBUG")))
 
-    # Окно закрыто: останавливаем backend и выходим
+    # Окно закрыто: останавливаем backend, завершаем дочерние процессы и выходим
     closing.set()
     backend.stop()
+    jsruntime.terminate_children()
     log.info("Wave закрыт")
     logging.shutdown()
     return 0
@@ -275,4 +292,6 @@ if __name__ == "__main__":
         log.exception("Критическая ошибка запуска")
         _message(APP_NAME, f"Wave не смог запуститься. Журнал: {paths.data_dir() / 'logs' / 'wave.log'}")
         code = 1
+    finally:
+        jsruntime.terminate_children()   # потоки os._exit не ждёт, а дочерние процессы сам не завершает
     os._exit(code)     # не ждём фоновых потоков (загрузки, yt-dlp): после остановки backend они не нужны
