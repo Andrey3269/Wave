@@ -95,7 +95,7 @@ jobs:
   windows-build:
     name: windows-build (PyInstaller spec)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
 
@@ -151,20 +151,38 @@ jobs:
       # -RedirectStandardOutput проверяет вывод через перенаправленный дескриптор (launcher._cli_stream).
       - name: Diagnostics of the built app (Wave.exe --diagnostics)
         shell: pwsh
+        timeout-minutes: 10
         env:
           WAVE_DATA_DIR: ${{ runner.temp }}\wave-data
         run: |
           $ErrorActionPreference = "Stop"
           $lock = Get-Content "packaging\runtime\deno.lock" -Raw -Encoding utf8 | ConvertFrom-Json
+          function Evidence([string]$name) {
+            # зависание: какие процессы живы, есть ли у Wave.exe окно (MessageBox), чем кончается wave.log
+            $procs = Get-Process -Name Wave, deno -ErrorAction SilentlyContinue |
+                     ForEach-Object { "$($_.ProcessName) pid=$($_.Id) window='$($_.MainWindowTitle)'" }
+            $log = Join-Path $env:WAVE_DATA_DIR "logs\wave.log"
+            $tail = if (Test-Path $log) { (Get-Content $log -Tail 20 -Encoding utf8) -join " | " } else { "no wave.log" }
+            Write-Host "::error title=${name} hung::processes: $($procs -join '; ') || wave.log: $tail"
+          }
           function Diag([string]$exe, [string]$name, [string]$cwd) {
             $json = Join-Path $env:RUNNER_TEMP "diag-$name.json"; $txt = Join-Path $env:RUNNER_TEMP "diag-$name.txt"
             $t = [Diagnostics.Stopwatch]::StartNew()
             $p = Start-Process -FilePath $exe -ArgumentList "--diagnostics --output `"$json`"" -WorkingDirectory $cwd `
-                 -Wait -PassThru -RedirectStandardOutput $txt
+                 -PassThru -RedirectStandardOutput $txt
+            $null = $p.Handle                                   # иначе ExitCode может быть пустым
+            if (-not $p.WaitForExit(90000)) {
+              Evidence $name
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              Get-Process -Name deno -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+              throw "${name}: Wave.exe --diagnostics did not finish in 90 s"
+            }
             $t.Stop()
             $text = Get-Content $txt -Raw -Encoding utf8
             Write-Host "--- $name (exit $($p.ExitCode), $([int]$t.Elapsed.TotalMilliseconds) ms)"; Write-Host $text
-            return @{ code = $p.ExitCode; report = (Get-Content $json -Raw -Encoding utf8 | ConvertFrom-Json); text = $text }
+            if (-not (Test-Path $json)) { Evidence $name; throw "${name}: no JSON report" }
+            return @{ code = $p.ExitCode; report = (Get-Content $json -Raw -Encoding utf8 | ConvertFrom-Json); text = $text;
+                      ms = [int]$t.Elapsed.TotalMilliseconds }
           }
           function AssertOk($r, [string]$name) {
             $rt = $r.report.js_runtime
@@ -199,4 +217,4 @@ jobs:
           Start-Sleep -Seconds 1
           $left = Get-Process -Name deno -ErrorAction SilentlyContinue
           if ($left) { $left | Format-Table Id, Path; throw "deno.exe processes left after Wave.exe exited" }
-          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); Cyrillic path OK; missing runtime -> exit 1; no deno.exe left"
+          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); runs: dist $($a.ms) ms, Cyrillic path $($b.ms) ms (OK), missing runtime $($c.ms) ms (exit 1, clear message, PATH/cwd Deno ignored); no deno.exe left"

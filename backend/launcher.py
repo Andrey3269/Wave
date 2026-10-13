@@ -84,7 +84,13 @@ def error_page(title: str, text: str) -> str:
                  f"<br>{paths.data_dir() / 'logs' / 'wave.log'}</p>")
 
 
+_HEADLESS = False                        # режим --diagnostics: никаких окон (в том числе MessageBox)
+
+
 def _message(title: str, text: str) -> None:
+    if _HEADLESS:                        # модальное окно без пользователя (CI, сценарий) повесило бы процесс
+        log.error("%s: %s", title, text)
+        return
     if IS_WIN:
         ctypes.windll.user32.MessageBoxW(0, text, title, 0x10)   # MB_ICONERROR
     else:
@@ -309,6 +315,8 @@ def _cli_stream():
 
 def run_diagnostics(args: argparse.Namespace) -> int:
     """Без окна, без WebView2 и без проверки единственного экземпляра: работает и рядом с запущенным Wave."""
+    global _HEADLESS
+    _HEADLESS = True
     applog.setup()
     log.info("Диагностика (frozen=%s, live=%s)", getattr(sys, "frozen", False), bool(args.live))
     code = 1
@@ -330,13 +338,15 @@ def run_diagnostics(args: argparse.Namespace) -> int:
         text = f"Диагностика не выполнена: {type(exc).__name__}: {exc}"
     finally:
         jsruntime.terminate_children()
-    out = _cli_stream()
-    if out is not None:
-        try:
+    try:
+        out = _cli_stream()
+        if out is not None:
             out.write(text + "\n")
             out.flush()
-        except OSError:
-            pass
+        else:
+            log.info("Вывод отчёта некуда направить (нет консоли и перенаправления); используйте --output")
+    except Exception:                                             # отчёт уже в --output и журнале; код возврата важнее
+        log.exception("Не удалось вывести отчёт диагностики")
     return code
 
 

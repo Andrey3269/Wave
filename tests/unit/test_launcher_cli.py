@@ -117,6 +117,29 @@ def test_normal_start_is_unchanged(cli):
         (cli.tmp / "webview-events.jsonl").unlink()
 
 
+def test_diagnostics_never_shows_a_message_box(monkeypatch, tmp_path, caplog):
+    """
+    Собранный Wave.exe — оконная программа без консоли: модальное окно (MessageBox) в режиме диагностики
+    повесило бы процесс навсегда (запуск из CI или сценария). Сбой вывода отчёта не меняет код возврата.
+    """
+    import launcher
+
+    monkeypatch.setenv("WAVE_FAKE_PY", sys.executable)
+    monkeypatch.setenv("WAVE_JS_RUNTIME", str(make_fake_deno(tmp_path / "rt", name=fake_name())))
+    monkeypatch.setattr(launcher, "_HEADLESS", False)
+    monkeypatch.setattr(launcher.applog, "setup", lambda: None)       # не перехватывать журнал процесса pytest
+
+    def broken_stream():
+        raise OSError("нет дескриптора вывода (тест)")
+
+    monkeypatch.setattr(launcher, "_cli_stream", broken_stream)
+    assert launcher.run_diagnostics(launcher.parse_args(["--diagnostics"])) == 0
+    assert launcher._HEADLESS is True
+    with caplog.at_level("ERROR", logger="wave.desktop"):
+        launcher._message("Wave", "окно не должно появиться")        # вместо MessageBox — запись в журнал
+    assert "окно не должно появиться" in caplog.text
+
+
 def test_parse_args():
     import launcher
 
