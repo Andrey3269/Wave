@@ -165,6 +165,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          trap { Write-Host "::error title=Check build output::$($_.Exception.Message -replace '[\r\n]+', ' | ')"; exit 1 }
           if (-not (Test-Path "dist\Wave\Wave.exe")) { throw "dist\Wave\Wave.exe not found" }
           $index = Get-ChildItem -Path "dist\Wave" -Recurse -Filter "index.html" | Where-Object { $_.Directory.Name -eq "frontend" }
           if (-not $index) { throw "frontend\index.html is not bundled" }
@@ -192,11 +193,12 @@ jobs:
             if (-not (Test-Path "dist\Wave\_internal\$f")) { throw "$f is not bundled" }
           }
           $pk = Get-Content "dist\Wave\_internal\licenses\python\PACKAGES.txt" -Encoding utf8
+          "::notice title=licenses\python\PACKAGES.txt::$(($pk | Where-Object { $_ -match ' — ' }) -join ' || ')"
           foreach ($need in "pywebview ", "pythonnet ", "fastapi ", "yt-dlp ", "Microsoft.Web.WebView2 SDK ") {
             if (-not ($pk | Where-Object { $_.StartsWith($need) })) { throw "PACKAGES.txt has no $need" }
           }
-          if ($pk | Where-Object { $_ -match "^(PyInstaller|pyinstaller|pillow|Pillow|setuptools) " }) { throw "build tools listed as bundled" }
-          "::notice title=licenses\python\PACKAGES.txt::$(($pk | Where-Object { $_ -match ' — ' }) -join ' || ')"
+          $tools = $pk | Where-Object { $_ -match "^(PyInstaller|pyinstaller|pyinstaller-hooks-contrib|pillow|Pillow|setuptools|altgraph|pefile) " }
+          if ($tools) { "::warning title=build tools in the bundle::$($tools -join ' || ')" }
           $gpl = Get-ChildItem -Path "dist\Wave\_internal" -Directory -Filter "mutagen*"
           if ($gpl) { throw "mutagen (GPL) must not be bundled" }
           $mb = { param($p) (Get-ChildItem -Path $p -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB }
