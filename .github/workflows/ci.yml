@@ -86,10 +86,11 @@ jobs:
           export PYTEST_ADDOPTS="--junitxml=${RUNNER_TEMP//\\//}/pytest.xml"
           python tests/run_checks.py 2>&1 | tee "${RUNNER_TEMP//\\//}/run_checks.log"
 
-      # Упавшие тесты и строки FAIL — аннотациями: их видно на странице запуска и через API check-runs
-      - name: Report failures as annotations
-        if: failure()
-        run: python tests/ci_annotate.py --junit "${RUNNER_TEMP//\\//}/pytest.xml" --log "${RUNNER_TEMP//\\//}/run_checks.log"
+      # Итог pytest (в т.ч. какие тесты пропущены), упавшие тесты и строки FAIL — аннотациями:
+      # их видно на странице запуска и через API check-runs
+      - name: Report results as annotations
+        if: always()
+        run: python tests/ci_annotate.py --summary --junit "${RUNNER_TEMP//\\//}/pytest.xml" --log "${RUNNER_TEMP//\\//}/run_checks.log"
 
   windows-build:
     name: windows-build (PyInstaller spec)

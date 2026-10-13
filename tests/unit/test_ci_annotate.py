@@ -19,6 +19,23 @@ tests/unit/test_x.py:3: AssertionError</failure></testcase>
 </testsuite></testsuites>"""
 
 
+SUMMARY_JUNIT = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest">
+<testcase classname="a" name="test_ok"/>
+<testcase classname="a" name="test_win_only"><skipped type="pytest.skip" message="только Windows"/></testcase>
+<testcase classname="a" name="test_known_bug"><skipped type="pytest.xfail" message="M6"/></testcase>
+</testsuite></testsuites>"""
+
+
+def test_summary_lists_skipped_tests(tmp_path):
+    (tmp_path / "s.xml").write_text(SUMMARY_JUNIT, encoding="utf-8")
+    p = subprocess.run([sys.executable, str(SCRIPT), "--summary", "--junit", str(tmp_path / "s.xml")],
+                       capture_output=True, text=True, encoding="utf-8")
+    assert p.returncode == 0
+    assert p.stdout.strip() == ("::notice title=pytest::1 passed, 0 failed, 0 error, 1 skipped; "
+                                "skipped: test_win_only (только Windows)")
+
+
 def test_annotations(tmp_path):
     (tmp_path / "p.xml").write_text(JUNIT, encoding="utf-8")
     (tmp_path / "r.log").write_text("[PASS] hygiene\n  ok   проверка\n  FAIL настройки не сохранились\n[FAIL] e2e: код 1\n",

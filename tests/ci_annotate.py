@@ -47,6 +47,32 @@ def junit_failures(path: Path) -> list[tuple[str, str]]:
     return out
 
 
+def junit_summary(path: Path) -> str | None:
+    """Итог pytest одной строкой: сколько прошло/упало/пропущено и какие тесты пропущены (с причиной)."""
+    if not path.is_file():
+        return None
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        return None
+    counts = {"passed": 0, "failed": 0, "error": 0, "skipped": 0}
+    skipped = []
+    for case in root.iter("testcase"):
+        if case.find("failure") is not None:
+            counts["failed"] += 1
+        elif case.find("error") is not None:
+            counts["error"] += 1
+        elif (s := case.find("skipped")) is not None:
+            if (s.get("type") or "") == "pytest.xfail":          # ожидаемо падающие (xfail) — не пропуск
+                continue
+            counts["skipped"] += 1
+            skipped.append(f"{case.get('name')} ({(s.get('message') or '').strip()[:80]})")
+        else:
+            counts["passed"] += 1
+    text = ", ".join(f"{v} {k}" for k, v in counts.items())
+    return text + (("; skipped: " + "; ".join(skipped)) if skipped else "; skipped: none")
+
+
 def log_failures(path: Path) -> list[tuple[str, str]]:
     if not path.is_file():
         return []
@@ -62,9 +88,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--junit", action="append", default=[])
     ap.add_argument("--log", action="append", default=[])
+    ap.add_argument("--summary", action="store_true", help="также напечатать ::notice с итогом pytest")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")       # кириллица в сообщениях и при кодировке консоли cp1252
+    if args.summary:
+        for p in args.junit:
+            if (s := junit_summary(Path(p))) is not None:
+                print(f"::notice title={_title('pytest')}::{_escape(s)[:3000]}")
     items = [f for p in args.junit for f in junit_failures(Path(p))]
     items += [f for p in args.log for f in log_failures(Path(p))]
     for title, message in items[:LIMIT]:
