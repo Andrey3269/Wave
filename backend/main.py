@@ -17,7 +17,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +34,7 @@ import paths
 import playlists
 import recs
 import userdata
+from domain.models import Track
 from downloads import cleanup_partial, router as downloads_router
 from lyrics import router as lyrics_router
 from soundcloud import search_tracks as sc_search_raw
@@ -61,26 +62,8 @@ MAX_RESULTS = 100   # глубже одного запроса не листае
 
 
 # ---------------------------------------------------------------------------
-# Единая модель трека (общая для YouTube / SoundCloud)
+# Единая модель трека (общая для YouTube / SoundCloud) — backend/domain/models.py (S7), здесь тот же класс
 # ---------------------------------------------------------------------------
-class Track(BaseModel):
-    id: str                                  # ID внутри источника (videoId и т.п.)
-    source: Literal["yt", "sc"]        # источник
-    title: str
-    artist: str                              # для отображения: "A, B"
-    artists: list[str]
-    album: str | None = None
-    duration: int | None = None              # секунды
-    cover: str | None = None                 # URL обложки (крупная версия)
-    explicit: bool = False
-    stream_url: str                          # относительный URL нашего прокси
-    artist_id: str | None = None             # id первого артиста (страница артиста)
-    artist_ids: list[str | None] = []        # id КАЖДОГО артиста, в том же порядке, что и artists
-    plays: int | None = None                 # прослушивания (есть только у SoundCloud)
-    released: str | None = None              # дата выхода ISO (есть только у SoundCloud)
-    url: str | None = None                   # публичная ссылка на трек (для «Поделиться»)
-
-
 class SearchResponse(BaseModel):
     query: str
     count: int
