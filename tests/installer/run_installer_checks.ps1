@@ -245,11 +245,12 @@ Step "WIN-2 install (per-user, silent)" {
     Assert ($changed.Count -eq 0) "installed files differ from dist: $($changed | Select-Object -First 10)"
     Assert (-not (Compare-Object $extra $ExpectedExtras)) "unexpected extra files: $($extra -join ', ')"
     Assert ((Get-FileHash (Join-Path $AppDir "THIRD_PARTY_NOTICES.txt")).Hash -eq $DistTree["_internal\licenses\THIRD_PARTY_NOTICES.txt"]) "THIRD_PARTY_NOTICES.txt next to Wave.exe differs"
-    $sh = New-Object -ComObject WScript.Shell
+    # WScript.Shell не открывает ярлык с кириллицей в имени (TargetPath пустой) — читаем через Shell.Application
+    $shellApp = New-Object -ComObject Shell.Application
     $exeItem = Get-Item (Join-Path $AppDir "Wave.exe")
     foreach ($lnk in $StartMenu, $Desktop) {
-        Assert (Test-Path $lnk) "shortcut missing: $lnk"
-        $target = $sh.CreateShortcut($lnk).TargetPath
+        Assert (Test-Path -LiteralPath $lnk) "shortcut missing: $lnk"
+        $target = $shellApp.NameSpace((Split-Path $lnk)).ParseName((Split-Path $lnk -Leaf)).GetLink.Path
         # путь может прийти в коротком (8.3) виде или в другом регистре: сравнивается сам файл
         $same = $target -and (Test-Path $target) -and ((Get-Item $target).FullName -ieq $exeItem.FullName -or
                 (Get-FileHash $target).Hash -eq (Get-FileHash $exeItem.FullName).Hash -and (Split-Path $target -Leaf) -ieq "Wave.exe")
