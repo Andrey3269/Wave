@@ -230,8 +230,12 @@ jobs:
           if ($r1 -notmatch "exit=0") { throw "cmd start /wait: $r1" }
           $r2 = TimedJob { param($r) Set-Location $r; (Start-Process -FilePath "dist\Wave\Wave.exe" -ArgumentList "--diagnostics" -Wait -PassThru).ExitCode } "Start-Process -Wait"
           if ($r2 -ne "0") { throw "Start-Process -Wait: exit code '$r2'" }
+          $r3 = TimedJob { param($r) Set-Location $r; $o = Join-Path $env:RUNNER_TEMP "diag-wait-redirect.txt"
+                           $p = Start-Process -FilePath "dist\Wave\Wave.exe" -ArgumentList "--diagnostics" -Wait -PassThru -RedirectStandardOutput $o
+                           "$($p.ExitCode) $((Get-Content $o -Raw -Encoding utf8) -match 'supported=true')" } "Start-Process -Wait -RedirectStandardOutput"
+          if ($r3 -ne "0 True") { throw "Start-Process -Wait -RedirectStandardOutput: '$r3'" }
           # 5) после всех запусков не осталось процессов deno.exe
           Start-Sleep -Seconds 1
           $left = Get-Process -Name deno -ErrorAction SilentlyContinue
           if ($left) { $left | Format-Table Id, Path; throw "deno.exe processes left after Wave.exe exited" }
-          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); runs: dist $($a.ms) ms, Cyrillic path $($b.ms) ms (OK), missing runtime $($c.ms) ms (exit 1, clear message, PATH/cwd Deno ignored); README commands (cmd start /wait, Start-Process -Wait) return exit 0; no deno.exe left"
+          "::notice title=Wave.exe --diagnostics::bundled deno $($a.report.js_runtime.version) supported; yt-dlp $($a.report.yt_dlp.version); yt-dlp-ejs $($a.report.solver.ejs_version); runs: dist $($a.ms) ms, Cyrillic path $($b.ms) ms (OK), missing runtime $($c.ms) ms (exit 1, clear message, PATH/cwd Deno ignored); README commands (cmd start /wait, Start-Process -Wait, also with -RedirectStandardOutput) return exit 0; no deno.exe left"
