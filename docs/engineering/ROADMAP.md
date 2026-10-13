@@ -166,15 +166,17 @@ graph TD
 
 Закрывает M5 и M6 (хранение). Зависит от S1.
 
+**Статус: выполнено 2026-10-13, ветка `claude/s6-sqlite` (от принятого S5, `072d614`); отчёт — [reports/S6.md](reports/S6.md). Ждёт приёмки владельцем.** Итог: `persistence/db.py` и `persistence/migrations.py` (v1), атомарные плейлисты (M5), поля `explicit`/`plays`/`released` и удаление id с «/» (M6, хранение), ретеншн истории 10 000 (настройка `history_limit`). pytest 765 passed + 9 skipped + 7 xfail (сняты M5, M6 ×2), e2e 137 + 27 (было 136 + 27). Критерии 1–5 — **PASS** (Linux; CI run 38431447697 — Linux, Windows, сборка и установщик — PASS). Отклонения от плана: отдельный `repos.py` не выделен — SQL остался в `library.py`, `userdata.py`, `playlists.py`, которые уже служат репозиториями, а `_q`/`transaction` — адаптерами (вынос — вместе с сервисным слоем, не раньше S13/S15); в `frontend/app.js` изменена одна функция `trackPayload` (без неё исправление M6 не доходило до пользователя); лаунчер показывает причину ошибки базы. Проверка формата `id` на входе остаётся в S13.
+
 - **Изменения.** `persistence/db.py` (PRAGMA, `transaction()`), `migrations.py` (`user_version`, v1 — текущая схема, бэкап `sqlite3.backup()`, хранятся три копии), репозитории. Атомарные операции с плейлистами. Ретеншн истории. Поля `explicit`, `plays`, `released` в `TrackIn`.
 - **Модули.** `backend/library.py`, `backend/userdata.py`, `backend/playlists.py`, новые `backend/persistence/*`.
 - **Тесты.** `test_db_migrations.py` на фикстурах баз «5a7f27c» и «без `downloads.root`»; `test_playlists` (конкурентное добавление → без 500, xfail снимается); `test_userdata` (поля сохраняются).
 - **Критерии приёмки.**
-  1. Миграция реальной структуры базы без потери строк, по количеству и выборочному содержимому.
-  2. Бэкап создаётся до миграции.
-  3. Сбой миграции даёт откат.
-  4. Повторный запуск идемпотентен.
-  5. e2e 109+.
+  1. Миграция реальной структуры базы без потери строк, по количеству и выборочному содержимому — **PASS** (`test_db_migrations`: базы «5a7f27c» и «без `downloads.root`», полное сравнение всех таблиц; вручную — база, записанная кодом S5).
+  2. Бэкап создаётся до миграции — **PASS** (`test_backup_is_made_before_migration`: копия совпадает с базой до обновления, `user_version` 0).
+  3. Сбой миграции даёт откат — **PASS** (`test_failed_migration_rolls_back`: схема, данные, `user_version` и режим журнала прежние; приложение не стартует).
+  4. Повторный запуск идемпотентен — **PASS** (`test_repeated_startup_is_idempotent`, `test_current_database_is_left_alone`).
+  5. e2e 109+ — **PASS**: 137 + 27.
 
 ### S7. Адаптеры провайдеров
 

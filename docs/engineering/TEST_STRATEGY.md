@@ -65,6 +65,17 @@
 | `tests/installer/run_installer_checks.ps1` (WIN-2, 3, 4, 8, 9, 13, 15) | **PASS** все 17 проверок, в том числе установка под стандартной учётной записью и `e2e_smoke.py` против установленного `Wave.exe` (123 проверки) | CI `windows-latest` (окна не видны) |
 | Ручной чек-лист [checklists/S4_WINDOWS_CHECK.md](checklists/S4_WINDOWS_CHECK.md): сборка, интерактивная установка, «Пуск», воспроизведение, второй запуск, обновление, удаление, сообщения установщика | **PASS**: все ручные проверки пройдены, `build_windows.bat` — код 0, установщик 54 974 824 байта, версия 0.1.0 (подтверждение владельца при приёмке S4 2026-10-13; результаты по отдельным пунктам в репозиторий не вносились). Машина без встроенного WebView2 (п. 8б) в подтверждении отдельно не указана | Windows 11 x64 владельца |
 
+### Состояние после S6 (2026-10-13, ветка `claude/s6-sqlite`, подробности — [reports/S6.md](reports/S6.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 765 passed + 9 skipped + 7 xfail (было 712 + 9 + 10 на `072d614`; сняты M5, M6 ×2). Skipped — только Windows-тесты и тесты с настоящим Deno без `WAVE_TEST_REAL_DENO` | Linux, Python 3.12.3; CI `ubuntu-latest` (772 passed + 2 skipped), `windows-latest` (774 passed, 0 skipped), run 38431447697 |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 137 + 27 (было 136 + 27; + сохранение `explicit`/`plays`/`released` при лайке из строки списка) | Linux Chromium; CI Linux и Windows Chromium (не WebView2) |
+| `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
+| Миграция базы, записанной кодом S5 (вручную, вне pytest) | **PASS**: строки всех таблиц совпали, `user_version` 1, WAL, копия `-v0` | Linux |
+| `windows-build`: сборка, установщик, 17 проверок установщика, e2e против установленного `Wave.exe` (137) | **PASS** | CI `windows-latest` |
+| Обновление установленной Wave поверх S5 на Windows с настоящим профилем | **NOT RUN** — нужна Windows-машина (ручной пункт в reports/S6.md §7) | — |
+
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
 ## 3. Изоляция данных (обязательно с этапа S0)
@@ -130,10 +141,11 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_stream_lifespan.py` | последовательные lifespan в одном процессе, конкурентные запросы → без `RuntimeError` (M1, исправлено в S2b); остановка посреди прогрева; состояние резолвера отказывает в чужом цикле |
 | `tests/api/test_search_isolation.py` | `yt` OK + `sc` падает → 200, `failed_sources=["sc"]`, результат не кэшируется; `sc` в cooldown не опрашивается; оба падают → 502; таймаут провайдера; пагинация `offset`/`has_more`; пустой и слишком длинный `q` → 422/400 |
 | `tests/api/test_recommendations.py` | скоринг по таблице `W` на фиксированных данных; ограничение `MAX_PER_ARTIST`; исключение недавних и `exclude`; дубли по `_sig`; четыре исхода (S2c): результаты, пусто без сбоя, частичный и полный сбой (`failed_sources`, `source_status`); честные `personalized` и `radio` |
-| `tests/api/test_userdata.py` | избранное: добавить, повторить, удалить, порядок по `added_at`; история: `GROUP BY`, пагинация, `skip`, очистка обоими эндпоинтами; потеря `explicit`/`plays`/`released` (M6: фиксируем, после S6/S13 ждём сохранения) |
-| `tests/api/test_settings.py` | ключи и валидация, неизвестный ключ → 400, `downloads_dir`: относительный путь → 400, недоступный для записи → 400, `WAVE_DOWNLOADS_DIR` блокирует; S2a: ключи интерфейса, атомарность (N1), испорченные строки, однократный перенос из localStorage, `boot.js`, **два запуска uvicorn на разных портах с одним профилем** |
-| `tests/api/test_playlists.py` | CRUD; дубль трека → `added: false`; позиции; переименование пустым именем → 400; удаление каскадом; конкурентное добавление одного трека не даёт 500 (M5: xfail до S6) |
-| `tests/unit/test_db_migrations.py` (S6) | фикстура базы «как в 5a7f27c» и «старее, без `downloads.root`» → миграция до последней версии без потери строк; бэкап создан; повторный запуск идемпотентен; ошибка миграции → откат и исходная база цела |
+| `tests/api/test_userdata.py` | избранное: добавить, повторить, удалить, порядок по `added_at`; история: `GROUP BY`, пагинация, `skip`, очистка обоими эндпоинтами; `explicit`/`plays`/`released` сохраняются, старые снимки читаются как есть, запись с «/» в `id` удаляется (M6, исправлено в S6); ретеншн истории: лимит по умолчанию, проверка значения, обрезка при записи, при уменьшении лимита и при запуске, другие таблицы не тронуты (S6) |
+| `tests/api/test_settings.py` | ключи и валидация, неизвестный ключ → 400, `downloads_dir`: относительный путь → 400, недоступный для записи → 400, `WAVE_DOWNLOADS_DIR` блокирует; S2a: ключи интерфейса, атомарность (N1), испорченные строки, однократный перенос из localStorage, `boot.js`, **два запуска uvicorn на разных портах с одним профилем**; S6: ключ `history_limit` в значениях по умолчанию |
+| `tests/api/test_playlists.py` | CRUD; дубль трека → `added: false`; позиции; переименование пустым именем → 400; удаление каскадом; конкурентное добавление одного трека и 16 параллельных POST — без 500, без дублей, позиции без пропусков (M5, исправлено в S6); добавление в удалённый плейлист → 404; откат добавления, удаления трека и плейлиста при сбое; полный снимок трека; удаление трека с «/» в `id` |
+| `tests/unit/test_db_migrations.py` (S6) | базы «как в 5a7f27c» (схема снята с кода коммита, `tests/fixtures/db/schema_5a7f27c.sql`), «старее, без `downloads.root` и плейлистов» и актуальная → миграция до v1 без потери строк (все таблицы целиком), данные видны через API; копия до миграции совпадает с исходной базой; без копии миграция не идёт; сбой после CREATE/ALTER → откат схемы, данных, `user_version`, режима журнала, приложение не стартует; неизвестная старая структура → понятная ошибка; повторные запуски идемпотентны; имена копий без перезаписи, хранятся три, оборванная копия не вытесняет целые; база v1 открывается кодом до S6 |
+| `tests/unit/test_db.py` (S6) | PRAGMA (WAL, NORMAL, foreign_keys, busy_timeout); одиночные запросы сразу видны другому соединению; `transaction()` — commit и rollback; вложенный вызов → `NestedTransactionError` без взаимной блокировки; 8 потоков × 50 read-modify-write без потерь; запрос до открытия базы; повторный `init` закрывает прежнее соединение; повреждённый файл и база от более новой Wave → понятная ошибка, файл не изменён |
 | `tests/api/test_downloads.py` | старт → `jobs` → done (CDN через `MockTransport`); апстрим без Range (200); `Content-Range */*`; ошибка посередине → каталог `.part` удалён, индекс не тронут; сбой и не-JSON ответ LRCLIB не отменяют загрузку (M8, закрыто на S5); прогресс по полученным байтам (`received`, `total`, `progress`) перед каждой порцией; повторный запрос (готовый → `done`, активный → та же задача); сохранность загрузок после перезапуска |
 | `tests/unit/test_lyrics.py` | `_parse_lrc`: таймкоды `mm:ss.xx`, пустые строки, без таймкодов; 404 → пустой результат; не-JSON → `None`, без исключения |
 | `tests/unit/test_jsruntime.py` (S3) | поддельный Deno в путях с пробелами и кириллицей: найден и совместим, отсутствует, не запускается, неожиданный ответ, старая версия, граница 2.3.0, таймаут; порядок поиска (env без подмены → bundle → PATH только в разработке), frozen не берёт системный Deno и cwd; настоящий `YoutubeDL` получает наш путь или пустой `js_runtimes`; `DENO_DIR`/`DENO_NO_UPDATE_CHECK`; пересоздание `YoutubeDL` при смене runtime; сторож процессов (таймаут, завершение, счётчик `run`); только Windows: нет окна консоли, Job Object завершает процесс; логгер yt-dlp |
@@ -151,7 +163,7 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_origin_guard.py` (S13) | мутирующий запрос с чужим `Origin` → 403; без `Origin` и со своим → OK; GET не затронут |
 | `tests/js/queue.test.mjs` (S9) | модель очереди: add/next/prev/remove/move/clear, индекс текущего при перестановках, shuffle без повторов и с историей для «назад», repeat off/one/all, сериализация и восстановление |
 | `tests/js/format.test.mjs` (S9) | `fmtTime`, `plural`, `thumb` |
-| `tests/e2e_smoke.py` | 136 проверок после S5 (123 после S3): + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); S5 — раздел «Загрузки»: этапы «Подготовка»/«Скачивание N%»/«Обработка», «Скачано», причина недоступного потока без повторного запроса, меню без «Скачать» для недоступного трека, повтор после временной ошибки, список «Скачанных»; дальше — клавиатурная навигация (S12) |
+| `tests/e2e_smoke.py` | 137 проверок после S6 (+ лайк из строки списка сохраняет `explicit`, `plays`, `released`), 136 после S5 (123 после S3): + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); S5 — раздел «Загрузки»: этапы «Подготовка»/«Скачивание N%»/«Обработка», «Скачано», причина недоступного потока без повторного запроса, меню без «Скачать» для недоступного трека, повтор после временной ошибки, список «Скачанных»; дальше — клавиатурная навигация (S12) |
 | `tests/e2e_settings.py` (S2a) | 24 проверки: настройки интерфейса через UI на порту A → те же значения после перезапуска на порту B в новом окне (тема до отрисовки, имя, громкость, тексты, обложки миксов); однократный перенос из localStorage, старые ключи не удаляются |
 
 **Фикстуры провайдеров** (`tests/fixtures/ytmusic/*.json`, `tests/fixtures/soundcloud/*.json`):
@@ -283,7 +295,7 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 
 Тест описывает **правильное** поведение и сейчас падает по указанной причине (проверено запуском с `--runxfail`). Когда дефект исправят, тест начнёт проходить, `strict` превратит это в FAIL — значит, пора снять маркер в том же коммите, что и исправление.
 
-После S2 осталось 13:
+После S6 осталось 7 (pytest: `7 xfailed`):
 
 | ID | Тест | Что происходит сейчас | Этап |
 |---|---|---|---|
@@ -291,25 +303,24 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 | L2 | `api/test_stream_local.py::test_malformed_range_is_ignored` ×3 | битый Range на скачанном файле → 400 вместо 200 | S8 |
 | L2 | `api/test_stream_local.py::test_head_request_supported` | `HEAD /api/stream/...` → 404 | S8 |
 | M3 | `api/test_search_isolation.py::test_youtube_failure_enters_cooldown` | YouTube опрашивается снова при каждом поиске после сбоя | S7 |
-| M5 | `api/test_playlists.py::test_concurrent_add_of_same_track` | гонка двух добавлений → `IntegrityError` (через API — 500) | S6 |
-| M6 | `api/test_userdata.py::test_favorite_keeps_all_track_fields` | `explicit`, `plays`, `released` теряются при сохранении | S6 |
-| M6 | `api/test_userdata.py::test_saved_favorite_can_always_be_removed` | запись с `/` в `id` сохраняется, удалить её нельзя | S6, S13 |
-| M7 | `api/test_local_api_security.py::test_cross_origin_mutation_is_refused` | `POST /api/settings/clear-history` с чужим `Origin` выполняется | S13 |
-| M8 | `unit/test_lyrics.py::test_non_json_response_is_temporary_failure` | не-JSON ответ LRCLIB → `JSONDecodeError` | S11 |
-| M8 | `api/test_lyrics_api.py::test_non_json_service_response_is_handled` | то же через `/api/lyrics` → 500 | S11 |
-| M8 | `api/test_downloads.py::test_broken_lyrics_response_does_not_fail_download` | загрузка падает на шаге `processing`, скачанное аудио удаляется | S11 |
+| M7 | `api/test_local_api_security.py::test_cross_origin_mutation_is_refused` | `POST /api/settings/clear-history` с чужого `Origin` выполняется | S13 |
 
-Сняты в S2 (тест проходит без маркера):
+Сняты (тест проходит без маркера):
 
 | ID | Тест | Коммит |
 |---|---|---|
 | H3 | `api/test_settings.py::test_ui_settings_are_persisted_by_backend` | `1070aa8` (S2a) |
 | M1 | `api/test_stream_lifespan.py::test_restart_after_contention_keeps_resolving` | `b72b6cd` (S2b) |
 | M4 | `api/test_recommendations.py::test_all_candidate_sources_failed_is_reported` | `21ddcab` (S2c) |
+| M8 | `unit/test_lyrics.py::test_non_json_response_is_temporary_failure`, `api/test_lyrics_api.py::test_non_json_service_response_is_handled`, `api/test_downloads.py::test_broken_lyrics_response_does_not_fail_download` | `cd4a028` (S5; таблица здесь обновлена на S6) |
+| M5 | `api/test_playlists.py::test_concurrent_add_of_same_track` | `ebb44d6` (S6) |
+| M6 | `api/test_userdata.py::test_favorite_keeps_all_track_fields`, `test_saved_favorite_can_always_be_removed` | `dc070fd` (S6) |
 
-Тесты «как есть», заменённые в S2 вместе с поведением: N1 `test_partial_write_before_error` → `test_write_is_atomic`; M4 `test_all_candidate_sources_failed_returns_empty_200` → проверка `failed_sources`/`source_status` в `test_all_candidate_sources_failed_is_reported`; M13 `personalized` в `test_radio_of_current_track` → `False` + `radio: True`; L6 `test_network_failure_message_is_misleading` → `test_network_failure_is_not_blamed_on_cookies` и соседние. Остаются «как есть»: M3 `test_youtube_is_not_put_in_cooldown`, M5 `test_no_schema_version_yet`.
+`test_concurrent_add_of_same_track` в S1 держал барьер после отдельного запроса проверки дубля — такого запроса в S6 больше нет. Теперь барьер выпускает оба потока к записи одновременно; дополнительно `test_concurrent_api_adds_keep_order_and_no_duplicates` шлёт 16 параллельных POST (на коде S5 падает с HTTP 500 в 3 из 3 запусков).
 
-Сброс `stream._resolve_sem` в `tests/conftest.py:reset_backend_state` удалён в S2b: семафор принадлежит `app.state.resolver` и создаётся заново в каждом lifespan.
+Тесты «как есть», заменённые вместе с поведением: N1 `test_partial_write_before_error` → `test_write_is_atomic` (S2); M4 `test_all_candidate_sources_failed_returns_empty_200` → `test_all_candidate_sources_failed_is_reported` (S2); M13 `personalized` в `test_radio_of_current_track` → `False` + `radio: True` (S2); L6 `test_network_failure_message_is_misleading` → `test_network_failure_is_not_blamed_on_cookies` (S2); M5 `test_no_schema_version_yet` → `unit/test_sqlite_schema.py::test_schema_version_is_current` (S6); снимок избранного без новых полей → `test_favorite_stored_snapshot_fields` с `explicit`/`plays`/`released` (S6). Остаётся «как есть»: M3 `test_youtube_is_not_put_in_cooldown`.
+
+Сброс `stream._resolve_sem` в `tests/conftest.py:reset_backend_state` удалён в S2b: семафор принадлежит `app.state.resolver` и создаётся заново в каждом lifespan. С S6 тот же сброс закрывает соединение `persistence.db` вместо `library._db`.
 
 ## 12. Наблюдения S1, которых не было в аудите
 
