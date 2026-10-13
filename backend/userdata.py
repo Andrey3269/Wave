@@ -31,6 +31,7 @@ def register_cache_clear(fn: Callable[[], None]) -> None:
 
 
 class TrackIn(BaseModel):
+    """Снимок трека для избранного, истории и плейлистов. Поля и типы — как у main.Track (находка M6)."""
     id: str
     source: Literal["yt", "sc"]
     title: str
@@ -39,9 +40,12 @@ class TrackIn(BaseModel):
     album: str | None = None
     duration: int | None = None
     cover: str | None = None
+    explicit: bool = False
     stream_url: str
     artist_id: str | None = None
     artist_ids: list[str | None] = []
+    plays: int | None = None                 # прослушивания (есть только у SoundCloud)
+    released: str | None = None              # дата выхода ISO (есть только у SoundCloud)
     url: str | None = None
 
 
@@ -329,7 +333,9 @@ def add_favorite(t: TrackIn):
     return {"ok": True}
 
 
-@router.delete("/favorites/{source}/{track_id}")
+# `:path`: id мог сохраниться с «/» (до проверки формата id, находка M6) — такую запись тоже можно удалить.
+# Фронтенд кодирует id (encodeURIComponent), Starlette декодирует %2F до маршрутизации.
+@router.delete("/favorites/{source}/{track_id:path}")
 def remove_favorite(source: str, track_id: str):
     _q("DELETE FROM favorites WHERE key = ?", (f"{source}:{track_id}",))
     return {"ok": True}

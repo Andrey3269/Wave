@@ -215,6 +215,24 @@ def test_delete_playlist_is_atomic(db):
     assert db.sql("SELECT COUNT(*) FROM playlist_tracks") == [(1,)]          # треки не потеряны
 
 
+def test_track_with_slash_in_id_can_be_removed(api):
+    """Как у избранного (M6): трек с «/» в id удаляется и закодированным путём, и как есть."""
+    pid = _create(api)
+    for path in (f"/api/playlists/{pid}/tracks/yt/a%2Fb", f"/api/playlists/{pid}/tracks/yt/a/b"):
+        assert api.post(f"/api/playlists/{pid}/tracks", json=track_payload(id_="a/b")).json() == {"added": True}
+        assert api.delete(path).json() == {"ok": True}
+        assert api.get(f"/api/playlists/{pid}").json()["tracks"] == []
+
+
+def test_playlist_track_keeps_all_fields(api):
+    """M6: снимок трека в плейлисте тоже хранит explicit, plays, released."""
+    pid = _create(api)
+    body = track_payload("sc", "1000000001", explicit=True, plays=7, released="2025-03-01T10:00:00Z")
+    api.post(f"/api/playlists/{pid}/tracks", json=body)
+    t = api.get(f"/api/playlists/{pid}").json()["tracks"][0]
+    assert (t["explicit"], t["plays"], t["released"]) == (True, 7, "2025-03-01T10:00:00Z")
+
+
 def test_unique_constraint_backs_duplicate_check(db):
     """Даже при гонке дубль не попадёт в базу: UNIQUE(playlist_id, key) на уровне схемы."""
     pid = playlists.create_playlist(playlists.NameIn(name="x"))["id"]

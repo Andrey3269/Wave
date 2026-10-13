@@ -82,6 +82,17 @@ def track(n: int, reason: str | None = None) -> dict:
     return t
 
 
+# Поля Track, которые до S6 терялись при сохранении в избранное и плейлисты (находка M6)
+FULL_FIELDS = {"explicit": True, "plays": 12345, "released": "2025-03-01T10:00:00Z"}
+
+
+def artist_tracks(n: int) -> list[dict]:
+    """Треки страницы артиста. Второй (trk00000061) лайкается из строки списка — у него все поля Track."""
+    tracks = [track(60 + i) for i in range(n)]
+    tracks[1].update(FULL_FIELDS)
+    return tracks
+
+
 def wav(seconds: int = 30, rate: int = 8000) -> bytes:
     data = b"\x00\x00" * rate * seconds
     return (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
@@ -235,10 +246,10 @@ def handle(route: Route) -> None:
     m = re.match(r"^/api/artist/(\w+)/([\w-]+)(/tracks)?$", path)
     if m:
         if m.group(3):
-            return js(route, {"tracks": [track(60 + i) for i in range(10)], "has_more": False})
+            return js(route, {"tracks": artist_tracks(10), "has_more": False})
         albums = [{"id": f"MPRE{i}", "source": "yt", "kind": "album", "title": f"Альбом {i + 1}", "artist": "GSPD", "year": "202" + str(i), "cover": track(i + 2)["cover"], "track_count": 9, "playlist_id": f"OLAK{i}"} for i in range(5)]
         related = [{"id": f"UCart{i:04d}", "source": "yt", "kind": "artist", "name": ARTISTS[i + 3], "cover": track(i + 3)["cover"], "subtitle": "300 тыс. подписчиков"} for i in range(4)]
-        return js(route, {"artist": {"name": "GSPD", "cover": track(1)["cover"], "subtitle": "2,5 млн подписчиков"}, "albums": albums, "related": related, "tracks": [track(60 + i) for i in range(20)], "has_more": True})
+        return js(route, {"artist": {"name": "GSPD", "cover": track(1)["cover"], "subtitle": "2,5 млн подписчиков"}, "albums": albums, "related": related, "tracks": artist_tracks(20), "has_more": True})
 
     m = re.match(r"^/api/album/(\w+)/([\w-]+)$", path)
     if m:
@@ -590,6 +601,10 @@ def main() -> int:
         page.click("#tracks .row:nth-child(2) .track__fav")
         page.wait_for_function("document.querySelectorAll('#tracks .row:nth-child(2) .track__fav.is-fav').length === 1")
         check(True, "лайк в строке списка")
+        saved = page.evaluate("fetch('/api/favorites').then(r => r.json())"
+                              ".then(d => d.items.find(t => t.id === 'trk00000061') || null)")
+        check(saved is not None and {k: saved.get(k) for k in FULL_FIELDS} == FULL_FIELDS,
+              "избранное сохраняет explicit, прослушивания и дату выхода трека (S6, M6)")
         page.click("#tracks .row:nth-child(1) .track__more")
         page.click("#menu [data-act=playlist]")
         page.wait_for_selector("#dlg-pick[open] .pick__item")

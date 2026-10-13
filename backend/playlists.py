@@ -107,7 +107,8 @@ def add_track(pid: int, t: userdata.TrackIn):
     return {"added": True}
 
 
-@router.delete("/playlists/{pid}/tracks/{source}/{track_id}")
+# `:path` — как у избранного: трек с «/» в id (сохранённый до проверки формата) тоже удаляется.
+@router.delete("/playlists/{pid}/tracks/{source}/{track_id:path}")
 def remove_track(pid: int, source: str, track_id: str):
     with library.transaction() as db:                 # удаление и updated_at — вместе
         db.execute("DELETE FROM playlist_tracks WHERE playlist_id = ? AND key = ?", (pid, f"{source}:{track_id}"))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 
 import pytest
@@ -10,6 +11,16 @@ import userdata
 from wavetest.fakes import track_payload
 
 A, B, C = "AAAAAAAAAA1", "BBBBBBBBBB1", "CCCCCCCCCC1"
+
+
+def _write(profile, sql: str, rows: list[tuple]) -> None:
+    """Запись в тестовую базу мимо API (отдельное соединение, с commit) — данные «от прошлой версии»."""
+    con = sqlite3.connect(profile.db_path)
+    try:
+        con.executemany(sql, rows)
+        con.commit()
+    finally:
+        con.close()
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +53,10 @@ def test_favorite_stored_snapshot_fields(api):
     body = track_payload(id_=A, title="Песня «ВОЛНА»", artists=["Артист", "Гость"], artist_ids=["UCa", None])
     api.post("/api/favorites", json=body)
     stored = json.loads(api.profile.sql("SELECT data FROM favorites")[0][0])
-    assert stored == {k: body[k] for k in ("id", "source", "title", "artist", "artists", "album", "duration", "cover",
-                                           "stream_url", "artist_id", "artist_ids", "url")}
+    # S6 (M6): снимок содержит все поля Track, в том числе explicit, plays, released
+    assert stored == {**{k: body[k] for k in ("id", "source", "title", "artist", "artists", "album", "duration", "cover",
+                                              "explicit", "stream_url", "artist_id", "artist_ids", "url")},
+                      "plays": None, "released": None}
     assert api.profile.sql("SELECT key FROM favorites") == [(f"yt:{A}",)]
 
 
@@ -64,22 +77,34 @@ def test_favorite_validation(api, bad):
     assert api.profile.sql("SELECT COUNT(*) FROM favorites")[0][0] == 0
 
 
-@pytest.mark.xfail(strict=True, reason="M6: TrackIn не содержит explicit, plays, released — при сохранении они теряются")
 def test_favorite_keeps_all_track_fields(api):
+    """M6 (исправлено в S6): explicit, plays, released сохраняются и читаются обратно."""
     body = track_payload("sc", "1000000001", explicit=True, plays=12345, released="2025-03-01T10:00:00Z")
     api.post("/api/favorites", json=body)
     item = api.get("/api/favorites").json()["items"][0]
     assert (item.get("explicit"), item.get("plays"), item.get("released")) == (True, 12345, "2025-03-01T10:00:00Z")
+    assert userdata.favorite_tracks()[0]["plays"] == 12345                 # то же видят рекомендации
 
 
-@pytest.mark.xfail(strict=True, reason="M6: id не проверяется по формату источника; запись с '/' в id нельзя удалить")
+@pytest.mark.parametrize("field, value", [("explicit", "да"), ("plays", "много"), ("released", 5)])
+def test_new_track_fields_are_validated(api, field, value):
+    assert api.post("/api/favorites", json=track_payload(**{field: value})).status_code == 422
+    assert api.profile.sql("SELECT COUNT(*) FROM favorites")[0][0] == 0
+
+
+def test_favorite_saved_before_s6_is_read_as_is(api):
+    """Старый снимок без explicit/plays/released читается без изменений, ответ не падает."""
+    old = {k: v for k, v in track_payload(id_=A).items() if k != "explicit"}
+    _write(api.profile, "INSERT INTO favorites (key, data, added_at) VALUES (?, ?, 1)", [(f"yt:{A}", json.dumps(old))])
+    assert api.get("/api/favorites").json()["items"] == [old]
+
+
 def test_saved_favorite_can_always_be_removed(api):
-    r = api.post("/api/favorites", json=track_payload(id_="a/b"))
-    if r.status_code == 200:
-        api.delete("/api/favorites/yt/a/b")
+    """M6 (исправлено в S6): запись с «/» в id удаляется — и как шлёт фронтенд (%2F), и как есть."""
+    for path in ("/api/favorites/yt/a%2Fb", "/api/favorites/yt/a/b"):
+        assert api.post("/api/favorites", json=track_payload(id_="a/b")).status_code == 200
+        assert api.delete(path).json() == {"ok": True}
         assert api.get("/api/favorites").json()["items"] == []
-    else:
-        assert r.status_code == 422
 
 
 def test_favorites_survive_restart(harness):
