@@ -245,3 +245,30 @@ def test_redownload_replaces_unindexed_folder(dl):
     dl.post("/api/downloads", json=REQ)
     assert wait_job(dl)["state"] == "done"
     assert not (stale / "old.txt").exists() and (stale / "audio.m4a").is_file()
+
+
+@pytest.mark.parametrize("artist, title", [("../../..", "../escape"), ("..\\..\\x", "C:\\Windows\\evil"),
+                                           ("/etc", "passwd"), ("..", "..")])
+def test_track_names_cannot_write_outside_downloads(dl, artist, title):
+    """Название и исполнитель приходят от клиента: папка загрузки всё равно создаётся внутри каталога загрузок."""
+    before = sorted(p.name for p in dl.profile.root.iterdir())
+    dl.post("/api/downloads", json={**REQ, "artist": artist, "title": title})
+    assert wait_job(dl)["state"] == "done"
+    assert sorted(p.name for p in dl.profile.root.iterdir()) == before          # рядом с профилем ничего нового
+    [folder] = dl.profile.downloads.iterdir()
+    assert folder.name.endswith(f"[yt-{YT}]") and not set("/\\:") & set(folder.name)
+    assert dl.profile.sql("SELECT folder FROM downloads") == [(folder.name,)]
+
+
+def test_existing_downloads_survive_restart(harness):
+    """Скачанное в прошлом запуске остаётся в индексе и играет с диска после перезапуска приложения."""
+    with harness.client() as h:
+        h.net.add_file(CDN, DATA, "audio/mp4")
+        h.post("/api/downloads", json=REQ)
+        assert wait_job(h)["state"] == "done"
+    with harness.client() as h:
+        assert [t["id"] for t in h.get("/api/downloads").json()["items"]] == [YT]
+        before = h.resolver.total()
+        r = h.get(f"/api/stream/yt/{YT}", headers={"Range": "bytes=0-99"})
+        assert r.status_code == 206 and r.content == DATA[:100]
+        assert h.resolver.total() == before                                     # без обращения к источнику
