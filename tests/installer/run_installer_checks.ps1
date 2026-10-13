@@ -246,9 +246,14 @@ Step "WIN-2 install (per-user, silent)" {
     Assert (-not (Compare-Object $extra $ExpectedExtras)) "unexpected extra files: $($extra -join ', ')"
     Assert ((Get-FileHash (Join-Path $AppDir "THIRD_PARTY_NOTICES.txt")).Hash -eq $DistTree["_internal\licenses\THIRD_PARTY_NOTICES.txt"]) "THIRD_PARTY_NOTICES.txt next to Wave.exe differs"
     $sh = New-Object -ComObject WScript.Shell
+    $exeItem = Get-Item (Join-Path $AppDir "Wave.exe")
     foreach ($lnk in $StartMenu, $Desktop) {
         Assert (Test-Path $lnk) "shortcut missing: $lnk"
-        Assert ($sh.CreateShortcut($lnk).TargetPath -eq (Join-Path $AppDir "Wave.exe")) "shortcut $lnk points elsewhere"
+        $target = $sh.CreateShortcut($lnk).TargetPath
+        # путь может прийти в коротком (8.3) виде или в другом регистре: сравнивается сам файл
+        $same = $target -and (Test-Path $target) -and ((Get-Item $target).FullName -ieq $exeItem.FullName -or
+                (Get-FileHash $target).Hash -eq (Get-FileHash $exeItem.FullName).Hash -and (Split-Path $target -Leaf) -ieq "Wave.exe")
+        Assert $same "shortcut $lnk points to '$target', expected '$($exeItem.FullName)'"
     }
     $key = Get-ItemProperty -Path "HKCU:\$UninstallKey"
     Assert ($key.DisplayVersion -eq $Version) "HKCU uninstall DisplayVersion=$($key.DisplayVersion)"
@@ -454,16 +459,21 @@ Step "WIN-2 standard (non-admin) user" {
         $log = Join-Path $shared "stduser-install.log"
         # Процесс от имени другого пользователя наследует окружение этого: TEMP раннера ему недоступен,
         # и установщику негде распаковаться (код 1). Даём общую временную папку.
+        # То же с путями профиля: известные папки Windows (LocalAppData и др.) раскрываются через %USERPROFILE%
+        # процесса, а он унаследован от раннера — установщик получал «доступ запрещён» (0x80070005).
         $tmp = Join-Path $shared "tmp"; New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-        $oldTemp, $oldTmp = $env:TEMP, $env:TMP
-        $env:TEMP = $tmp; $env:TMP = $tmp
+        $home2 = Join-Path (Split-Path $env:USERPROFILE) $user
+        $saved = @{}
+        $vars = @{ TEMP = $tmp; TMP = $tmp; USERPROFILE = $home2; HOMEPATH = $home2.Substring(2); USERNAME = $user;
+                   APPDATA = "$home2\AppData\Roaming"; LOCALAPPDATA = "$home2\AppData\Local" }
+        foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $vars[$k]) }
         try {
             $p = Start-Process -FilePath (Join-Path $shared ([IO.Path]::GetFileName($Installer))) -ArgumentList (Setup-Args $log) `
                  -Credential $cred -LoadUserProfile -WorkingDirectory $shared -PassThru
         } catch {
             return "BLOCKED: cannot start a process as a local standard user here: $($_.Exception.Message)"
         } finally {
-            $env:TEMP = $oldTemp; $env:TMP = $oldTmp
+            foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
         }
         $null = $p.Handle
         if (-not $p.WaitForExit(300000)) { Stop-Process -Id $p.Id -Force; throw "setup as $user did not finish" }
