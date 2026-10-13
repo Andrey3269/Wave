@@ -71,6 +71,9 @@ class SearchResponse(BaseModel):
     tracks: list[Track]
     failed_sources: list[str] = []           # источники, которые не ответили ("yt", "sc")
     has_more: bool = False                   # есть ли смысл просить следующую страницу
+    # S7 (аддитивно): состояние каждого источника в этом ответе — ok | degraded | cooldown | disabled
+    # (providers/base.SourceStatus). failed_sources = источники со статусом cooldown или degraded.
+    source_status: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +182,12 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost
 @app.exception_handler(ProviderError)
 async def provider_error(request: Request, exc: ProviderError):
     """
-    Сбой источника (S7). `detail` — понятный текст, как и раньше (на него опирается фронтенд); `code` и
-    `source` — аддитивно: машинный тип ошибки (providers/base.ERROR_KINDS) и источник. Статус 502, как до S7.
+    Сбой источника (S7). `detail` — понятный текст, как и раньше (на него опирается фронтенд); аддитивно:
+    `code` — машинный тип ошибки (providers/base.ERROR_KINDS), `source` — источник, `source_status` — его
+    состояние (cooldown — пауза после сбоя, degraded — прочие сбои). Статус 502, как до S7.
     """
-    return JSONResponse(status_code=502, content={"detail": exc.user_message, "code": exc.code, "source": exc.source})
+    return JSONResponse(status_code=502, content={"detail": exc.user_message, "code": exc.code, "source": exc.source,
+                                                  "source_status": {exc.source: exc.status}})
 
 
 app.include_router(stream_router)  # /api/stream/{source}/{id}
@@ -210,13 +215,27 @@ async def diagnostics_report():
     return await asyncio.to_thread(diagnostics.collect, True)
 
 
-def _all_sources_failed(selected: list[str], errors: dict[str, BaseException]) -> JSONResponse:
+def _status_of(exc: BaseException) -> str:
+    """Статус источника, который не ответил: cooldown (пауза после сбоя) или degraded (прочие сбои)."""
+    return exc.status if isinstance(exc, ProviderError) else "degraded"
+
+
+def _disabled_sources(wanted: set[str] | None) -> dict[str, str]:
+    """Источники, выключенные для поиска (SEARCH_SOURCES), которые были запрошены (или все, если не уточняли)."""
+    return {n: "disabled" for n, p in providers.REGISTRY.items()
+            if not p.search_enabled and (wanted is None or n in wanted)}
+
+
+def _all_sources_failed(selected: list[str], errors: dict[str, BaseException],
+                        status: dict[str, str]) -> JSONResponse:
     """
     Ни один выбранный источник не ответил: 502, как до S7. Если источник был один (так ищет фронтенд —
     по каждому источнику отдельно), `detail` — его понятная причина (пауза после сбоя, таймаут …);
-    для нескольких — прежний текст. Аддитивно: `code`, `source` (для одного источника), `failed_sources`.
+    для нескольких — прежний текст. Аддитивно: `code`, `source` (для одного источника), `failed_sources`,
+    `source_status`.
     """
-    body: dict = {"detail": "Источники поиска недоступны", "code": "unavailable", "failed_sources": list(errors)}
+    body: dict = {"detail": "Источники поиска недоступны", "code": "unavailable", "failed_sources": list(errors),
+                  "source_status": status}
     if len(selected) == 1:
         err = errors.get(selected[0])
         if isinstance(err, ProviderError):
@@ -224,6 +243,16 @@ def _all_sources_failed(selected: list[str], errors: dict[str, BaseException]) -
         else:
             body["source"] = selected[0]
     return JSONResponse(status_code=502, content=body)
+
+
+@app.get("/api/sources")
+async def sources_report():
+    """
+    Состояние музыкальных источников (S7): статус (ok | degraded | cooldown), сколько осталось до конца паузы,
+    тип последней ошибки, загрузка пула потоков, возможности источника, включён ли он в поиск треков.
+    Без сети, секретов и ссылок.
+    """
+    return {"sources": {name: p.snapshot() for name, p in providers.REGISTRY.items()}}
 
 
 @app.get("/api/search", response_model=SearchResponse)
@@ -246,10 +275,12 @@ async def search(
         raise HTTPException(status_code=400, detail="Неизвестные или отключённые источники")
 
     key = (query.lower(), limit, offset, ",".join(selected))
+    disabled = _disabled_sources(wanted)
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not None:                   # в кэше только полные результаты: все выбранные источники ответили
         return SearchResponse(query=query, count=len(cached), tracks=cached,
-                              has_more=bool(cached) and offset + limit < MAX_RESULTS)
+                              has_more=bool(cached) and offset + limit < MAX_RESULTS,
+                              source_status={**{n: "ok" for n in selected}, **disabled})
 
     # Источники на паузе после сбоя (cooldown) пропускаем сразу, без ожидания таймаута
     errors: dict[str, BaseException] = {}
@@ -276,14 +307,16 @@ async def search(
         else:
             groups.append(res)
 
+    status = {n: _status_of(errors[n]) if n in errors else "ok" for n in selected}
+    status.update(disabled)
     if not groups:
-        return _all_sources_failed(selected, errors)
+        return _all_sources_failed(selected, errors, status)
 
     tracks = _interleave(groups, offset + limit)[offset:]
     if not failed_sources:  # неполные результаты не кэшируем, чтобы источник мог «выздороветь»
         _cache_set(key, tracks)
     return SearchResponse(query=query, count=len(tracks), tracks=tracks, failed_sources=failed_sources,
-                          has_more=bool(tracks) and offset + limit < MAX_RESULTS)
+                          has_more=bool(tracks) and offset + limit < MAX_RESULTS, source_status=status)
 
 
 # Раздача фронтенда (Шаги 3–4). Монтируем В САМОМ КОНЦЕ, после всех /api-роутов,

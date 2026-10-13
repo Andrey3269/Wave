@@ -150,7 +150,7 @@ def test_catalog_timeout_is_a_clear_error(api, monkeypatch):
         gate.set()
     assert r.status_code == 502
     assert r.json() == {"detail": "YouTube Music не ответил вовремя. Попробуйте позже.", "code": "timeout",
-                        "source": "yt"}
+                        "source": "yt", "source_status": {"yt": "cooldown"}}
 
 
 def test_broken_answer_inside_adapter_is_an_internal_error_of_that_source(api):
@@ -167,7 +167,7 @@ def test_single_source_failure_explains_itself(api):
     r = api.get("/api/search", params={"q": "x", "sources": "sc"})
     assert r.status_code == 502
     assert r.json() == {"detail": "SoundCloud временно недоступен. Попробуйте позже.", "code": "internal",
-                        "source": "sc", "failed_sources": ["sc"]}
+                        "source": "sc", "failed_sources": ["sc"], "source_status": {"sc": "cooldown"}}
     r = api.get("/api/search", params={"q": "y", "sources": "sc"})          # теперь — пауза после сбоя
     assert r.status_code == 502 and r.json()["code"] == "unavailable" and "Повторная попытка" in r.json()["detail"]
     assert api.sc.count("search_tracks") == 1

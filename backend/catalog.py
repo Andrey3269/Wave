@@ -6,6 +6,8 @@ backend/providers/soundcloud.py): свой пул потоков, таймаут
 Здесь — маршруты, проверка входных данных и кэш страниц артистов. Формат карточек прежний:
 artist {id, source, kind, name, cover, subtitle} и album {id, source, kind, title, artist, year, cover,
 track_count, playlist_id}. Ошибка источника отдаётся как 502 с `detail`, `code`, `source` (main.py).
+`source_status` (S7, аддитивно): ok — источник ответил полностью; degraded — часть страницы не получена
+(полный список релизов, альбомы SoundCloud) или альбом собран запасным путём (как плейлист).
 """
 from __future__ import annotations
 
@@ -70,7 +72,7 @@ async def search_cards(request: Request, kind: str, q: str = Query(..., min_leng
         items, more = await p.search_cards(request.app.state, kind, q.strip(), limit, offset, timeout=CATALOG_TIMEOUT)
     except Exception as exc:
         raise _fail(p, exc) from exc
-    return {"items": items, "has_more": more}
+    return {"items": items, "has_more": more, "source_status": {source: "ok"}}
 
 
 # ---------- страница артиста ----------
@@ -101,7 +103,8 @@ async def artist_page(request: Request, source: str, artist_id: str):
     except Exception as exc:
         raise _fail(providers.get(source), exc) from exc
     head = {k: info[k] for k in ("name", "cover", "subtitle")}
-    return {"artist": head, "albums": info["albums"], "related": info.get("related", []), "tracks": tracks, "has_more": more}
+    return {"artist": head, "albums": info["albums"], "related": info.get("related", []), "tracks": tracks, "has_more": more,
+            "source_status": {source: "degraded" if info.get("degraded") else "ok"}}
 
 
 @router.get("/artist/{source}/{artist_id}/tracks")
@@ -112,7 +115,7 @@ async def artist_tracks(request: Request, source: str, artist_id: str,
         tracks, more = await _artist_tracks(request, source, artist_id, offset, limit)
     except Exception as exc:
         raise _fail(providers.get(source), exc) from exc
-    return {"tracks": tracks, "has_more": more}
+    return {"tracks": tracks, "has_more": more, "source_status": {source: "ok"}}
 
 
 # ---------- страница альбома ----------
@@ -123,8 +126,9 @@ async def album_page(request: Request, source: str, album_id: str, pl: str | Non
         raise HTTPException(400, "Некорректный запрос")
     p = providers.get(source)
     try:
-        card, tracks, skipped, _degraded = await p.album(request.app.state, album_id, pl if source == "yt" else None,
+        card, tracks, skipped, degraded = await p.album(request.app.state, album_id, pl if source == "yt" else None,
                                                          timeout=CATALOG_TIMEOUT)
     except Exception as exc:
         raise _fail(p, exc) from exc
-    return {"album": card, "tracks": tracks, "unavailable": max(0, skipped)}
+    return {"album": card, "tracks": tracks, "unavailable": max(0, skipped),
+            "source_status": {source: "degraded" if degraded else "ok"}}

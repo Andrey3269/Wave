@@ -65,7 +65,8 @@ def test_soundcloud_catalog_failure_is_isolated(api):
     api.ytm.songs["*"] = load_fixture("ytmusic/search_songs.json")
     r = api.get("/api/search/artists", params={"q": "x", "source": "sc"})
     assert r.status_code == 502
-    assert r.json() == {"detail": "SoundCloud временно недоступен. Попробуйте позже.", "code": "internal", "source": "sc"}
+    assert r.json() == {"detail": "SoundCloud временно недоступен. Попробуйте позже.", "code": "internal", "source": "sc",
+                        "source_status": {"sc": "cooldown"}}           # сбой поиска переводит SoundCloud в паузу
     assert api.get("/api/search/artists", params={"q": "x", "source": "yt"}).status_code == 200
     assert api.get("/api/search", params={"q": "x", "sources": "yt"}).status_code == 200
 
@@ -136,7 +137,7 @@ def test_artist_source_failure_gives_502(api):
     r = api.get(f"/api/artist/yt/{ART}")
     assert r.status_code == 502                     # S7: источник в тексте, плюс `code` и `source`
     assert r.json() == {"detail": "YouTube Music временно недоступен. Попробуйте позже.", "code": "internal",
-                        "source": "yt"}
+                        "source": "yt", "source_status": {"yt": "degraded"}}   # сбой одной страницы — без паузы
     assert not catalog._artist_cache
 
 

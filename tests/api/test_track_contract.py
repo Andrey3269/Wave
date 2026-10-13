@@ -30,7 +30,9 @@ def test_track_source_is_closed_set(source):
 
 
 def test_search_response_fields():
-    assert set(main.SearchResponse.model_fields) == {"query", "count", "tracks", "failed_sources", "has_more"}
+    # S7: + source_status (аддитивно); прежние поля на месте
+    assert set(main.SearchResponse.model_fields) == {"query", "count", "tracks", "failed_sources", "has_more",
+                                                     "source_status"}
 
 
 def test_search_api_returns_full_track_objects(api):
@@ -39,7 +41,8 @@ def test_search_api_returns_full_track_objects(api):
     r = api.get("/api/search", params={"q": "northern"})
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"query", "count", "tracks", "failed_sources", "has_more"}
+    assert set(body) == {"query", "count", "tracks", "failed_sources", "has_more", "source_status"}   # S7: + source_status
+    assert body["source_status"] == {"yt": "ok", "sc": "ok"}
     assert body["count"] == len(body["tracks"]) > 0
     for t in body["tracks"]:
         assert set(t) == TRACK_FIELDS, t
