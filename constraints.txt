@@ -1,6 +1,7 @@
 # Проверенный набор версий (pip constraints) для backend/requirements.txt и requirements-dev.txt.
 # Получен 2026-10-12: чистый venv, Python 3.12.3, Linux x86_64, `pip freeze`.
 # Дополнен 2026-10-13 (S1): pytest и его зависимости, тем же способом.
+# Дополнен 2026-10-13 (S3): yt-dlp-ejs==0.8.0 (версия из extra yt-dlp[default] для yt-dlp 2026.8.19).
 # С этим набором tests/run_checks.py прошёл полностью (см. docs/engineering/reports/S0.md).
 #
 # Использование:
@@ -49,4 +50,5 @@ uvloop==0.23.0
 watchfiles==1.3.0
 websockets==17.2
 yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
 ytmusicapi==1.12.3

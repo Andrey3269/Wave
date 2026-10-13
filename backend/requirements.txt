@@ -9,5 +9,14 @@ fastapi>=0.115          # API и раздача интерфейса
 uvicorn[standard]>=0.30 # встроенный HTTP-сервер
 ytmusicapi>=1.8         # каталог YouTube Music (неофициальная библиотека)
 httpx>=0.27             # проксирование аудио, LRCLIB, обложки
-yt-dlp                  # резолв прямых ссылок на аудио; обновлять осознанно (см. docs/engineering/ROADMAP.md, S3)
 certifi                 # корневые сертификаты для httpx (импортируется в stream.py напрямую)
+
+# Резолв прямых ссылок на аудио YouTube (S3). Версии закреплены точно: от них зависит,
+# какой JS-runtime и какие скрипты решателя нужны (см. backend/jsruntime.py).
+# yt-dlp-ejs — скрипты решателя JS-задач YouTube; версия ровно та, которую требует extra
+# yt-dlp[default] (проверяет tests/unit/test_dependencies.py). Сам extra [default] не ставим:
+# он тянет mutagen (GPL-2.0-or-later), pycryptodomex и brotli, которые Wave не использует,
+# а mutagen попал бы в распространяемый Wave.exe (docs/engineering/reports/S3.md, §3).
+# Обновлять yt-dlp и yt-dlp-ejs только вместе, отдельным коммитом, с live-проверкой LIVE-2.
+yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
