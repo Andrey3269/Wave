@@ -47,9 +47,17 @@ async def fetch_lyrics(client, artist: str, title: str, duration: int | None = N
         return {"synced": [], "plain": None, "provider": "lrclib"}
     if r.status_code != 200:
         return None
-    data = r.json()
-    return {"synced": _parse_lrc(data.get("syncedLyrics") or ""), "plain": data.get("plainLyrics"),
-            "provider": "lrclib"}
+    try:
+        data = r.json()
+    except ValueError:                       # страница-заглушка вместо JSON (обслуживание, защита от ботов)
+        log.info("LRCLIB ответил не JSON (%s)", r.headers.get("content-type", "?"))
+        return None
+    if not isinstance(data, dict):
+        log.info("LRCLIB ответил JSON неожиданного вида: %s", type(data).__name__)
+        return None
+    synced, plain = data.get("syncedLyrics"), data.get("plainLyrics")
+    return {"synced": _parse_lrc(synced) if isinstance(synced, str) else [],
+            "plain": plain if isinstance(plain, str) and plain else None, "provider": "lrclib"}
 
 
 @router.get("/lyrics")

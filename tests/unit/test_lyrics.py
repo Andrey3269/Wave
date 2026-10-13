@@ -72,8 +72,16 @@ def test_plain_only_lyrics():
     assert fetch(net) == {"synced": [], "plain": "строка", "provider": "lrclib"}
 
 
-@pytest.mark.xfail(strict=True, reason="M8: r.json() без защиты — не-JSON ответ LRCLIB бросает исключение вместо «временного сбоя»")
 def test_non_json_response_is_temporary_failure():
     net = FakeNet()
     net.lyrics = (200, "<html>Cloudflare</html>")
     assert fetch(net) is None
+
+
+@pytest.mark.parametrize("body", [[{"plainLyrics": "x"}], "null", {"syncedLyrics": 5, "plainLyrics": ["x"]}])
+def test_unexpected_json_shape_is_handled(body):
+    """JSON не того вида: список, null или поля не строками — не исключение."""
+    net = FakeNet()
+    net.lyrics = (200, body)
+    out = fetch(net)
+    assert out is None or out == {"synced": [], "plain": None, "provider": "lrclib"}

@@ -65,7 +65,6 @@ def test_required_params(api, params):
     assert api.get("/api/lyrics", params=params).status_code == 422
 
 
-@pytest.mark.xfail(strict=True, reason="M8: не-JSON ответ LRCLIB даёт HTTP 500 вместо пустого результата")
 def test_non_json_service_response_is_handled(api):
     api.net.lyrics = (200, "<html>maintenance</html>")
     r = api.get("/api/lyrics", params=PARAMS)

@@ -152,8 +152,6 @@ def test_missing_lyrics_do_not_fail_download(dl, lyr):
     assert dl.profile.sql("SELECT lyrics FROM downloads") == [(None,)]
 
 
-@pytest.mark.xfail(strict=True, reason="M8: битый (не-JSON) ответ LRCLIB роняет загрузку на шаге processing, "
-                                       "хотя аудио уже скачано")
 def test_broken_lyrics_response_does_not_fail_download(dl):
     dl.net.lyrics = (200, "<html>oops</html>")
     dl.post("/api/downloads", json=REQ)
