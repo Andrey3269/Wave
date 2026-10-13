@@ -156,6 +156,8 @@ jobs:
           WAVE_DATA_DIR: ${{ runner.temp }}\wave-data
         run: |
           $ErrorActionPreference = "Stop"
+          # любая ошибка шага — аннотацией (полный журнал запуска доступен не всегда)
+          trap { Write-Host "::error title=diagnostics step::$($_.Exception.Message -replace '[\r\n]+', ' | ')"; exit 1 }
           $lock = Get-Content "packaging\runtime\deno.lock" -Raw -Encoding utf8 | ConvertFrom-Json
           function Evidence([string]$name) {
             # зависание: какие процессы живы, есть ли у Wave.exe окно (MessageBox), чем кончается wave.log
@@ -233,6 +235,7 @@ jobs:
           $r3 = TimedJob { param($r) Set-Location $r; $o = Join-Path $env:RUNNER_TEMP "diag-wait-redirect.txt"
                            $p = Start-Process -FilePath "dist\Wave\Wave.exe" -ArgumentList "--diagnostics" -Wait -PassThru -RedirectStandardOutput $o
                            "$($p.ExitCode) $((Get-Content $o -Raw -Encoding utf8) -match 'supported=true')" } "Start-Process -Wait -RedirectStandardOutput"
+          Write-Host "::notice title=Start-Process -Wait -RedirectStandardOutput::returned in time; exit code and 'supported=true' in output: '$r3'"
           if ($r3 -ne "0 True") { throw "Start-Process -Wait -RedirectStandardOutput: '$r3'" }
           # 5) после всех запусков не осталось процессов deno.exe
           Start-Sleep -Seconds 1
