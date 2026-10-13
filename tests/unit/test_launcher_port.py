@@ -132,7 +132,8 @@ def run_launcher(tmp_path, wave_profile):
         env.pop(launcher.ENV_PORT, None)
         if port_env is not None:
             env[launcher.ENV_PORT] = port_env
-        code = ("import sys; sys.path.insert(0, %r); import launcher; "
+        # _HEADLESS: сообщения пишутся в журнал, а не в MessageBox (на Windows он ждал бы нажатия бесконечно)
+        code = ("import sys; sys.path.insert(0, %r); import launcher; launcher._HEADLESS = True; "
                 "launcher.single_instance = lambda: %r; launcher.webview2_installed = lambda: True; "
                 "sys.exit(launcher.main([]))" % (str(ROOT / "backend"), single))
         p = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, env=env, capture_output=True, text=True,
