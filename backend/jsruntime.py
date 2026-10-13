@@ -405,7 +405,8 @@ class ProcessGuard:
     def __init__(self, timeout: float = PROCESS_TIMEOUT, use_job: bool = IS_WIN):
         self.timeout = timeout
         self.use_job = use_job
-        self.spawned = 0                 # всего запущено (для диагностики --live)
+        self.spawned = 0                 # всего запущено процессов (включая проверки `--version`)
+        self.runs = 0                    # из них `<runtime> run ...` — решение JS-задачи (диагностика --live, LIVE-2)
         self.killed_on_timeout = 0
         self._procs: dict[int, tuple[subprocess.Popen, float]] = {}
         self._lock = threading.Lock()
@@ -414,9 +415,17 @@ class ProcessGuard:
         self._job_failed = False
         self._job_warned = False
 
+    @staticmethod
+    def _is_run(args) -> bool:
+        if isinstance(args, (list, tuple)):
+            return len(args) > 1 and str(args[1]) == "run"
+        return " run " in f" {args} "            # строка команды (обёртка .cmd через cmd.exe)
+
     def track(self, proc: subprocess.Popen) -> None:
         with self._lock:
             self.spawned += 1
+            if self._is_run(proc.args):
+                self.runs += 1
             self._procs[id(proc)] = (proc, time.monotonic())
             if self._thread is None:
                 self._thread = threading.Thread(target=self._watch, name="wave-procguard", daemon=True)

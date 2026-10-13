@@ -1,5 +1,7 @@
 {
   "_comment": "Публичные цели для живых проверок (python -m pytest -m live). Только общедоступный каталог, без входа в аккаунт.",
   "ytmusic_query": "Daft Punk Get Lucky",
+  "youtube_video_id": "dQw4w9WgXcQ",
+  "_youtube_video_id": "Публичный официальный клип (Rick Astley — Never Gonna Give You Up) для LIVE-2/3/4: без входа и возрастных ограничений.",
   "lyrics": {"artist": "Daft Punk", "title": "Get Lucky", "duration": 369}
 }

@@ -185,7 +185,7 @@ def live_check(video_id: str) -> dict:
     `Range: bytes=0-1023` к полученной ссылке. Ссылка в отчёт не попадает.
     """
     report: dict = {"video_id": video_id, "ok": False, "resolve_seconds": None, "js_runtime_processes": 0,
-                    "range_request": None, "error_kind": None, "error": None}
+                    "js_challenge_runs": 0, "range_request": None, "error_kind": None, "error": None}
     if not VIDEO_ID_RE.fullmatch(video_id or ""):
         report.update(error_kind="bad_id", error="Идентификатор видео YouTube — 11 символов [A-Za-z0-9_-].")
         return report
@@ -193,7 +193,7 @@ def live_check(video_id: str) -> dict:
     import stream
     from yt_dlp.utils import DownloadError
 
-    spawned = jsruntime.GUARD.spawned
+    spawned, runs = jsruntime.GUARD.spawned, jsruntime.GUARD.runs
     t0 = time.monotonic()
     try:
         res = stream._extract_sync("yt", video_id)
@@ -207,6 +207,7 @@ def live_check(video_id: str) -> dict:
     finally:
         report["resolve_seconds"] = round(time.monotonic() - t0, 2)
         report["js_runtime_processes"] = jsruntime.GUARD.spawned - spawned
+        report["js_challenge_runs"] = jsruntime.GUARD.runs - runs      # >0: yt-dlp действительно решал JS-задачи
 
     try:
         with _http_client() as client:
@@ -258,7 +259,8 @@ def format_text(report: dict) -> str:
         if live["ok"]:
             rr = live["range_request"]
             lines.append(f"Проверка трека {live['video_id']}: OK — резолв {live['resolve_seconds']} с, "
-                         f"запусков JS-runtime {live['js_runtime_processes']}, Range-запрос HTTP {rr['status']}")
+                         f"решений JS-задач в Deno {live['js_challenge_runs']} (процессов {live['js_runtime_processes']}), "
+                         f"Range-запрос HTTP {rr['status']}")
         else:
             lines.append(f"Проверка трека {live['video_id']}: ОШИБКА [{live['error_kind']}] {live['error']}")
     if report["issues"]:

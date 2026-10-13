@@ -310,6 +310,21 @@ def test_overdue_child_process_is_killed(js, monkeypatch):
     assert proc.returncode != 0 and js.GUARD.killed_on_timeout == before + 1
 
 
+def test_guard_counts_js_challenge_runs_separately(js, tmp_path, monkeypatch):
+    """`deno run` (решение JS-задачи) считается отдельно от проверок `--version`: на этом стоят LIVE-2 и --live."""
+    from yt_dlp.utils import Popen
+
+    exe = make_fake_deno(tmp_path / "rt")
+    monkeypatch.setenv(js.ENV_PATH, str(exe))
+    spawned, runs = js.GUARD.spawned, js.GUARD.runs
+    assert js.status().ok                                          # проверка версии
+    assert js.GUARD.spawned == spawned + 1 and js.GUARD.runs == runs
+    with Popen([str(exe), "run", "--no-remote", "-"], text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+               stderr=subprocess.PIPE) as proc:
+        proc.communicate_or_kill("1")
+    assert js.GUARD.runs == runs + 1
+
+
 def test_terminate_all_stops_children(js):
     from yt_dlp.utils import Popen
 
