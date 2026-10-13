@@ -92,3 +92,51 @@ def api_get(path: str, query: dict | None = None):
         except Exception:
             _ie = None
             raise
+
+
+# ---------------------------------------------------------------------------
+# Скачивание, разрешённое автором трека (S5)
+# ---------------------------------------------------------------------------
+# У трека в API v2 есть признаки `downloadable` и `has_downloads_left`: автор включил кнопку скачивания
+# на SoundCloud и лимит скачиваний не исчерпан. Тогда эндпоинт tracks/{id}/download отдаёт ссылку на
+# исходный файл автора (`redirectUri`). Так же поступает экстрактор yt-dlp 2026.8.19
+# (SoundcloudBaseIE._extract_info_dict). Без входа в аккаунт SoundCloud эндпоинт обычно отвечает 401:
+# исходный файл выдаётся только зарегистрированным пользователям.
+
+
+class DownloadLinkError(Exception):
+    """kind: auth_required (401) | not_available (403/404) | rate_limited (429) | failed (остальное)."""
+
+    def __init__(self, kind: str, status: int | None = None):
+        super().__init__(f"{kind} (HTTP {status})" if status else kind)
+        self.kind, self.status = kind, status
+
+
+_DL_KINDS = {401: "auth_required", 403: "not_available", 404: "not_available", 410: "not_available",
+             429: "rate_limited"}
+
+
+def download_link(track_id: str) -> str:
+    """
+    Ссылка на исходный файл автора. Блокирующий вызов (запускать в потоке).
+
+    Не через _call_api: тот при 401/403 сбрасывает и заново получает client_id, а здесь 401 означает
+    «нужен вход в аккаунт», а не устаревший client_id (как и в самом yt-dlp).
+    """
+    global _ie
+    with _lock:
+        try:
+            ie = _get_ie()
+            data = ie._download_json(API_BASE + f"tracks/{track_id}/download", f"soundcloud-download-{track_id}",
+                                     note="Ссылка на файл SoundCloud", query={"client_id": ie._CLIENT_ID},
+                                     headers=getattr(ie, "_HEADERS", None) or {})
+        except ExtractorError as exc:
+            status = getattr(exc.cause, "status", None) or getattr(exc.cause, "code", None)
+            raise DownloadLinkError(_DL_KINDS.get(status, "failed"), status) from exc
+        except Exception as exc:
+            _ie = None
+            raise DownloadLinkError("failed") from exc
+    url = data.get("redirectUri") if isinstance(data, dict) else None
+    if not isinstance(url, str) or not url:
+        raise DownloadLinkError("not_available")
+    return url

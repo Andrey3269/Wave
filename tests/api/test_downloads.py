@@ -1,6 +1,8 @@
 """
 Загрузки /api/downloads (backend/downloads.py): трек, обложка, текст и metadata.json в отдельной папке,
 сборка во временном *.part, индекс в SQLite, ошибки и очистка. CDN, обложки и LRCLIB подменены.
+Трек YouTube здесь под лицензией Creative Commons (разрешение источника, S5); отказы и SoundCloud —
+в test_download_policy.py.
 """
 from __future__ import annotations
 
@@ -22,11 +24,13 @@ DATA = audio_bytes(10_000, seed=5)
 REQ = {"source": "yt", "id": YT, "title": "Northern Lights", "artist": "Aurora Wave", "album": "Polar Nights",
        "duration": 225, "cover": COVER}
 FOLDER = "Aurora Wave - Northern Lights [yt-AAAAAAAAAA1]"
+CC = "Creative Commons Attribution license (reuse allowed)"
 
 
 @pytest.fixture
 def dl(api, monkeypatch):
     monkeypatch.setattr(downloads, "DL_CHUNK", 4096)        # несколько порций на маленьком файле
+    api.resolver.licenses[KEY] = CC                         # правообладатель разрешил повторное использование
     api.net.add_file(CDN, DATA, "audio/mp4")
     api.net.images[COVER] = (b"\xff\xd8jpeg", "image/jpeg")
     api.net.lyrics = (200, load_fixture("lrclib/get_synced.json"))
@@ -62,7 +66,7 @@ def test_full_download(dl):
     meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
     assert meta == {"id": YT, "source": "yt", "title": "Northern Lights", "artist": "Aurora Wave", "album": "Polar Nights",
                     "duration": 225, "source_url": f"https://www.youtube.com/watch?v={YT}", "audio": "audio.m4a",
-                    "cover": "cover.jpg", "lyrics": "lyrics.json"}
+                    "cover": "cover.jpg", "lyrics": "lyrics.json", "permission": "creative_commons", "license": CC}
 
     ranges = [q.headers["range"] for q in dl.net.cdn_requests(CDN)]
     assert ranges == ["bytes=0-4095", "bytes=4096-8191", "bytes=8192-12287"]        # порциями с Range
@@ -261,6 +265,7 @@ def test_track_names_cannot_write_outside_downloads(dl, artist, title):
 def test_existing_downloads_survive_restart(harness):
     """Скачанное в прошлом запуске остаётся в индексе и играет с диска после перезапуска приложения."""
     with harness.client() as h:
+        h.resolver.licenses[KEY] = CC
         h.net.add_file(CDN, DATA, "audio/mp4")
         h.post("/api/downloads", json=REQ)
         assert wait_job(h)["state"] == "done"

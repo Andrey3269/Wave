@@ -2,10 +2,17 @@
 Загрузки: трек, обложка, текст и metadata.json сохраняются в отдельную папку.
 
   Downloads/Wave/Artist - Title [yt-ID]/
-      audio.m4a | audio.mp3   (формат источника как есть, ffmpeg не нужен)
+      audio.m4a | audio.mp3 | ...  (формат источника как есть, ffmpeg не нужен)
       cover.jpg
       lyrics.json             (только если текст найден)
       metadata.json
+
+Ход загрузки (состояние задачи в /api/downloads/jobs):
+  preparing    — проверка разрешения источника (download_policy) и получение ссылки;
+  downloading  — аудио порциями с Range, progress = доля от размера (received/total в байтах);
+  processing   — обложка и текст (их отсутствие или сбой загрузку не отменяет), metadata.json;
+  done         — папка перенесена на место, запись в SQLite (library.py), трек в «Скачанных»;
+  error        — error: текст для пользователя, code: машинный код причины (как X-Wave-Error).
 
 Папка собирается во временном каталоге *.part и переименовывается целиком, поэтому
 после сбоя не остаётся полузагруженных треков. Состояние загрузок живёт в памяти
@@ -17,19 +24,23 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
-from typing import Literal
-from urllib.parse import urlparse
+from pathlib import PurePosixPath
+from typing import Awaitable, Callable, Literal
+from urllib.parse import unquote, urlparse
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import download_policy
 import library
 import paths
 from lyrics import fetch_lyrics
-from stream import CHUNK_SIZE, CONTENT_RANGE_RE, SOURCES, _connect
+from stream import CHUNK_SIZE, CONTENT_RANGE_RE, ERROR_HEADER, LOCAL_MIME, SOURCES, STALE_STATUSES, _connect
 
 log = logging.getLogger("musicmeta.downloads")
 router = APIRouter(prefix="/api", tags=["downloads"])
@@ -38,9 +49,19 @@ DL_CHUNK = 4 * 1024 * 1024                    # скачиваем порция�
 ACTIVE = {"preparing", "downloading", "processing"}
 COVER_HOSTS = ("googleusercontent.com", "ytimg.com", "ggpht.com", "sndcdn.com")   # откуда разрешено брать обложки
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
+# Исходный файл автора (SoundCloud) сохраняется как есть, но только в формате, который играет плеер
+# (WebView2/Chromium); тот же набор отдаёт с диска stream.LOCAL_MIME. AIFF, ALAC и т. п. не сохраняем.
+AUDIO_EXT = frozenset(LOCAL_MIME)
+ORIGINAL_TYPES = {"audio/wav": ".wav", "audio/x-wav": ".wav", "audio/wave": ".wav", "audio/vnd.wave": ".wav",
+                  "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/mpeg": ".mp3", "audio/mp3": ".mp3",
+                  "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/ogg": ".ogg", "audio/opus": ".opus",
+                  "audio/webm": ".webm"}
+_DISPOSITION = re.compile(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", re.IGNORECASE)
 
 jobs: dict[str, dict] = {}
 _background: set[asyncio.Task] = set()
+
+Opener = Callable[[str], Awaitable[httpx.Response]]   # открыть поток на диапазон "bytes=a-b"
 
 
 class DownloadRequest(BaseModel):
@@ -57,12 +78,52 @@ def _ext(content_type: str) -> str:
     return next((e for k, e in EXT.items() if k in content_type), ".m4a")
 
 
-async def _download_audio(client, rs, req: DownloadRequest, dest, job: dict) -> str:
+def _original_ext(resp: httpx.Response) -> str:
+    """Расширение исходного файла: имя из Content-Disposition, путь ссылки, затем Content-Type."""
+    names = [m.group(1) for m in [_DISPOSITION.search(resp.headers.get("content-disposition", ""))] if m]
+    names.append(unquote(urlparse(str(resp.request.url)).path) if resp.request else "")
+    for name in names:
+        suffix = PurePosixPath(name.strip()).suffix.lower()
+        if suffix in AUDIO_EXT:
+            return suffix
+    ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+    if ctype in ORIGINAL_TYPES:
+        return ORIGINAL_TYPES[ctype]
+    raise download_policy.refuse(415, "unsupported_format", "Исходный файл автора в формате, который плеер Wave "
+                                                            "не воспроизводит, поэтому он не сохранён.")
+
+
+def _opener(client: httpx.AsyncClient, rs, req: DownloadRequest, perm: download_policy.Permission) -> Opener:
+    """Откуда качать: поток резолвера (YouTube) или исходный файл автора по ссылке SoundCloud."""
+    if perm.url is None:
+        return lambda rng: _connect(client, rs, req.source, req.id, rng)
+
+    state = {"url": perm.url, "renewed": False}
+
+    async def open_original(rng: str) -> httpx.Response:
+        while True:
+            try:
+                up = await client.send(client.build_request("GET", state["url"], headers={
+                    "Range": rng, "Accept-Encoding": "identity"}), stream=True)
+            except httpx.HTTPError as exc:
+                log.info("Исходный файл %s:%s: нет соединения: %r", req.source, req.id, exc)
+                raise download_policy.refuse(503, "network", "Нет связи с SoundCloud. Проверьте подключение "
+                                                             "к интернету и повторите.") from exc
+            if up.status_code in STALE_STATUSES and not state["renewed"]:
+                await up.aclose()                       # ссылка протухла: одна попытка со свежей
+                state.update(url=await download_policy.sc_original_url(req.id), renewed=True)
+                continue
+            return up
+
+    return open_original
+
+
+async def _download_audio(open_range: Opener, dest, job: dict, original: bool = False) -> str:
     """Качает аудио порциями с Range; возвращает расширение файла."""
     pos, total, ext = 0, None, ".m4a"
     with open(dest, "wb") as f:
         while total is None or pos < total:
-            up = await _connect(client, rs, req.source, req.id, f"bytes={pos}-{pos + DL_CHUNK - 1}")
+            up = await open_range(f"bytes={pos}-{pos + DL_CHUNK - 1}")
             got, whole = 0, False
             try:
                 if up.status_code == 206:
@@ -73,10 +134,12 @@ async def _download_audio(client, rs, req: DownloadRequest, dest, job: dict) -> 
                 else:
                     raise RuntimeError(f"Источник вернул HTTP {up.status_code}")
                 if pos == 0:
-                    ext = _ext(up.headers.get("content-type", ""))
+                    ext = _original_ext(up) if original else _ext(up.headers.get("content-type", ""))
+                job["total"] = total
                 async for chunk in up.aiter_raw(CHUNK_SIZE):
                     f.write(chunk)
                     got += len(chunk)
+                    job["received"] = pos + got
                     if total:
                         job["progress"] = min(99, int((pos + got) * 100 / total))
             finally:
@@ -106,6 +169,15 @@ async def _download_cover(client, url: str | None, folder) -> str | None:
         return None
 
 
+async def _fetch_lyrics_safe(client, req: DownloadRequest) -> dict | None:
+    """Текст необязателен: любой сбой сервиса текстов загрузку не отменяет."""
+    try:
+        return await fetch_lyrics(client, req.artist, req.title, req.duration)
+    except Exception as exc:
+        log.info("Текст для загрузки не получен: %r", exc)
+        return None
+
+
 async def _run(client, rs, req: DownloadRequest) -> None:
     key = f"{req.source}:{req.id}"
     job = jobs[key]
@@ -113,17 +185,21 @@ async def _run(client, rs, req: DownloadRequest) -> None:
     target = library.folder_path(name)
     tmp = target.with_name(target.name + ".part")
     try:
+        # preparing: разрешение источника на сохранение (воспроизводимость им не считается)
+        perm = await download_policy.check(rs, req.source, req.id)
+
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir(parents=True)
 
         job["state"] = "downloading"
-        ext = await _download_audio(client, rs, req, tmp / "audio.part", job)
+        ext = await _download_audio(_opener(client, rs, req, perm), tmp / "audio.part", job,
+                                    original=perm.url is not None)
         audio = f"audio{ext}"
         os.replace(tmp / "audio.part", tmp / audio)
 
         job.update(state="processing", progress=99)
         cover = await _download_cover(client, req.cover, tmp)
-        lyr = await fetch_lyrics(client, req.artist, req.title, req.duration)
+        lyr = await _fetch_lyrics_safe(client, req)
         lyrics_file = None
         if lyr and (lyr["synced"] or lyr["plain"]):           # пустой файл «для вида» не создаём
             (tmp / "lyrics.json").write_text(json.dumps(lyr, ensure_ascii=False), encoding="utf-8")
@@ -131,7 +207,9 @@ async def _run(client, rs, req: DownloadRequest) -> None:
 
         meta = {"id": req.id, "source": req.source, "title": req.title, "artist": req.artist,
                 "album": req.album, "duration": req.duration, "source_url": SOURCES[req.source].page_url(req.id),
-                "audio": audio, "cover": cover, "lyrics": lyrics_file}
+                "audio": audio, "cover": cover, "lyrics": lyrics_file,
+                # Почему сохранение разрешено (S5): creative_commons (YouTube) | creator_download (SoundCloud)
+                "permission": perm.basis, "license": perm.license}
         (tmp / "metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
         shutil.rmtree(target, ignore_errors=True)
@@ -141,10 +219,10 @@ async def _run(client, rs, req: DownloadRequest) -> None:
                     size=(target / audio).stat().st_size, created_at=time.time(), root=str(target.parent))
         job.update(state="done", progress=100)
     except HTTPException as exc:
-        job.update(state="error", error=str(exc.detail))
+        job.update(state="error", error=str(exc.detail), code=(exc.headers or {}).get(ERROR_HEADER))
     except Exception:
         log.exception("Загрузка %s не удалась", key)
-        job.update(state="error", error="Не удалось скачать трек. Попробуйте ещё раз.")
+        job.update(state="error", error="Не удалось скачать трек. Попробуйте ещё раз.", code="internal")
     finally:
         job["finished_at"] = time.time()
         shutil.rmtree(tmp, ignore_errors=True)
@@ -170,7 +248,7 @@ async def start_download(req: DownloadRequest, request: Request):
         return {"state": "done", "progress": 100}
     if key in jobs and jobs[key]["state"] in ACTIVE:
         return jobs[key]
-    jobs[key] = {"state": "preparing", "progress": 0, "error": None}
+    jobs[key] = {"state": "preparing", "progress": 0, "error": None, "code": None, "received": 0, "total": None}
     task = asyncio.create_task(_run(request.app.state.http, request.app.state.resolver, req))
     _background.add(task)
     task.add_done_callback(_background.discard)
