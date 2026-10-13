@@ -44,6 +44,14 @@ import paths  # noqa: E402
 
 APP_NAME = "Wave"
 WEBVIEW2_GUID = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+# Где искать WebView2 Runtime (значение pv): установщик installer/wave.iss проверяет те же ключи
+# (tests/unit/test_installer_script.py сверяет списки). Пути — в 64-битном представлении реестра.
+WEBVIEW2_KEYS = (
+    ("HKLM", rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),   # для всех, 64-бит Windows
+    ("HKLM", rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),
+    ("HKCU", rf"Software\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),               # для текущего пользователя
+)
+SINGLE_INSTANCE_MUTEX = "Local\\Wave.Desktop.SingleInstance"   # его же ждёт установщик (AppMutex)
 WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 HEALTH_TIMEOUT = 40.0       # сколько ждём первый ответ backend (импорт yt-dlp при холодном старте долгий)
 WATCH_INTERVAL = 2.0        # как часто проверяем, что backend жив
@@ -112,12 +120,9 @@ def webview2_installed() -> bool:
         return True
     import winreg
 
-    locations = [
-        (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),
-        (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),
-        (winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\EdgeUpdate\Clients\{WEBVIEW2_GUID}"),
-    ]
-    for hive, path in locations:
+    hives = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}
+    for hive_name, path in WEBVIEW2_KEYS:
+        hive = hives[hive_name]
         try:
             with winreg.OpenKey(hive, path) as key:
                 version, _ = winreg.QueryValueEx(key, "pv")
@@ -137,7 +142,7 @@ def single_instance() -> bool:
     if not IS_WIN:
         return True
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _mutex = kernel32.CreateMutexW(None, False, "Local\\Wave.Desktop.SingleInstance")
+    _mutex = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
     return ctypes.get_last_error() != 183          # ERROR_ALREADY_EXISTS
 
 
