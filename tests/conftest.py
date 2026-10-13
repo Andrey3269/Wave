@@ -88,13 +88,16 @@ def _backend():
     import main
     import paths
     import playlists
+    import providers
     import recs
     import soundcloud
     import stream
     import userdata
+    from providers import soundcloud as sc_provider, youtube_music as yt_provider
     return {"catalog": catalog, "downloads": downloads, "jsruntime": jsruntime, "library": library, "lyrics": lyrics,
-            "main": main, "paths": paths, "playlists": playlists, "recs": recs, "soundcloud": soundcloud,
-            "stream": stream, "userdata": userdata}
+            "main": main, "paths": paths, "playlists": playlists, "providers": providers, "recs": recs,
+            "soundcloud": soundcloud, "sc_provider": sc_provider, "stream": stream, "userdata": userdata,
+            "yt_provider": yt_provider}
 
 
 # Статус JS-runtime по умолчанию в тестах: «исправен» (как в правильно собранном приложении), чтобы тесты
@@ -113,7 +116,7 @@ def reset_backend_state() -> None:
     """Сбрасывает модульное состояние backend, чтобы тесты не влияли друг на друга."""
     m = _backend()
     m["main"]._cache.clear()
-    m["main"]._down_until.clear()
+    m["providers"].reset()                               # S7: пауз после сбоя нет, у каждого источника новый пул
     st = m["stream"]
     # Ссылки и «головы» — данные уровня процесса. Асинхронное состояние резолвера (семафор, задачи)
     # с S2b создаёт и закрывает lifespan (app.state.resolver), сбрасывать его здесь не нужно.
@@ -124,7 +127,7 @@ def reset_backend_state() -> None:
     m["downloads"].jobs.clear()
     m["downloads"]._background.clear()
     m["paths"].set_downloads_dir(None)
-    m["soundcloud"]._ie = None
+    m["sc_provider"]._drop_ie()                          # экземпляр yt-dlp SoundCloud в потоке теста (если был)
     st._tls.__dict__.pop("ydls", None)                   # экземпляры YoutubeDL, созданные в потоке теста
     js = m["jsruntime"]
     js.reset()                                           # кэш проверки и переменные окружения DENO_*

@@ -56,12 +56,16 @@ def test_search_cards_validation(api, path, params):
 
 
 def test_soundcloud_catalog_failure_is_isolated(api):
-    """Сбой SoundCloud даёт понятную 502 на его запрос, а YouTube Music продолжает работать."""
+    """
+    Сбой SoundCloud даёт понятную 502 на его запрос, а YouTube Music продолжает работать.
+    S7: `detail` называет источник (было «Источник временно недоступен…»), `code` и `source` — аддитивно.
+    """
     api.sc.responses["search/users"] = RuntimeError("client_id expired")
     api.ytm.search_results[("artists", "*")] = load_fixture("ytmusic/search_artists.json")
     api.ytm.songs["*"] = load_fixture("ytmusic/search_songs.json")
     r = api.get("/api/search/artists", params={"q": "x", "source": "sc"})
-    assert r.status_code == 502 and r.json()["detail"] == "Источник временно недоступен. Попробуйте позже."
+    assert r.status_code == 502
+    assert r.json() == {"detail": "SoundCloud временно недоступен. Попробуйте позже.", "code": "internal", "source": "sc"}
     assert api.get("/api/search/artists", params={"q": "x", "source": "yt"}).status_code == 200
     assert api.get("/api/search", params={"q": "x", "sources": "yt"}).status_code == 200
 
@@ -130,7 +134,9 @@ def test_artist_validation(api, path):
 def test_artist_source_failure_gives_502(api):
     api.ytm.fail("get_artist")
     r = api.get(f"/api/artist/yt/{ART}")
-    assert r.status_code == 502 and r.json()["detail"] == "Источник временно недоступен. Попробуйте позже."
+    assert r.status_code == 502                     # S7: источник в тексте, плюс `code` и `source`
+    assert r.json() == {"detail": "YouTube Music временно недоступен. Попробуйте позже.", "code": "internal",
+                        "source": "yt"}
     assert not catalog._artist_cache
 
 

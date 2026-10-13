@@ -22,10 +22,9 @@ from collections import Counter
 
 from fastapi import APIRouter, Query, Request
 
-import catalog
-import soundcloud as sc_api
+import providers
 import userdata
-from catalog import _run
+from providers import youtube_music as yt_provider
 
 log = logging.getLogger("musicmeta.recs")
 router = APIRouter(prefix="/api", tags=["recommendations"])
@@ -68,31 +67,23 @@ def _sig(d: dict) -> str:
     return f"{_name(d['artist'])}|{_name(d['title'])}"     # одна и та же песня на разных видео
 
 
-def _yt_radio(ytm, vid: str, n: int) -> list[dict]:
-    out = []
-    for it in ytm.get_watch_playlist(videoId=vid, limit=n).get("tracks") or []:
-        it = dict(it)
-        it.setdefault("thumbnails", it.get("thumbnail"))   # в этом ответе ключ «thumbnail»
-        it["duration"] = it.get("length")
-        out.append(it)
-    return out
+# «Радио» YouTube Music (прежнее имя; с S7 — функция адаптера providers/youtube_music.py)
+_yt_radio = yt_provider.radio_sync
+
+# Сколько секунд ждём один запрос кандидатов (как до S7). Предел задаётся в вызове адаптера: так таймаут
+# учитывается в состоянии источника (cooldown), а зависший запрос не занимает общий пул потоков (S7, M2).
+JOB_TIMEOUT = 12
 
 
 async def _radio(request: Request, source: str, tid: str, n: int) -> list:
-    if source == "yt":
-        raw = await _run(_yt_radio, request.app.state.ytm, tid, n)
-        return [t for t in map(catalog._norm["yt"], raw) if t]
-    data = await _run(sc_api.api_get, f"tracks/{tid}/related", {"limit": n})
-    return [t for t in map(catalog._norm["sc"], (data or {}).get("collection") or []) if t]
+    return await providers.get(source).radio(request.app.state, tid, n, timeout=JOB_TIMEOUT)
 
 
 async def _search(request: Request, source: str, q: str, n: int, offset: int = 0) -> list:
     """Поиск треков: запрашиваем первые n и отдаём с позиции offset (так листаем глубже)."""
     if source == "yt":
-        raw = await _run(lambda: request.app.state.ytm.search(q, filter="songs", limit=n))
-        return [t for t in map(catalog._norm["yt"], raw[offset:]) if t]
-    data = await _run(sc_api.api_get, "search/tracks", {"q": q, "limit": n})
-    return [t for t in map(catalog._norm["sc"], ((data or {}).get("collection") or [])[offset:]) if t]
+        return await providers.yt.search_tracks(request.app.state, q, n, offset, timeout=JOB_TIMEOUT)
+    return await providers.sc.search_tracks_plain(request.app.state, q, n, offset, timeout=JOB_TIMEOUT)
 
 
 @router.get("/recommendations")
@@ -141,7 +132,7 @@ async def recommendations(request: Request, source: str | None = None, id: str |
             q = COLD_START_QUERIES[(salt + page * 2 + k) % len(COLD_START_QUERIES)]
             jobs.append((_search(request, pref, q, 15), "Подборка", 0, pref, "general"))
 
-    results = await asyncio.gather(*(asyncio.wait_for(j[0], 12) for j in jobs), return_exceptions=True)
+    results = await asyncio.gather(*(j[0] for j in jobs), return_exceptions=True)
 
     # ---- состояние источников: ok — все запросы ответили, partial — часть, failed — ни один ----
     asked: Counter = Counter()

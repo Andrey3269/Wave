@@ -1,6 +1,7 @@
 """
 Поиск треков /api/search (backend/main.py): параллельный опрос источников, изоляция сбоев, cooldown,
-таймауты, кэш и пагинация. YouTube Music и SoundCloud подменены (FakeYTMusic, FakeSoundCloud).
+таймауты, кэш и пагинация. YouTube Music и SoundCloud подменены (FakeYTMusic, FakeSoundCloud) на границе
+адаптеров; пулы, таймауты и cooldown адаптеров (backend/providers/*) работают по-настоящему.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import time
 import pytest
 
 import main
+import providers
 from wavetest.fakes import load_fixture, track_payload
 
 
@@ -76,17 +78,17 @@ def test_failed_optional_source_enters_cooldown(both):
     r = both.get("/api/search", params={"q": "two"})
     assert r.status_code == 200 and r.json()["failed_sources"] == ["sc"]
     assert both.sc.count("search_tracks") == 1                 # в cooldown не опрашивается
-    assert main._down_until["sc"] > time.monotonic() + main.SOURCE_COOLDOWN - 5
+    assert providers.sc.cooldown == 300 and providers.sc.breaker.remaining() > providers.sc.cooldown - 5
 
 
 def test_source_recovers_after_cooldown(both):
     both.sc.search_error = RuntimeError("down")
     both.get("/api/search", params={"q": "one"})
-    main._down_until["sc"] = time.monotonic() - 1              # cooldown истёк
+    providers.sc.breaker.until = time.monotonic() - 1          # cooldown истёк
     both.sc.search_error = None
     r = both.get("/api/search", params={"q": "two", "limit": 2})
     assert r.json()["failed_sources"] == [] and ids(r) == ["yt:yt 0", "sc:sc 0"]
-    assert "sc" not in main._down_until
+    assert not providers.sc.breaker.is_open() and providers.sc.breaker.last_kind is None
 
 
 def test_youtube_failure_keeps_soundcloud(both):
@@ -102,7 +104,7 @@ def test_youtube_is_not_put_in_cooldown(both):
     both.get("/api/search", params={"q": "one"})
     both.get("/api/search", params={"q": "two"})
     assert both.ytm.count("search") == 2
-    assert "yt" not in main._down_until
+    assert not providers.yt.breaker.is_open()
 
 
 @pytest.mark.xfail(strict=True, reason="M3: YouTube не входит в cooldown — при «висящей» сети каждый поиск ждёт таймаут")
@@ -121,7 +123,7 @@ def test_all_sources_failed_gives_502(both):
 
 
 def test_all_selected_sources_in_cooldown_gives_502_without_calls(both):
-    main._down_until["sc"] = time.monotonic() + 100
+    providers.sc.breaker.trip("timeout")
     r = both.get("/api/search", params={"q": "test", "sources": "sc"})
     assert r.status_code == 502
     assert both.sc.count("search_tracks") == 0

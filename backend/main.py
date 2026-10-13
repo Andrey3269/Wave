@@ -14,17 +14,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 import time
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from ytmusicapi import YTMusic
 
 import catalog
 import diagnostics
@@ -32,12 +30,14 @@ import jsruntime
 import library
 import paths
 import playlists
+import providers
 import recs
 import userdata
 from domain.models import Track
 from downloads import cleanup_partial, router as downloads_router
 from lyrics import router as lyrics_router
-from soundcloud import search_tracks as sc_search_raw
+from providers import soundcloud as sc_provider, youtube_music as yt_provider
+from providers.base import ProviderError
 from stream import ResolverState, make_http_client, router as stream_router
 from version import __version__
 
@@ -73,153 +73,34 @@ class SearchResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Нормализация данных YouTube Music
+# Нормализация — в адаптерах источников (S7): backend/providers/youtube_music.py и soundcloud.py.
+# Прежние имена оставлены для совместимости (тесты нормализации, внешние вызовы).
 # ---------------------------------------------------------------------------
-_SIZE_RE = re.compile(r"=w\d+-h\d+")
-
-
-def _best_cover(thumbnails: list[dict] | None) -> str | None:
-    """
-    ytmusicapi отдаёт миниатюры в порядке возрастания размера (обычно 60px и 120px).
-    Для крупной обложки (баннер главной) берём последнюю и, если это ссылка
-    googleusercontent, подменяем размер на 544x544.
-    """
-    if not thumbnails:
-        return None
-    url = thumbnails[-1].get("url")
-    return _SIZE_RE.sub("=w544-h544", url) if url else None
-
-
-def _parse_duration(item: dict) -> int | None:
-    if isinstance(item.get("duration_seconds"), int):
-        return item["duration_seconds"]
-    raw = item.get("duration")  # формат "3:45" или "1:02:10"
-    if not raw:
-        return None
-    try:
-        parts = [int(p) for p in raw.split(":")]
-    except ValueError:
-        return None
-    seconds = 0
-    for p in parts:
-        seconds = seconds * 60 + p
-    return seconds
-
-
-def _normalize_yt(item: dict) -> Track | None:
-    video_id = item.get("videoId")
-    if not video_id:  # в выдаче бывают элементы без видео (альбомы, плейлисты)
-        return None
-
-    artists = [a["name"] for a in (item.get("artists") or []) if a.get("name")]
-    artist_id = next((a["id"] for a in (item.get("artists") or []) if a.get("name") and a.get("id")), None)
-    artist_ids = [a.get("id") for a in (item.get("artists") or []) if a.get("name")]
-    raw_album = item.get("album")       # в поиске это {"name": ...}, а в get_album() просто строка с названием
-    album = raw_album.get("name") if isinstance(raw_album, dict) else (raw_album if isinstance(raw_album, str) else None)
-
-    return Track(
-        id=video_id,
-        source="yt",
-        title=item.get("title") or "Без названия",
-        artist=", ".join(artists) or "Неизвестный исполнитель",
-        artists=artists,
-        album=album,
-        duration=_parse_duration(item),
-        cover=_best_cover(item.get("thumbnails")),
-        explicit=bool(item.get("isExplicit")),
-        # Этот URL реализуем на Шаге 2. Фронтенд просто подставит его в <audio>.
-        stream_url=f"/api/stream/yt/{video_id}",
-        artist_id=artist_id,
-        artist_ids=artist_ids,
-        url=f"https://music.youtube.com/watch?v={video_id}",
-    )
+_best_cover = yt_provider.best_cover
+_parse_duration = yt_provider.parse_duration
+_normalize_yt = yt_provider.normalize_track
+_search_yt_sync = yt_provider.search_songs_sync
+_normalize_sc = sc_provider.normalize_track
 
 
 # ---------------------------------------------------------------------------
-# Провайдеры поиска
+# Источники поиска: реестр адаптеров (providers/__init__.py)
 # ---------------------------------------------------------------------------
-def _search_yt_sync(ytm: YTMusic, query: str, limit: int) -> list[Track]:
-    """Синхронный вызов ytmusicapi (библиотека блокирующая, использует requests)."""
-    # ytmusicapi сам догружает страницы; пагинация сделана срезом [offset:offset+limit]
-    raw = ytm.search(query, filter="songs", limit=min(limit, MAX_RESULTS))
-    tracks = (_normalize_yt(item) for item in raw)
-    return [t for t in tracks if t is not None]
-
-
-async def search_youtube(request: Request, query: str, limit: int) -> list[Track]:
-    # Выносим блокирующий вызов в поток, чтобы не вешать event loop.
-    return await asyncio.to_thread(_search_yt_sync, request.app.state.ytm, query, limit)
-
-
-_SC_ART_RE = re.compile(r"-large\.")
-
-
-def _normalize_sc(item: dict) -> Track | None:
-    if item.get("kind", "track") != "track" or not item.get("id"):
-        return None
-    # BLOCK = недоступен в регионе, SNIP = только 30-секундный превью (Go+): пропускаем,
-    # иначе трек оборвётся на 30-й секунде.
-    if item.get("policy") in ("BLOCK", "SNIP") or item.get("streamable") is False:
-        return None
-
-    track_id = str(item["id"])
-    user = item.get("user") or {}
-    meta = item.get("publisher_metadata") or {}
-    artist = meta.get("artist") or user.get("username") or "Неизвестный исполнитель"
-
-    millis = item.get("full_duration") or item.get("duration")
-    art = item.get("artwork_url") or user.get("avatar_url")
-
-    return Track(
-        id=track_id,
-        source="sc",
-        title=item.get("title") or "Без названия",
-        artist=artist,
-        artists=[artist],
-        album=meta.get("album_title"),
-        duration=round(millis / 1000) if millis else None,
-        # SoundCloud отдаёт 100x100 ("-large"); просим 500x500
-        cover=_SC_ART_RE.sub("-t500x500.", art) if art else None,
-        explicit=bool(meta.get("explicit")),
-        stream_url=f"/api/stream/sc/{track_id}",
-        artist_id=str(user["id"]) if user.get("id") else None,   # страница артиста = страница загрузившего
-        artist_ids=[str(user["id"])] if user.get("id") else [],
-        plays=item.get("playback_count"),
-        released=item.get("display_date") or item.get("created_at"),
-        url=item.get("permalink_url"),
-    )
-
-
-async def search_soundcloud(request: Request, query: str, limit: int) -> list[Track]:
-    raw = await asyncio.to_thread(sc_search_raw, query, limit)
-    tracks = (_normalize_sc(item) for item in raw)
-    return [t for t in tracks if t is not None]
-
-
-# Реестр провайдеров. Чтобы добавить источник, достаточно написать async-функцию
-# с той же сигнатурой, возвращающую list[Track], и зарегистрировать её здесь.
-Provider = Callable[[Request, str, int], Awaitable[list[Track]]]
-_ALL_PROVIDERS: dict[str, Provider] = {
-    "yt": search_youtube,
-    "sc": search_soundcloud,
-}
-# Какие источники включены. Чтобы совсем отключить SoundCloud: SEARCH_SOURCES=yt
+# Какие источники включены в поиск треков. Чтобы совсем отключить SoundCloud: SEARCH_SOURCES=yt
 _ENABLED = {s.strip() for s in os.getenv("SEARCH_SOURCES", "yt,sc").split(",")}
-PROVIDERS: dict[str, Provider] = {k: v for k, v in _ALL_PROVIDERS.items() if k in _ENABLED}
+for _name, _p in providers.REGISTRY.items():
+    _p.search_enabled = _name in _ENABLED
+PROVIDERS = {name: p for name, p in providers.REGISTRY.items() if p.search_enabled}
 
-# Один медленный источник не должен тормозить весь поиск.
+# Один медленный источник не должен тормозить весь поиск: столько секунд ждём ответа каждого.
+# Пауза после сбоя (cooldown) и пул потоков — у каждого адаптера свои (providers/base.py).
 PROVIDER_TIMEOUT = float(os.getenv("SEARCH_TIMEOUT", "6"))
-# «Автомат» для необязательных источников: после сбоя не опрашиваем их N секунд
-# (иначе каждый поиск ждал бы таймаут). YouTube сюда не входит: он основной.
-OPTIONAL_SOURCES = {"sc"}
-SOURCE_COOLDOWN = float(os.getenv("SOURCE_COOLDOWN", "300"))
-_down_until: dict[str, float] = {}
 
 
 async def _timed(name: str, request: Request, query: str, limit: int) -> list[Track]:
-    """Запрос к одному источнику с таймаутом и замером времени (видно в консоли)."""
+    """Запрос к одному источнику с таймаутом и замером времени (видно в журнале)."""
     t0 = time.monotonic()
-    tracks = await asyncio.wait_for(PROVIDERS[name](request, query, limit), PROVIDER_TIMEOUT)
+    tracks = await PROVIDERS[name].search_tracks(request.app.state, query, limit, timeout=PROVIDER_TIMEOUT)
     log.info("Поиск %s: %d треков за %.1f с", name, len(tracks), time.monotonic() - t0)
     return tracks
 
@@ -259,8 +140,8 @@ def _cache_set(key: tuple[str, int], value: list[Track]) -> None:
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Клиент без авторизации: для поиска по каталогу этого достаточно.
-    app.state.ytm = YTMusic()
+    # Клиент YouTube Music без авторизации (для каталога этого достаточно), с таймаутом HTTP-запросов (S7)
+    app.state.ytm = yt_provider.create_client()
     log.info("YTMusic инициализирован")
     # Один httpx-клиент на всё приложение: пул соединений и keep-alive к googlevideo
     app.state.http = make_http_client()
@@ -279,6 +160,7 @@ async def lifespan(app: FastAPI):
         # уже никому не нужны, а процесс не должен пережить остановку backend (S3, находка L8)
         await asyncio.to_thread(jsruntime.terminate_children)
         await app.state.http.aclose()
+        providers.shutdown_pending()  # запросы к источникам, ждущие в очереди пулов, этому запуску уже не нужны
         _cache.clear()
 
 
@@ -297,10 +179,18 @@ app.add_middleware(
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 
+@app.exception_handler(ProviderError)
+async def provider_error(request: Request, exc: ProviderError):
+    """
+    Сбой источника (S7). `detail` — понятный текст, как и раньше (на него опирается фронтенд); `code` и
+    `source` — аддитивно: машинный тип ошибки (providers/base.ERROR_KINDS) и источник. Статус 502, как до S7.
+    """
+    return JSONResponse(status_code=502, content={"detail": exc.user_message, "code": exc.code, "source": exc.source})
+
+
 app.include_router(stream_router)  # /api/stream/{source}/{id}
 app.include_router(lyrics_router)  # /api/lyrics
 app.include_router(downloads_router)  # /api/downloads, /api/local
-catalog.configure(_normalize_yt, _normalize_sc)
 app.include_router(userdata.router)  # /api/favorites, /api/history, /api/settings
 app.include_router(playlists.router)  # /api/playlists
 app.include_router(recs.router)  # /api/recommendations
@@ -321,6 +211,22 @@ async def diagnostics_report():
     Подтверждает конфигурацию, а не воспроизведение (поле playback_verified=false). Секретов не содержит.
     """
     return await asyncio.to_thread(diagnostics.collect, True)
+
+
+def _all_sources_failed(selected: list[str], errors: dict[str, BaseException]) -> JSONResponse:
+    """
+    Ни один выбранный источник не ответил: 502, как до S7. Если источник был один (так ищет фронтенд —
+    по каждому источнику отдельно), `detail` — его понятная причина (пауза после сбоя, таймаут …);
+    для нескольких — прежний текст. Аддитивно: `code`, `source` (для одного источника), `failed_sources`.
+    """
+    body: dict = {"detail": "Источники поиска недоступны", "code": "unavailable", "failed_sources": list(errors)}
+    if len(selected) == 1:
+        err = errors.get(selected[0])
+        if isinstance(err, ProviderError):
+            body.update(detail=err.user_message, code=err.code, source=err.source)
+        else:
+            body["source"] = selected[0]
+    return JSONResponse(status_code=502, content=body)
 
 
 @app.get("/api/search", response_model=SearchResponse)
@@ -348,14 +254,17 @@ async def search(
         return SearchResponse(query=query, count=len(cached), tracks=cached,
                               has_more=bool(cached) and offset + limit < MAX_RESULTS)
 
-    # Источники, которые недавно упали, пропускаем сразу (без ожидания таймаута)
-    now = time.monotonic()
-    failed_sources: list[str] = [n for n in selected if _down_until.get(n, 0) > now]
-    names = [n for n in selected if n not in failed_sources]
-    if not names:
-        raise HTTPException(status_code=502, detail="Источники поиска недоступны")
+    # Источники на паузе после сбоя (cooldown) пропускаем сразу, без ожидания таймаута
+    errors: dict[str, BaseException] = {}
+    for n in selected:
+        try:
+            PROVIDERS[n].check_available()
+        except ProviderError as exc:
+            errors[n] = exc
+    failed_sources: list[str] = list(errors)
+    names = [n for n in selected if n not in errors]
 
-    # Опрашиваем провайдеры параллельно, у каждого свой таймаут; сбой одного не роняет остальных.
+    # Опрашиваем источники параллельно, у каждого свой пул и таймаут; сбой одного не роняет остальных.
     results = await asyncio.gather(
         *(_timed(n, request, query, min(offset + limit, MAX_RESULTS)) for n in names),
         return_exceptions=True,
@@ -365,16 +274,13 @@ async def search(
     for name, res in zip(names, results):
         if isinstance(res, BaseException):
             failed_sources.append(name)
+            errors[name] = res
             log.warning("Провайдер %s не ответил: %r", name, res)
-            if name in OPTIONAL_SOURCES:
-                _down_until[name] = time.monotonic() + SOURCE_COOLDOWN
-                log.warning("Источник %s отключён на %d с (после сбоя)", name, SOURCE_COOLDOWN)
         else:
-            _down_until.pop(name, None)
             groups.append(res)
 
     if not groups:
-        raise HTTPException(status_code=502, detail="Источники поиска недоступны")
+        return _all_sources_failed(selected, errors)
 
     tracks = _interleave(groups, offset + limit)[offset:]
     if not failed_sources:  # неполные результаты не кэшируем, чтобы источник мог «выздороветь»

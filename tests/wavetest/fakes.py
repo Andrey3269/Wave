@@ -5,8 +5,9 @@
                    Range (https://cdn.test/...), LRCLIB (lrclib.net), хосты обложек. Запрос к любому
                    другому хосту записывается в `unexpected` и роняет тест.
   FakeResolver   — замена stream._extract_sync (yt-dlp): выдаёт ссылки на cdn.test, считает вызовы.
-  FakeYTMusic    — замена ytmusicapi.YTMusic: ответы из фикстур, запись вызовов, сбои по запросу.
-  FakeSoundCloud — замена soundcloud.search_tracks / soundcloud.api_get.
+  FakeYTMusic    — замена клиента ytmusicapi.YTMusic (providers.youtube_music.create_client): ответы из
+                   фикстур, запись вызовов, сбои по запросу.
+  FakeSoundCloud — замена клиента API v2 SoundCloud (providers.soundcloud.search_raw / api_get).
   ApiHarness     — собирает всё вместе и запускает приложение в TestClient или в asyncio.run.
 """
 from __future__ import annotations
@@ -227,6 +228,8 @@ class FakeYTMusic:
         self.calls: list[tuple] = []
         self.failures: dict[str, Exception] = {}
         self.sleep: dict[str, float] = {}
+        self.gates: dict[str, threading.Event] = {}  # метод -> «зависание» до события (не дольше 30 с)
+        self.threads: list[str] = []                 # имена потоков, в которых шли вызовы
         self._lock = threading.Lock()
 
     def fail(self, method: str, exc: Exception | None = None) -> None:
@@ -235,6 +238,9 @@ class FakeYTMusic:
     def _enter(self, method: str, *args) -> None:
         with self._lock:
             self.calls.append((method, *args))
+            self.threads.append(threading.current_thread().name)
+        if method in self.gates:
+            self.gates[method].wait(30)
         if method in self.sleep:
             time.sleep(self.sleep[method])
         if method in self.failures:
@@ -275,7 +281,7 @@ class FakeYTMusic:
 
 
 class FakeSoundCloud:
-    """Двойник soundcloud.search_tracks и soundcloud.api_get (неофициальный API v2)."""
+    """Двойник клиента API v2 SoundCloud: providers.soundcloud.search_raw и api_get (неофициальный API v2)."""
 
     def __init__(self):
         self.tracks: dict[str, list] = {}          # запрос -> «сырые» треки; "*" — по умолчанию
@@ -283,11 +289,20 @@ class FakeSoundCloud:
         self.calls: list[tuple] = []
         self.search_error: Exception | None = None
         self.search_sleep = 0.0
+        self.gate: threading.Event | None = None    # «зависание» всех вызовов до события (не дольше 30 с)
+        self.threads: list[str] = []                # имена потоков, в которых шли вызовы
         self._lock = threading.Lock()
+
+    def _wait_gate(self) -> None:
+        with self._lock:
+            self.threads.append(threading.current_thread().name)
+        if self.gate is not None:
+            self.gate.wait(30)
 
     def search_tracks(self, query: str, limit: int) -> list[dict]:
         with self._lock:
             self.calls.append(("search_tracks", query, limit))
+        self._wait_gate()
         if self.search_sleep:
             time.sleep(self.search_sleep)
         if self.search_error is not None:
@@ -297,6 +312,7 @@ class FakeSoundCloud:
     def api_get(self, path: str, query: dict | None = None):
         with self._lock:
             self.calls.append(("api_get", path, dict(query or {})))
+        self._wait_gate()
         resp = self.responses.get(path)
         if resp is None:
             raise RuntimeError(f"SoundCloud: нет ответа для {path} (тест)")
@@ -327,12 +343,13 @@ class ApiHarness:
         self.resolver = FakeResolver(modules["stream"])
         self.sc = FakeSoundCloud()
         self.lifespans = 0
-        monkeypatch.setattr(modules["main"], "YTMusic", self._make_ytm)
+        # Внешний мир подменяется на границе адаптеров (S7): клиент ytmusicapi и клиент API v2 SoundCloud.
+        # Пулы потоков, таймауты, cooldown и нормализация адаптеров работают по-настоящему.
+        monkeypatch.setattr(modules["yt_provider"], "create_client", self._make_ytm)
         monkeypatch.setattr(modules["main"], "make_http_client", self.net.client)
         monkeypatch.setattr(modules["stream"], "_extract_sync", self.resolver)
-        monkeypatch.setattr(modules["main"], "sc_search_raw", self.sc.search_tracks)
-        monkeypatch.setattr(modules["soundcloud"], "search_tracks", self.sc.search_tracks)
-        monkeypatch.setattr(modules["soundcloud"], "api_get", self.sc.api_get)
+        monkeypatch.setattr(modules["sc_provider"], "search_raw", self.sc.search_tracks)
+        monkeypatch.setattr(modules["sc_provider"], "api_get", self.sc.api_get)
         self.http = None
 
     def _make_ytm(self):
