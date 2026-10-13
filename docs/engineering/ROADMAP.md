@@ -300,4 +300,5 @@ graph TD
 | S0 | **выполнено**, подтверждено владельцем 2026-10-12 | `claude/s0-repository-hygiene` | [reports/S0.md](reports/S0.md); Windows-сборка и e2e в Chromium на Windows теперь проверяются CI (S1) |
 | S1 | **выполнено**, подтверждено владельцем 2026-10-13 | `claude/s1-regression-tests` | [reports/S1.md](reports/S1.md); 379 PASS + 16 xfail, e2e 109/109, CI зелёный; LIVE-1/6 — BLOCKED, WebView2 — NOT RUN |
 | S2 | **выполнено**, принято владельцем 2026-10-13 **с ограничениями** | `claude/s2-p0-fixes` | [reports/S2.md](reports/S2.md); 469 PASS + 13 xfail, e2e smoke 122 + настройки 24 (Chromium); тексты S2e утверждены. **WIN-5, WIN-12 — NOT RUN** до проверки на Windows с WebView2: эти сценарии не считаются проверенными |
+| S2, стабильность e2e настроек | **исправлено**, ждёт подтверждения владельца | `claude/s2-e2e-stability` | [reports/S2.md §9](reports/S2.md): причина — запоздавшие ответы `/api/settings` перезаписывали правки (гонка в `frontend/app.js`), воспроизведена детерминированно; `e2e_settings.py set` 8 → 11; CI 5/5 на Windows |
 | S3–S19 | не начато | — | S3 начинается только по отдельной команде владельца |

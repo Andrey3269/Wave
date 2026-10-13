@@ -39,7 +39,7 @@
 |---|---|---|
 | `python -m pytest` | **PASS**: 469 passed, 13 xfailed (strict; сняты H3, M1, M4), 0 failed; 4 live-теста не выбираются | Linux, Python 3.12.3; CI `ubuntu-latest`, `windows-latest` |
 | `tests/e2e_smoke.py` | **PASS**: 122 проверки (было 109; все прежние сохранены; у трёх обновлены только подписи вместе с названиями S2e), 0 ошибок консоли | Linux Chromium 141; CI Linux и Windows Chromium (не WebView2) |
-| `tests/e2e_settings.py` (новый, S2a) | **PASS**: 24 проверки в трёх запусках backend — `set` на порту A, `verify` после перезапуска на порту B с тем же профилем, `migrate` на чистом профиле | то же |
+| `tests/e2e_settings.py` (новый, S2a) | **PASS**: 24 проверки в трёх запусках backend — `set` на порту A, `verify` после перезапуска на порту B с тем же профилем, `migrate` на чистом профиле. После `claude/s2-e2e-stability` — 27: `set` ждёт фактическую запись (до 10 с) вместо паузы 900 мс, печатает фактические значения при провале и детерминированно проверяет запоздавшие ответы `/api/settings` (reports/S2.md §9) | то же |
 | `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
 | WIN-5 (настройки в WebView2), WIN-12 (сторож) | **NOT RUN** | нужна Windows-машина |
 
