@@ -69,7 +69,14 @@ jobs:
         run: python -m playwright install chromium
 
       - name: Run all checks
-        run: python tests/run_checks.py
+        env:
+          PYTEST_ADDOPTS: --junitxml=${{ runner.temp }}/pytest.xml
+        run: python tests/run_checks.py 2>&1 | tee "${{ runner.temp }}/run_checks.log"
+
+      # Упавшие тесты и строки FAIL — аннотациями: их видно на странице запуска и через API check-runs
+      - name: Report failures as annotations
+        if: failure()
+        run: python tests/ci_annotate.py --junit "${{ runner.temp }}/pytest.xml" --log "${{ runner.temp }}/run_checks.log"
 
   windows-build:
     name: windows-build (PyInstaller spec)
