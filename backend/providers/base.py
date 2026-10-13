@@ -293,13 +293,17 @@ class Provider:
         if self.breaker.is_open():
             raise self.cooldown_error()
 
-    async def call(self, op: str, fn: Callable[..., Any], *args, timeout: float) -> Any:
+    async def call(self, op: str, fn: Callable[..., Any], *args, timeout: float, optional: bool = False) -> Any:
         """
         Блокирующий вызов библиотеки `fn(*args)` в пуле этого источника, не дольше `timeout` секунд ожидания.
 
         Успех сбрасывает cooldown. Сбой переводится в ProviderError; подходящие сбои (TRIP_*) открывают
         cooldown. В cooldown запрос не отправляется. При переполнении пула — ProviderError(busy) сразу.
         Отмена ожидающего (клиент ушёл) отменяет задачу в очереди; работающая доживает как брошенная.
+
+        optional=True — необязательная часть страницы (полный список релизов, альбомы артиста): страница
+        показывается и без неё, поэтому её сбой паузу не открывает — иначе пауза оборвала бы остальные
+        запросы этой же страницы.
         """
         self.check_available()
         try:
@@ -321,7 +325,7 @@ class Provider:
                 err, cause = self.error("timeout"), None
             else:
                 err, cause = self._failure(op, exc), exc        # исключение самой библиотеки
-            self._record(op, err, exc, t0)
+            self._record(op, err, exc, t0, optional)
             raise err from cause
         self.breaker.record_success()
         return result
@@ -336,9 +340,9 @@ class Provider:
             err = self.error(err.kind)
         return err
 
-    def _record(self, op: str, err: ProviderError, exc: BaseException, t0: float) -> None:
+    def _record(self, op: str, err: ProviderError, exc: BaseException, t0: float, optional: bool = False) -> None:
         kinds = TRIP_ON_SEARCH if op in SEARCH_OPS else TRIP_ALWAYS
-        tripped = err.kind in kinds and self.breaker.trip(err.kind)
+        tripped = not optional and err.kind in kinds and self.breaker.trip(err.kind)
         err.tripped = tripped
         log.warning("provider.fail source=%s op=%s kind=%s %.1f с%s: %r", self.id, op, err.kind,
                     time.monotonic() - t0, f" -> cooldown {self.breaker.cooldown:.0f} с" if tripped else "", exc)

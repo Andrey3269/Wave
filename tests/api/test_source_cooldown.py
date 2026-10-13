@@ -89,3 +89,38 @@ def test_successful_page_after_pause_clears_it(api):
     providers.yt.breaker.until = time.monotonic() - 1
     assert api.get(f"/api/artist/yt/{ART}").status_code == 200
     assert not providers.yt.breaker.is_open() and providers.yt.breaker.last_kind is None
+
+
+def test_failed_optional_part_keeps_the_rest_of_the_page(api):
+    """
+    Альбомы артиста SoundCloud не ответили (503): страница показывается без альбомов, а запрос песен этой же
+    страницы не отклоняется паузой. Найдено в S7: раньше сбой необязательной части открывал паузу и обрывал
+    остальную страницу.
+    """
+    import io
+
+    from yt_dlp.networking import Response
+    from yt_dlp.networking.exceptions import HTTPError as YdlHTTPError
+    from yt_dlp.utils import ExtractorError
+
+    resp = Response(io.BytesIO(b""), "https://api-v2.soundcloud.com/users/555001/albums", {}, status=503)
+    api.sc.responses["users/555001"] = load_fixture("soundcloud/user.json")
+    api.sc.responses["users/555001/albums"] = ExtractorError("HTTP Error", cause=YdlHTTPError(resp))
+    api.sc.responses["users/555001/tracks"] = {"collection": load_fixture("soundcloud/search_tracks.json")["collection"]}
+    r = api.get("/api/artist/sc/555001")
+    assert r.status_code == 200 and r.json()["albums"] == [] and r.json()["tracks"]
+    assert not providers.sc.breaker.is_open()
+
+
+def test_album_falls_back_to_playlist_after_get_album_timeout(api, monkeypatch):
+    gate = threading.Event()
+    api.ytm.gates["get_album"] = gate
+    api.ytm.playlists["OLAK5uy_polar"] = {"title": "Polar Nights", "author": {"name": "Aurora Wave"}, "thumbnails": [],
+                                          "tracks": load_fixture("ytmusic/album.json")["tracks"][:1]}
+    monkeypatch.setattr(catalog, "CATALOG_TIMEOUT", 0.2)
+    try:
+        r = api.get("/api/album/yt/MPREb_alb00000001", params={"pl": "OLAK5uy_polar"})
+    finally:
+        gate.set()
+    assert r.status_code == 200 and [t["id"] for t in r.json()["tracks"]] == ["AAAAAAAAAA1"]
+    assert not providers.yt.breaker.is_open()

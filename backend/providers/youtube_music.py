@@ -242,7 +242,7 @@ class YouTubeMusicProvider(Provider):
             if blk.get("browseId") and blk.get("params"):
                 try:
                     more = await self.call("artist_page", ytm.get_artist_albums, blk["browseId"], blk["params"], 100,
-                                           timeout=timeout)
+                                           timeout=timeout, optional=True)
                 except ProviderError as exc:
                     log.info("Полный список %s не получен: %r", sec, exc)
                     degraded = True
@@ -286,7 +286,9 @@ class YouTubeMusicProvider(Provider):
         a: dict = {}
         degraded = False
         try:
-            a = await self.call("album_page", ytm.get_album, album_id, timeout=timeout) or {}
+            # С запасным путём (плейлист альбома) сбой get_album необязателен: страница соберётся без него
+            a = await self.call("album_page", ytm.get_album, album_id, timeout=timeout,
+                                optional=bool(playlist_id)) or {}
         except ProviderError as exc:                    # ytmusicapi иногда не может разобрать страницу альбома
             log.info("get_album %s не разобран: %r", album_id, exc)
             if not playlist_id:

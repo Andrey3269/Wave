@@ -267,7 +267,7 @@ class SoundCloudProvider(Provider):
         degraded = False
         try:
             alb = await self.call("artist_page", api_get, f"users/{artist_id}/albums",
-                                  {"limit": 30, "linked_partitioning": 1}, timeout=timeout)
+                                  {"limit": 30, "linked_partitioning": 1}, timeout=timeout, optional=True)
             albums = [album_from_playlist(p) for p in alb.get("collection") or [] if p.get("id")]
         except ProviderError as exc:        # страница артиста показывается и без альбомов
             log.info("Альбомы SC недоступны: %r", exc)
@@ -293,7 +293,7 @@ class SoundCloudProvider(Provider):
         if not raw and p.get("track_count"):            # в ответе нет списка треков: пробуем полное представление
             try:
                 raw = (await self.call("album_page", api_get, f"playlists/{album_id}", {"representation": "full"},
-                                       timeout=timeout)).get("tracks") or []
+                                       timeout=timeout, optional=True)).get("tracks") or []
             except ProviderError as exc:
                 log.info("playlists/%s full: %r", album_id, exc)
                 degraded = True

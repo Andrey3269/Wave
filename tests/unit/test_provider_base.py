@@ -131,6 +131,23 @@ def test_which_failures_open_cooldown(prov, op, exc, trips):
     assert prov.health() == ("cooldown" if trips else "ok")
 
 
+def test_optional_part_never_opens_cooldown(prov):
+    gate = threading.Event()
+    try:
+        with pytest.raises(ProviderError) as e:
+            run(prov.call("artist_page", gate.wait, 5, timeout=0.05, optional=True))
+        assert e.value.kind == "timeout" and not e.value.tripped and not prov.breaker.is_open()
+    finally:
+        gate.set()
+
+    def boom():
+        raise LibError("429")
+
+    with pytest.raises(ProviderError):
+        run(prov.call("search_tracks", boom, timeout=2, optional=True))
+    assert not prov.breaker.is_open()
+
+
 def test_cooldown_rejects_without_calling_the_source(prov):
     calls = []
     prov.breaker.trip("timeout")
