@@ -126,12 +126,10 @@ STREAM = {"mode": "normal"}
 JS_RUNTIME_DETAIL = "Компонент воспроизведения YouTube (Deno) не найден или повреждён. Переустановите приложение."
 # Загрузки (S5). Скачать по-настоящему в e2e нечего (источников нет), поэтому на время раздела «Загрузки»
 # /api/downloads* отвечает этот скрипт: этапы задаёт тест (DL["stage"]), исходы — DL_OUTCOME. Вне раздела
-# запросы уходят в настоящий backend. Сама загрузка, политика источников и воспроизведение с диска
+# запросы уходят в настоящий backend. Сама загрузка, какие треки скачиваются и воспроизведение с диска
 # проверяются API-тестами (tests/api/test_downloads.py, test_download_policy.py).
 DL = {"mock": False, "stage": {}, "posts": [], "done": {}}
-DL_DENIED_TEXT = ("YouTube не разрешает сохранять этот трек: скачать можно только видео под лицензией "
-                  "Creative Commons. Слушать его можно как обычно.")
-DL_OUTCOME = {"trk00000041": ("error", "download_not_permitted", DL_DENIED_TEXT),
+DL_OUTCOME = {"trk00000041": ("error", "unavailable", "Трек недоступен"),
               "trk00000042": ("error", "network", "Нет связи с YouTube Music. Проверьте подключение к интернету.")}
 
 
@@ -632,8 +630,8 @@ def main() -> int:
         page.click(".nav__item[data-view=downloads]")
         page.wait_for_selector("#empty:not([hidden])")
         check("скачал" in page.inner_text("#empty"), "пустое состояние «Скачанные»")
-        check("Creative Commons" in page.inner_text("#empty") and "автор включил скачивание" in page.inner_text("#empty"),
-              "«Скачанные» не обещают скачивание всего: названы условия источников")
+        check("без интернета" in page.inner_text("#empty") and "Creative Commons" not in page.inner_text("#empty"),
+              "«Скачанные»: скачанное играет без интернета, без лишних условий источников")
         page.screenshot(path=str(SHOTS / "14-downloads.png"))
         page.click(".nav__item[data-view=settings]")
         page.wait_for_selector("#view-settings:not([hidden])")
@@ -685,9 +683,9 @@ def main() -> int:
 
         page.click(row_dl(2))
         page.wait_for_function(has_class, arg=[row_dl(2), "is-denied"])
-        page.wait_for_function(toast_has, arg="Creative Commons")
-        check("Creative Commons" in page.get_attribute(row_dl(2), "title"),
-              "отказ источника: причина в подсказке кнопки и в сообщении, вместо бесконечного прогресса")
+        page.wait_for_function(toast_has, arg="Трек недоступен")
+        check("Трек недоступен" in page.get_attribute(row_dl(2), "title"),
+              "поток недоступен: причина в подсказке кнопки и в сообщении, вместо бесконечного прогресса")
         posts = len(DL["posts"])
         page.click(row_dl(2))
         page.wait_for_function(toast_has, arg="Скачивание недоступно")

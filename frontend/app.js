@@ -2139,11 +2139,10 @@
   // Загрузки и офлайн: скачать, удалить, «Скачанные»
   // ==========================================================================
   const BUSY = ["preparing", "downloading", "processing"];
-  // Разрешение на сохранение проверяет backend (download_policy.py, S5). Эти коды — окончательный отказ
-  // источника для конкретного трека: повторять запрос бессмысленно, кнопка показывает причину.
-  // Остальные ошибки (сеть, лимит запросов, сбой) временные: кнопка предлагает повторить.
-  const DL_FINAL = ["download_not_permitted", "license_unknown", "permission_unknown", "download_limit_reached",
-    "auth_required", "unsupported_format", "age_restricted", "unavailable", "no_direct_stream"];
+  // Скачивается штатный поток трека — тот же, что играет плеер (download_policy.py, S5). Эти коды значат, что
+  // поток этого трека получить нельзя или источник отдаёт лишь фрагмент: повтор не поможет, кнопка показывает
+  // причину. Остальные ошибки (сеть, лимит запросов, проверка на бота, сбой) временные: кнопка предлагает повторить.
+  const DL_FINAL = ["unavailable", "age_restricted", "no_direct_stream", "preview_only"];
   const DL_STAGE = { preparing: "Подготовка", downloading: "Скачивание", processing: "Обработка" };
   const mb = (n) => `${(n / 1048576).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
 
@@ -2228,7 +2227,7 @@
     try {
       const j = await api("/api/downloads", jsonOpts("POST", { source: t.source, id: t.id, title: t.title, artist: t.artist, album: t.album, duration: t.duration, cover: t.cover }));
       if (j.state === "done") { await refreshDownloads(); toast(`«${t.title}» уже скачан`); return; }
-      toast("Проверяем, разрешает ли источник сохранить трек…");
+      toast("Загрузка началась");
       pollJobs();
     } catch (e) {
       delete state.jobs[key];
@@ -2264,8 +2263,7 @@
     const items = [...state.dl.values()];
     el.resultsTitle.textContent = "Скачанные";
     setTracks(items);
-    setBlock(el.empty, items.length ? "" : "Здесь появятся треки, которые ты скачал. Они играют без интернета. "
-      + "Сохранить можно только то, что разрешает источник: видео YouTube под лицензией Creative Commons и треки SoundCloud, для которых автор включил скачивание.");
+    setBlock(el.empty, items.length ? "" : "Здесь появятся треки, которые ты скачал. Они играют без интернета.");
     const active = Object.values(state.jobs).filter((j) => BUSY.includes(j.state)).length;
     setStatus(items.length || active ? `Скачано: ${items.length}${active ? ` · загружается: ${active}` : ""}` : "");
     layout();
