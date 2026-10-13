@@ -55,7 +55,7 @@ TARGET = "x86_64-pc-windows-msvc"
 RELEASE_PACKAGES = ["deno", "denort", "test_server"]
 RELEASE_FEATURES = "deno/panic-trace"
 LICENSE_FILE = re.compile(r"^(licen[cs]e|copying|notice|copyright|unlicense)([-_.].*)?$", re.I)
-LICENSE_DIRS = ("LICENSES", "licenses", "LICENSE")
+LICENSE_DIRS = ("licenses", "license")
 SPDX_URL = "https://raw.githubusercontent.com/spdx/license-list-data/main/text/{id}.txt"
 SPDX_ALIASES = {"Apache-2.0 WITH LLVM-exception": ["Apache-2.0", "LLVM-exception"]}
 
@@ -155,9 +155,9 @@ def authors(metadata: dict) -> dict[tuple[str, str], list[str]]:
 
 def license_files(pkg_dir: Path) -> list[Path]:
     found = [f for f in sorted(pkg_dir.iterdir()) if f.is_file() and LICENSE_FILE.match(f.name)]
-    for d in LICENSE_DIRS:
-        sub = pkg_dir / d
-        if sub.is_dir():
+    # имена каталогов сравниваются без учёта регистра: на Windows LICENSES и licenses — одна папка
+    for sub in sorted(pkg_dir.iterdir()):
+        if sub.is_dir() and sub.name.lower() in LICENSE_DIRS:
             found += [f for f in sorted(sub.rglob("*")) if f.is_file()]
     return found
 
