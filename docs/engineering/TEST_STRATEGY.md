@@ -51,8 +51,19 @@
 | `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 123 (было 122; + сообщение об отсутствии компонента воспроизведения YouTube) + 27, 0 ошибок консоли | Linux Chromium; CI Linux и Windows Chromium (не WebView2) |
 | `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
 | `windows-build`: Deno по lock со сверкой SHA-256, PyInstaller, состав папки, `Wave.exe --diagnostics` | **PASS**: `deno 2.9.7 supported=true`, путь с кириллицей, без runtime → код 1 с понятным сообщением и без системного Deno, `deno.exe` не остаётся; `dist\Wave` 147,1 МБ (Deno 92,9 МБ) | CI `windows-latest` (без WebView2) |
-| LIVE-2, LIVE-3, LIVE-4 | **BLOCKED**: прокси среды отвечает 403 на соединение с YouTube | облачная среда, настоящий Deno |
-| WIN-1 (полный), WIN-6, WIN-7 | **NOT RUN** | нужна Windows-машина с WebView2 и доступом к YouTube |
+| LIVE-2, LIVE-3, LIVE-4 | **BLOCKED** в облачной среде (прокси отвечает 403); **PASS** у владельца на Windows 11 x64 при приёмке S3 (reports/S3.md §13) | облачная среда; Windows 11 x64 владельца |
+| WIN-6, WIN-7 | **PASS** у владельца при приёмке S3 (воспроизведение, перемотка, следующий трек, нет окна консоли, `deno.exe` завершается) | Windows 11 x64 владельца |
+| WIN-1 (полный, с установщиком) | **NOT RUN** на S3 — этап S4 | — |
+
+### Состояние после S4 (2026-10-13, ветка `claude/s4-installer`, подробности — [reports/S4.md](reports/S4.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 680 тестов (было 589). Linux: 665 passed + 2 skipped (только Windows) + 13 xfail; Windows: 667 passed, 0 skipped + 13 xfail | CI `ubuntu-latest`, `windows-latest` (run 38388874628); локально Linux |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 123 + 27 (не изменилось) | локально Chromium; CI Linux и Windows Chromium |
+| `build_windows.bat` целиком (WIN-1) | **PASS**: лок сборки (43 пакета), Deno 2.9.7, PyInstaller, `--diagnostics`, WebView2 bootstrapper (подпись Microsoft), Inno Setup 6.7.3 → `Wave-Setup-0.1.0.exe` 53,0 МБ; `dist\Wave` 147,1 МБ | CI `windows-latest` |
+| `tests/installer/run_installer_checks.ps1` (WIN-2, 3, 4, 8, 9, 13, 15) | **PASS** все 17 проверок, в том числе установка под стандартной учётной записью и `e2e_smoke.py` против установленного `Wave.exe` (123 проверки) | CI `windows-latest` (окна не видны) |
+| Интерактивная установка, SmartScreen, «Пуск», воспроизведение, сообщения установщика, машина без WebView2 | **NOT RUN** | ручной чек-лист [checklists/S4_WINDOWS_CHECK.md](checklists/S4_WINDOWS_CHECK.md) |
 
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
@@ -235,6 +246,8 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 | WIN-13 | e2e-тест против собранного backend (`Wave.exe` на фиксированном порту через `WAVE_PORT`, только для теста) | S4 |
 | WIN-14 | Длинные пути и кириллица в каталоге загрузок | S11 |
 | WIN-15 | Сборка не содержит пользовательских баз, логов, cookies, `.env`, `__pycache__` вне PyInstaller-архива | S4, S19 |
+
+**Что из WIN-сценариев покрывает CI после S4.** Job `windows-build` выполняет настоящий `build_windows.bat` (WIN-1) и затем `tests/installer/run_installer_checks.ps1` на одноразовом раннере: WIN-15 (состав `dist\Wave`, установленная папка совпадает с ним файл в файл), WIN-2 (тихая установка для текущего пользователя и под только что созданной стандартной учётной записью, ярлыки, запись удаления только в HKCU, манифест `asInvoker`), WIN-13 (установленный `Wave.exe` на `WAVE_PORT` с временным профилем и закрытой сетью; `e2e_smoke.py` против него), WIN-4 (второй экземпляр не открывает порт), WIN-8 (тихое обновление при запущенной ВОЛНЕ отказывает по AppMutex; закрытие окна; установка поверх заменяет файлы программы и не трогает данные; данные после перезапуска), WIN-9 (тихое удаление при запущенной ВОЛНЕ отказывает; удаление сохраняет каталог данных, загрузки и настоящий `%LOCALAPPDATA%\Wave`), WIN-3 (тестовые сборки установщика `/DTestWebView2=ok|fail`: ожидание bootstrapper, повторная проверка реестра, код 100 при сбое). Не покрывает: окна и сообщения глазами, SmartScreen, запуск из «Пуска» пользователем, обновление с другой версии, настоящую машину без WebView2 — ручной [чек-лист S4](checklists/S4_WINDOWS_CHECK.md).
 
 **Что из WIN-1, WIN-6, WIN-7 покрывает CI после S3, а что — нет.** Job `windows-build` на `windows-latest` выполняет загрузку Deno со сверкой SHA-256, PyInstaller и `Wave.exe --diagnostics` собранной папки (из `dist`, из пути с пробелами и кириллицей, без упакованного Deno — понятная ошибка и код 1, Deno из `PATH` и текущего каталога не подхватывается, после выхода нет `deno.exe`), а также команды запуска диагностики из README (`start /wait`, `Start-Process -Wait`). Тесты `test_jsruntime.py` на `windows-latest` проверяют Job Object и отсутствие окна консоли у дочернего процесса. Это **не** WIN-1 целиком (нет чистой машины и ISCC — установщик на S4), **не** WIN-6 (нет окна WebView2 и воспроизведения YouTube — на раннере нет доступа к YouTube и проверки звука) и **не** WIN-7 (закрытие окна приложения пользователем). Эти пункты выполняет владелец; пошаговая инструкция с командами PowerShell и ожидаемыми результатами — [checklists/S3_WINDOWS_CHECK.md](checklists/S3_WINDOWS_CHECK.md). Кратко:
 
