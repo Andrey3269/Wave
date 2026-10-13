@@ -13,6 +13,10 @@ YouTube. Они учитываются в jsruntime.GUARD: без окна ко�
 не переживают Wave даже при аварийном завершении.
 
 Запуск в разработке: python backend/launcher.py (нужен pywebview).
+
+Порт backend: обычно свободный порт, который выбирает система. Переменная окружения WAVE_PORT (S4, только
+для тестов собранного приложения, WIN-13) задаёт фиксированный порт 1024–65535 на 127.0.0.1; неверное значение
+или занятый порт — ошибка запуска, а не молчаливый выбор другого порта.
 """
 from __future__ import annotations
 
@@ -45,6 +49,8 @@ HEALTH_TIMEOUT = 40.0       # сколько ждём первый ответ ba
 WATCH_INTERVAL = 2.0        # как часто проверяем, что backend жив
 MAX_RESTARTS = 2
 IS_WIN = sys.platform == "win32"
+ENV_PORT = "WAVE_PORT"      # фиксированный порт для тестов собранного приложения (WIN-13); по умолчанию не задан
+PORT_RANGE = (1024, 65535)
 
 log = logging.getLogger("wave.desktop")
 
@@ -138,6 +144,22 @@ def single_instance() -> bool:
 # ---------------------------------------------------------------------------
 # Встроенный backend
 # ---------------------------------------------------------------------------
+def configured_port() -> int:
+    """
+    Порт из WAVE_PORT или 0 (свободный порт, обычный запуск). Переменная — только окружение: ни настроек,
+    ни аргументов командной строки для неё нет. Слушается всё равно только 127.0.0.1, проверка Host и CORS
+    не меняются. Неверное значение — ValueError с понятным текстом.
+    """
+    raw = os.environ.get(ENV_PORT)
+    if raw is None or not raw.strip():
+        return 0
+    value = raw.strip()
+    lo, hi = PORT_RANGE
+    if not (value.isascii() and value.isdigit()) or not lo <= int(value) <= hi:
+        raise ValueError(f"{ENV_PORT}={raw!r}: нужен номер порта от {lo} до {hi} (переменная только для тестов)")
+    return int(value)
+
+
 def listen_socket(port: int = 0) -> socket.socket:
     """
     Сокет только на 127.0.0.1 (извне недоступен). Порт 0 = свободный порт, выбранный системой.
@@ -160,18 +182,23 @@ class Backend:
         self.server = None
         self.thread: threading.Thread | None = None
         self.port = 0
+        self.strict = False                         # порт задан WAVE_PORT: не подменять другим
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, prefer_port: int = 0) -> None:
+    def start(self, prefer_port: int = 0, strict: bool = False) -> None:
+        """strict (порт из WAVE_PORT): занятый порт — ошибка, а не другой порт (тест ждёт именно этот)."""
         import uvicorn
         from main import app
 
         try:
             sock = listen_socket(prefer_port)
         except OSError:
+            if strict:
+                log.error("Порт %s из %s занят", prefer_port, ENV_PORT)
+                raise
             log.warning("Порт %s занят, выбираем другой", prefer_port)
             sock = listen_socket(0)
         self.port = sock.getsockname()[1]
@@ -227,7 +254,7 @@ def watchdog(window, backend: Backend, closing: threading.Event) -> None:
             return
         restarts += 1
         try:
-            backend.start(prefer_port=backend.port)
+            backend.start(prefer_port=backend.port, strict=backend.strict)
             ok = backend.wait_ready()
         except Exception:
             log.exception("Перезапуск backend не удался")
@@ -237,10 +264,11 @@ def watchdog(window, backend: Backend, closing: threading.Event) -> None:
             window.load_url(backend.url)
 
 
-def boot(window, backend: Backend, closing: threading.Event) -> None:
+def boot(window, backend: Backend, closing: threading.Event, port: int = 0) -> None:
     """Выполняется в потоке после показа окна: запускает backend и открывает интерфейс."""
     try:
-        backend.start()
+        backend.strict = bool(port)
+        backend.start(prefer_port=port, strict=backend.strict)
         if not backend.wait_ready():
             raise RuntimeError("backend не ответил на проверку здоровья")
     except Exception:
@@ -366,8 +394,18 @@ def main(argv: list[str] | None = None) -> int:
     if IS_WIN:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Wave.Desktop")   # значок на панели задач
     if not single_instance():
+        # второй экземпляр не запускает backend и не трогает базу (WIN-4); окно первого не активируется (L5, S17)
+        log.info("Wave уже запущен: второй экземпляр завершается, backend не запускается")
         _message(APP_NAME, "Wave уже запущен.")
         return 0
+    try:
+        port = configured_port()
+    except ValueError as exc:
+        log.error("%s", exc)
+        _message(APP_NAME, f"Wave не запущен: {exc}")
+        return 1
+    if port:
+        log.info("Фиксированный порт backend из %s: %d (режим тестов)", ENV_PORT, port)
     if not webview2_installed():
         log.error("Не найден WebView2 Runtime")
         _message(APP_NAME, f"Не найден Microsoft Edge WebView2 Runtime. Установите его и запустите Wave снова:\n{WEBVIEW2_URL}")
@@ -381,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
     window.events.closed += closing.set
     storage = paths.data_dir() / "webview"          # localStorage и кэш окна живут между запусками
     storage.mkdir(parents=True, exist_ok=True)
-    webview.start(boot, (window, backend, closing), gui="edgechromium" if IS_WIN else None,
+    webview.start(boot, (window, backend, closing, port), gui="edgechromium" if IS_WIN else None,
                   storage_path=str(storage), private_mode=False, debug=bool(os.getenv("WAVE_DEBUG")))
 
     # Окно закрыто: останавливаем backend, завершаем дочерние процессы и выходим
