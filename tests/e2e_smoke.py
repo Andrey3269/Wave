@@ -121,6 +121,9 @@ def foreign_names(page) -> list[str]:
 # Режим ответа /api/recommendations для ленты главной (раздел «Источник рекомендаций недоступен»):
 # normal | failed (источник не ответил) | empty (ответил, но предложить нечего) | partial (часть запросов упала)
 RECS = {"mode": "normal"}             # ещё personal: лента собрана по истории (personalized=true)
+# Режим /api/stream/: normal | js_runtime (нет JS-runtime Deno — ответ backend из S3, stream._runtime_error)
+STREAM = {"mode": "normal"}
+JS_RUNTIME_DETAIL = "Компонент воспроизведения YouTube (Deno) не найден или повреждён. Переустановите приложение."
 
 
 def handle(route: Route) -> None:
@@ -134,6 +137,9 @@ def handle(route: Route) -> None:
     if path.startswith("/api/stream/"):
         if q.get("warm"):
             return route.fulfill(status=204)
+        if STREAM["mode"] == "js_runtime":
+            return route.fulfill(status=503, content_type="application/json", headers={"X-Wave-Error": "js_runtime"},
+                                 body=json.dumps({"detail": JS_RUNTIME_DETAIL}, ensure_ascii=False))
         rng = re.match(r"bytes=(\d+)-(\d*)", req.headers.get("range", ""))
         if rng:
             a = int(rng.group(1)); b = min(int(rng.group(2) or len(AUDIO) - 1), len(AUDIO) - 1)
@@ -639,6 +645,27 @@ def main() -> int:
               "«Подобрано по вашей истории» — только когда backend сообщил personalized=true")
         check(foreign_names(home_page) == [], "после всех сценариев фирменных названий других сервисов нет")
         RECS["mode"] = "normal"
+
+        print("Компонент воспроизведения YouTube недоступен (S3)")
+        STREAM["mode"] = "js_runtime"
+        rt_page = ctx.new_page()
+        rt_page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        rt_page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        home_page.close()
+        rt_page.goto(BASE)
+        rt_page.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+        rt_page.click("#hero-play")
+        shown = True
+        try:
+            rt_page.wait_for_function("(t) => (document.querySelector('#toast')?.innerText || '').includes(t)",
+                                      arg="Компонент воспроизведения YouTube", timeout=15000)
+        except Exception:
+            shown = False
+        toast_text = rt_page.inner_text("#toast") if rt_page.locator("#toast").count() else ""
+        check(shown and "Трек недоступен" not in toast_text,
+              "нет компонента воспроизведения YouTube: пользователь видит отдельное сообщение, а не «Трек недоступен»")
+        rt_page.screenshot(path=str(SHOTS / "24-js-runtime-missing.png"))
+        STREAM["mode"] = "normal"
 
         browser.close()
 
