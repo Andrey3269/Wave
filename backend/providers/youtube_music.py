@@ -183,7 +183,10 @@ class YouTubeMusicProvider(Provider):
     )
     workers = int(os.getenv("YTM_WORKERS", "4"))
     max_pending = int(os.getenv("YTM_MAX_PENDING", "8"))
-    cooldown = 0.0                  # cooldown YouTube включается отдельным шагом S7 (находка M3)
+    # Пауза после сбоя (находка M3): короче, чем у SoundCloud (300 с), — YouTube Music основной источник,
+    # и случайный сбой не должен надолго выключать поиск. Без паузы при «висящей» сети каждый поиск ждал
+    # таймаут заново.
+    cooldown = float(os.getenv("YT_SOURCE_COOLDOWN", "45"))
 
     def classify(self, exc: BaseException) -> ProviderError:
         if isinstance(exc, ProviderError):

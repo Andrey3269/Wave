@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -98,21 +99,75 @@ def test_youtube_failure_keeps_soundcloud(both):
     assert ids(r) == ["sc:sc 0", "sc:sc 1"] and r.json()["failed_sources"] == ["yt"]
 
 
-def test_youtube_is_not_put_in_cooldown(both):
-    """M3 (фиксируем текущее поведение): после сбоя YouTube опрашивается снова при каждом поиске."""
+def test_youtube_cooldown_is_short(both):
+    """
+    M3 (исправлено в S7): YouTube Music после сбоя тоже уходит в паузу, но короткую (30–60 с), а SoundCloud —
+    на 300 с. Заменяет тест «как есть» test_youtube_is_not_put_in_cooldown (YouTube опрашивался при каждом поиске).
+    """
     both.ytm.fail("search")
-    both.get("/api/search", params={"q": "one"})
-    both.get("/api/search", params={"q": "two"})
-    assert both.ytm.count("search") == 2
-    assert not providers.yt.breaker.is_open()
+    r = both.get("/api/search", params={"q": "one"})
+    assert r.status_code == 200 and r.json()["failed_sources"] == ["yt"]
+    assert 30 <= providers.yt.cooldown <= 60 < providers.sc.cooldown == 300
+    assert providers.yt.cooldown - 5 < providers.yt.breaker.remaining() <= providers.yt.cooldown
+    assert providers.yt.breaker.last_kind == "internal"
 
 
-@pytest.mark.xfail(strict=True, reason="M3: YouTube не входит в cooldown — при «висящей» сети каждый поиск ждёт таймаут")
 def test_youtube_failure_enters_cooldown(both):
     both.ytm.fail("search")
     both.get("/api/search", params={"q": "one"})
     both.get("/api/search", params={"q": "two"})
     assert both.ytm.count("search") == 1
+
+
+def test_youtube_recovers_after_cooldown(both):
+    both.ytm.fail("search")
+    both.get("/api/search", params={"q": "one"})
+    providers.yt.breaker.until = time.monotonic() - 1          # пауза истекла
+    del both.ytm.failures["search"]
+    r = both.get("/api/search", params={"q": "two", "limit": 2})
+    assert r.json()["failed_sources"] == [] and ids(r) == ["yt:yt 0", "sc:sc 0"]
+    assert both.ytm.count("search") == 2 and not providers.yt.breaker.is_open()
+
+
+def test_youtube_still_failing_after_cooldown_pauses_again(both):
+    both.ytm.fail("search")
+    both.get("/api/search", params={"q": "one"})
+    providers.yt.breaker.until = time.monotonic() - 1
+    both.get("/api/search", params={"q": "two"})               # снова опрошен и снова упал
+    both.get("/api/search", params={"q": "three"})             # новая пауза
+    assert both.ytm.count("search") == 2 and providers.yt.breaker.is_open()
+
+
+def test_empty_result_is_not_a_failure(both):
+    """Пустая выдача — нормальный ответ: источник не уходит в паузу и опрашивается дальше."""
+    both.ytm.songs["*"] = []
+    both.sc.tracks["*"] = []
+    r = both.get("/api/search", params={"q": "nothing"})
+    assert r.status_code == 200 and r.json()["failed_sources"] == []
+    both.get("/api/search", params={"q": "nothing else"})
+    assert both.ytm.count("search") == 2 and both.sc.count("search_tracks") == 2
+    assert not providers.yt.breaker.is_open() and not providers.sc.breaker.is_open()
+
+
+def test_hanging_youtube_costs_one_timeout_not_one_per_search(both, monkeypatch):
+    """M3: при «висящей» сети ждём таймаут один раз, дальше поиск отвечает сразу результатами SoundCloud."""
+    monkeypatch.setattr(main, "PROVIDER_TIMEOUT", 0.3)
+    gate = threading.Event()
+    both.ytm.gates["search"] = gate
+    try:
+        t0 = time.monotonic()
+        first = both.get("/api/search", params={"q": "one", "limit": 2})
+        first_took = time.monotonic() - t0
+        t0 = time.monotonic()
+        later = [both.get("/api/search", params={"q": f"q{i}", "limit": 2}) for i in range(5)]
+        later_took = time.monotonic() - t0
+    finally:
+        gate.set()
+    assert 0.25 < first_took < 1.5 and first.json()["failed_sources"] == ["yt"]
+    assert later_took < 0.5, f"каждый поиск ждал таймаут YouTube: {later_took:.2f} с на 5 запросов"
+    assert all(r.status_code == 200 and r.json()["failed_sources"] == ["yt"] and ids(r) == ["sc:sc 0", "sc:sc 1"]
+               for r in later)
+    assert both.ytm.count("search") == 1 and providers.yt.breaker.last_kind == "timeout"
 
 
 def test_all_sources_failed_gives_502(both):

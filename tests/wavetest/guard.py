@@ -56,7 +56,10 @@ SYSTEM_TMP = Path(os.path.realpath(tempfile.gettempdir()))
 SESSION_ROOT = Path(tempfile.mkdtemp(prefix="wave-pytest-")).resolve()
 
 for _k in ("YTDLP_COOKIES", "YTDLP_PROXY", "SEARCH_SOURCES", "SEARCH_TIMEOUT", "SOURCE_COOLDOWN",
-           "SEARCH_CACHE_TTL", "STREAM_CHUNK_KB", "ALLOWED_ORIGINS", "SSL_CERT_FILE", "SSL_CERT_DIR"):
+           "SEARCH_CACHE_TTL", "STREAM_CHUNK_KB", "ALLOWED_ORIGINS", "SSL_CERT_FILE", "SSL_CERT_DIR",
+           # S7: настройки адаптеров источников (providers/*) — тесты проверяют значения по умолчанию
+           "YT_SOURCE_COOLDOWN", "YTM_CONNECT_TIMEOUT", "YTM_READ_TIMEOUT", "YTM_WORKERS", "YTM_MAX_PENDING",
+           "SC_SOCKET_TIMEOUT", "SC_WORKERS", "SC_MAX_PENDING"):
     os.environ.pop(_k, None)
 # Прокси убираем: иначе HTTP-библиотеки шли бы через локальный прокси (loopback разрешён) и защита
 # от сети стала бы дырявой. Без прокси любое внешнее соединение упирается в аудит-хук.
