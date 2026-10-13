@@ -145,13 +145,13 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_js_runtime_errors.py` (S3) | нет runtime → `js_runtime` (503), а не «Трек недоступен»; настоящие причины (удалён, нет сети, возраст) не подменяются; сбой решения JS-задачи → `js_runtime_failed`; SoundCloud и скачанные треки не затронуты; остановка backend завершает дочерние процессы |
 | `tests/live/test_live_youtube_runtime.py` (S3) | LIVE-2, LIVE-3, LIVE-4 (§7) |
 | `tests/unit/test_ci_annotate.py` (S3) | аннотации CI для упавших тестов и итог pytest со списком пропущенных |
-| `tests/api/test_download_policy.py` (S5) | разрешение источника на backend: YouTube — только лицензия Creative Commons, иначе `download_not_permitted`/`license_unknown` без обращения к CDN; тело запроса разрешения не даёт; SoundCloud — `downloadable`/`has_downloads_left`, отсутствие поля не трактуется как разрешение, ошибки ссылки (401 → `auth_required`, 429, недоступен), только https, неиграемый формат, обновление протухшей ссылки один раз; существующие загрузки играют с диска при любой политике |
+| `tests/api/test_download_policy.py` (S5) | какие треки скачиваются: YouTube Music и SoundCloud — штатный поток плеера в исходном формате, без проверки лицензии и `downloadable`, один резолв на проверку и загрузку; недоступный поток (unavailable, age_restricted, bot_check, rate_limited, network, no_direct_stream) — та же причина, что у плеера, без файлов и запросов к CDN; фрагмент SoundCloud Go+ → `preview_only`; повтор после временной ошибки; скачанное SoundCloud играет с диска без источника; старые загрузки не проверяются |
 | `tests/api/test_download_paths.py` (S5, N3) | строки индекса с `../`, абсолютным путём, symlink наружу не читаются и не удаляются ни одним эндпоинтом, без 500; своя папка удаляется целиком |
-| `tests/unit/test_download_sources.py` (S5) | `license` берётся из того же резолва; распознавание Creative Commons; `soundcloud.download_link`: `redirectUri`, коды HTTP, без сброса `client_id` при 401 |
+| `tests/unit/test_download_sources.py` (S5) | признак «только фрагмент» (`Resolved.preview`) берётся из того же извлечения yt-dlp, что и ссылка: `format_id` с `preview`, `requested_formats`, отсутствие `format_id`; поток YouTube фрагментом не считается |
 | `tests/api/test_origin_guard.py` (S13) | мутирующий запрос с чужим `Origin` → 403; без `Origin` и со своим → OK; GET не затронут |
 | `tests/js/queue.test.mjs` (S9) | модель очереди: add/next/prev/remove/move/clear, индекс текущего при перестановках, shuffle без повторов и с историей для «назад», repeat off/one/all, сериализация и восстановление |
 | `tests/js/format.test.mjs` (S9) | `fmtTime`, `plural`, `thumb` |
-| `tests/e2e_smoke.py` | 136 проверок после S5 (123 после S3): + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); S5 — раздел «Загрузки»: этапы «Подготовка»/«Скачивание N%»/«Обработка», «Скачано», причина отказа источника без повторного запроса, меню без «Скачать» для отклонённого, повтор после временной ошибки, список «Скачанных»; дальше — клавиатурная навигация (S12) |
+| `tests/e2e_smoke.py` | 136 проверок после S5 (123 после S3): + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); S5 — раздел «Загрузки»: этапы «Подготовка»/«Скачивание N%»/«Обработка», «Скачано», причина недоступного потока без повторного запроса, меню без «Скачать» для недоступного трека, повтор после временной ошибки, список «Скачанных»; дальше — клавиатурная навигация (S12) |
 | `tests/e2e_settings.py` (S2a) | 24 проверки: настройки интерфейса через UI на порту A → те же значения после перезапуска на порту B в новом окне (тема до отрисовки, имя, громкость, тексты, обложки миксов); однократный перенос из localStorage, старые ключи не удаляются |
 
 **Фикстуры провайдеров** (`tests/fixtures/ytmusic/*.json`, `tests/fixtures/soundcloud/*.json`):
@@ -214,7 +214,7 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | LIVE-3 | Стрим YouTube через настоящее приложение: 206 на `bytes=0-`, перемотка в середину, перерезолв после принудительной инвалидации | S3, S8 |
 | LIVE-4 | Без JS-runtime: задокументировать фактическую деградацию (какие форматы и ошибки); при недоступности YouTube — FAIL с пометкой BLOCKED, а не PASS | S3 |
 | LIVE-5 | SoundCloud: поиск и стрим прогрессивного формата; поведение при отказе API | S7 |
-| LIVE-8 | Признаки разрешения на сохранение: (a) YouTube отдаёт `license` «Creative Commons…» для CC-видео и не отдаёт для обычного клипа; (b) у трека SoundCloud есть `downloadable`, фиксируется ответ `tracks/{id}/download` без входа | S5 |
+| LIVE-8 | Настоящая загрузка через приложение без подмен: (a) YouTube Music, (b) SoundCloud — `done`, аудио и `metadata.json` на диске, трек в «Скачанных», воспроизведение с диска (206) без нового резолва | S5 |
 | LIVE-6 | LRCLIB: синхронный текст для известного трека | S1 |
 | LIVE-7 | Рекомендации: радио трека YouTube и SoundCloud непустые | S14 |
 
@@ -228,7 +228,7 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 
 Вывод `-rP` содержит итог каждой проверки одной строкой JSON (время резолва, число решений JS-задач, размер трека, у LIVE-4 — форматы или тип ошибки); ссылки на поток в вывод не попадают. В собранном приложении то же самое для одного трека проверяет `Wave.exe --diagnostics --live <videoId>` (поле `js_challenge_runs`). В облачной среде S3 все три — **BLOCKED**: прокси отвечает `Tunnel connection failed: 403 Forbidden` на соединение с YouTube (reports/S3.md §9).
 
-**LIVE-8 (S5)** — `tests/live/test_live_downloads.py`, цели `_youtube_cc_video_id` и `_soundcloud_downloadable_track_id` в `tests/live_targets.json`; запуск как у LIVE-2 (нужен Deno для 8a). Результат 2026-10-13 в облачной среде: **8b PASS** (`downloadable: true`, без входа — HTTP 401 → `auth_required`), **8a BLOCKED** (YouTube: HTTP 429 и требование подтвердить «не бот» для облачного IP) — reports/S5.md §5.
+**LIVE-8 (S5)** — `tests/live/test_live_downloads.py`, цели `youtube_video_id` и `soundcloud_track_id` в `tests/live_targets.json`; запуск как у LIVE-2 (нужен Deno для 8a). Результат 2026-10-13 в облачной среде: **8a PASS** (`audio.m4a`, 3,4 МБ, 6,1 с), **8b PASS** (`audio.mp3`, 6,4 МБ, 6,6 с), оба играют с диска без резолва. Среда пускает в сеть только через свой прокси, а тесты намеренно убирают `YTDLP_PROXY` из окружения, поэтому прокси и его сертификат подставлялись временным плагином pytest вне репозитория; код Wave не менялся (reports/S5.md §5).
 
 ## 8. Что требует Windows
 
