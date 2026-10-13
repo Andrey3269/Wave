@@ -197,8 +197,9 @@ jobs:
           foreach ($need in "pywebview ", "pythonnet ", "fastapi ", "yt-dlp ", "Microsoft.Web.WebView2 SDK ") {
             if (-not ($pk | Where-Object { $_.StartsWith($need) })) { throw "PACKAGES.txt has no $need" }
           }
-          $tools = $pk | Where-Object { $_ -match "^(PyInstaller|pyinstaller|pyinstaller-hooks-contrib|pillow|Pillow|setuptools|altgraph|pefile) " }
-          if ($tools) { "::warning title=build tools in the bundle::$($tools -join ' || ')" }
+          # инструменты сборки в приложение не входят (wave.spec: excludes)
+          $tools = $pk | Where-Object { $_ -match "^(PyInstaller|pyinstaller|pyinstaller-hooks-contrib|pillow|Pillow|setuptools|altgraph|pefile|pywin32-ctypes) " }
+          if ($tools) { throw "build tools in the bundle: $($tools -join ' || ')" }
           $gpl = Get-ChildItem -Path "dist\Wave\_internal" -Directory -Filter "mutagen*"
           if ($gpl) { throw "mutagen (GPL) must not be bundled" }
           $mb = { param($p) (Get-ChildItem -Path $p -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB }

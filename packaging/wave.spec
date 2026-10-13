@@ -55,7 +55,13 @@ a = Analysis(
     datas=datas,
     binaries=binaries,
     hiddenimports=hidden,
-    excludes=["tkinter", "matplotlib", "numpy", "pandas", "scipy", "IPython", "pytest"],
+    # Хуки PyInstaller внутри pythonnet и pywebview (их собирает collect_all) импортируют сам PyInstaller,
+    # а за ним в приложение попадали setuptools, pefile, altgraph, pywin32-ctypes (CI S4, PACKAGES.txt).
+    # Во время работы приложения они не нужны: исключаются вместе с тестами certifi.
+    excludes=["tkinter", "matplotlib", "numpy", "pandas", "scipy", "IPython", "pytest",
+              "pythonnet._pyinstaller", "webview.__pyinstaller", "certifi.tests",
+              "PyInstaller", "setuptools", "pkg_resources", "_distutils_hack", "pefile", "altgraph", "ordlookup",
+              "win32ctypes"],
 )
 # Version-resource Wave.exe (свойства файла; installer/wave.iss читает отсюда версию, название и издателя).
 # Модуль versioninfo PyInstaller импортируется только на Windows; на других ОС ресурса у exe нет.
