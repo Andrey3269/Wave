@@ -1,7 +1,11 @@
-# Зависимости только для СБОРКИ установщика (в готовом приложении всё уже внутри)
-# Ставятся скриптом build_windows.bat вместе с backend/requirements.txt и constraints.txt.
-# pywebview нужен и для запуска окна в разработке: python backend/launcher.py
-# Версии закрепляются после проверки сборки на Windows (docs/engineering/ROADMAP.md, S3–S4).
-pyinstaller>=6.10
-pywebview>=5.3          # окно (на Windows тянет pythonnet и использует Microsoft Edge WebView2)
-pillow>=10.0            # рисует иконку приложения
+# Прямые зависимости СБОРКИ Wave для Windows (в готовом приложении всё уже внутри), версии точные.
+# Устанавливаются не из этого файла, а из полного хэш-лока packaging/requirements-build.lock, где вместе
+# с зависимостями приложения (backend/requirements.txt, constraints.txt) закреплены все транзитивные пакеты
+# для Windows x64 и Python 3.12:
+#   py -3.12 -m pip install --require-hashes --no-deps -r packaging\requirements-build.lock
+# Здесь — что именно и почему; лок генерируется из этого файла (команда — в шапке лока).
+# Версии проверены сборкой dist\Wave и установщика в CI windows-latest (S4) и ручной сборкой S3.
+# Обновление: отдельный коммит, перегенерация лока, сборка в CI и ручной чек-лист S4.
+pyinstaller==6.22.3     # сборка dist\Wave (onedir); 6.22.3 использовался в CI и принятой сборке S3
+pywebview==6.2.1        # окно приложения (на Windows: pythonnet + Microsoft Edge WebView2)
+pillow==12.3.0          # packaging/svg_to_ico.py рисует wave.ico из SVG логотипа

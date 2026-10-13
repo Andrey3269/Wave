@@ -65,3 +65,67 @@ def test_gpl_dependency_is_not_pulled_in():
               for line in (ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8").splitlines()]
     assert not [line for line in active if "[default]" in line or line.startswith("mutagen")]
     assert "mutagen" not in _pins(ROOT / "constraints.txt")
+
+
+# ---------------------------------------------------------------------------
+# S4: воспроизводимая сборка — хэш-лок packaging/requirements-build.lock для Windows x64, Python 3.12
+# ---------------------------------------------------------------------------
+LOCK = ROOT / "packaging" / "requirements-build.lock"
+
+
+def _lock_entries() -> dict[str, tuple[str, list[str]]]:
+    """Пакеты лока: имя -> (версия, хэши). Каждый пакет закреплён точно и хотя бы одним sha256."""
+    entries: dict[str, tuple[str, list[str]]] = {}
+    current = None
+    for raw in LOCK.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].rstrip().rstrip("\\").strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"([A-Za-z0-9_.\-]+)==([^\s;]+)", line)
+        if m:
+            current = m.group(1).lower().replace("_", "-")
+            entries[current] = (m.group(2), [])
+            continue
+        h = re.fullmatch(r"--hash=sha256:([0-9a-f]{64})", line)
+        assert h and current, f"непонятная строка лока: {raw!r}"
+        entries[current][1].append(h.group(1))
+    return entries
+
+
+def test_build_lock_pins_everything_with_hashes():
+    entries = _lock_entries()
+    assert entries, "лок пуст"
+    assert not [n for n, (_, hashes) in entries.items() if not hashes], "пакеты без хэша"
+
+
+def test_build_lock_agrees_with_direct_build_pins_and_runtime_constraints():
+    """Лок содержит ровно закреплённые версии: прямые зависимости сборки и общий набор constraints.txt."""
+    entries = _lock_entries()
+    build = _pins(ROOT / "packaging" / "requirements-build.txt")
+    assert set(build) == {"pyinstaller", "pywebview", "pillow"}
+    for name, ver in build.items():
+        assert entries.get(name, (None,))[0] == ver, f"{name}: requirements-build {ver}, лок {entries.get(name)}"
+    con = _pins(ROOT / "constraints.txt")
+    mismatched = {n: (con[n], v) for n, (v, _) in entries.items() if n in con and con[n] != v}
+    assert not mismatched, f"лок расходится с constraints.txt: {mismatched}"
+
+
+def test_build_lock_covers_runtime_requirements():
+    """Всё, что нужно приложению (backend/requirements.txt), есть в локе сборки."""
+    entries = _lock_entries()
+    names = set()
+    for line in (ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        m = re.match(r"([A-Za-z0-9_.\-]+)", line)
+        if m:
+            names.add(m.group(1).lower().replace("_", "-"))
+    assert names and not names - set(entries), f"нет в локе: {names - set(entries)}"
+    assert "mutagen" not in entries
+
+
+def test_build_script_installs_from_the_hashed_lock():
+    """build_windows.bat и CI ставят зависимости сборки только из лока с проверкой хэшей."""
+    bat = (ROOT / "build_windows.bat").read_text(encoding="utf-8")
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for text in (bat, ci):
+        assert "--require-hashes --no-deps -r packaging" in text and "requirements-build.lock" in text

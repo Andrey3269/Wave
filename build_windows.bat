@@ -5,12 +5,13 @@ setlocal
 cd /d "%~dp0"
 
 if not exist ".venv-build\Scripts\python.exe" (
-  py -3.12 -m venv .venv-build 2>nul || py -3 -m venv .venv-build || goto :fail
+  py -3.12 -m venv .venv-build || goto :fail
 )
 call ".venv-build\Scripts\activate.bat" || goto :fail
 
-python -m pip install --upgrade pip || goto :fail
-pip install -r backend\requirements.txt -r packaging\requirements-build.txt -c constraints.txt || goto :fail
+rem Все пакеты и их хэши закреплены в packaging\requirements-build.lock (Windows x64, Python 3.12)
+python -m pip install --require-hashes --no-deps -r packaging\requirements-build.lock || goto :fail
+python -m pip check || goto :fail
 
 rem JS-runtime Deno для YouTube: официальный архив по packaging\runtime\deno.lock, сверка SHA-256 до распаковки.
 rem Повторная сборка ничего не скачивает, если подготовленный файл уже проверен.

@@ -103,15 +103,34 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: |
-            backend/requirements.txt
-            packaging/requirements-build.txt
-            constraints.txt
+          cache-dependency-path: packaging/requirements-build.lock
 
-      - name: Install runtime and build dependencies
+      # S4: как build_windows.bat — только хэш-лок (все пакеты и хэши закреплены), без обновления pip;
+      # затем проверка, что окружение совпадает с локом пакет в пакет и непротиворечиво (pip check)
+      - name: Install runtime and build dependencies (packaging/requirements-build.lock, hashes required)
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt -r packaging/requirements-build.txt -c constraints.txt
+          # чистое окружение, как .venv-build в build_windows.bat: в нём только pip самого Python
+          python -m venv "$RUNNER_TEMP/venv-build"
+          echo "$RUNNER_TEMP\venv-build\Scripts" >> "$GITHUB_PATH"
+          PY="${RUNNER_TEMP//\\//}/venv-build/Scripts/python.exe"     # следующие шаги берут его из PATH
+          "$PY" -c "import sys; assert sys.prefix != sys.base_prefix, sys.prefix"
+          "$PY" -m pip install --require-hashes --no-deps -r packaging/requirements-build.lock
+          "$PY" -m pip check
+          "$PY" - <<'PY'
+          import re, subprocess, sys
+          lock = {m.group(1).lower().replace("_", "-"): m.group(2) for m in
+                  re.finditer(r"^([A-Za-z0-9_.\-]+)==(\S+)", open("packaging/requirements-build.lock", encoding="utf-8").read(), re.M)}
+          frozen = {}
+          for line in subprocess.run([sys.executable, "-m", "pip", "freeze", "--all"], capture_output=True, text=True, check=True).stdout.splitlines():
+              name, _, ver = line.partition("==")
+              frozen[name.lower().replace("_", "-")] = ver
+          for tool in ("pip",):                       # инструмент установки самого Python, не зависимость сборки
+              frozen.pop(tool, None)
+          diff = {n: (lock.get(n), frozen.get(n)) for n in set(lock) | set(frozen) if lock.get(n) != frozen.get(n)}
+          if diff:
+              sys.exit(f"environment differs from packaging/requirements-build.lock: {diff}")
+          print(f"::notice title=build environment::{sys.version.split()[0]}; {len(lock)} packages exactly as in requirements-build.lock")
+          PY
 
       - name: Fetch pinned Deno (packaging/runtime/deno.lock, SHA-256 verified)
         run: python packaging/fetch_runtime.py --platform windows-x86_64
