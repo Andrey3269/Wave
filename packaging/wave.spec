@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(ROOT, "packaging"))
 import fetch_runtime  # noqa: E402  (packaging/fetch_runtime.py: проверка подготовленного Deno)
 sys.path.insert(0, os.path.join(ROOT, "backend"))
 import version as app_version  # noqa: E402  (backend/version.py: единственный источник версии, S4)
+import python_notices  # noqa: E402  (packaging/python_notices.py: лицензии пакетов, попавших в сборку, S4)
 
 datas = [(os.path.join(ROOT, "frontend"), "frontend")]    # интерфейс: backend раздаёт его из этой папки
 binaries, hidden = [], []
@@ -92,4 +93,15 @@ exe = EXE(
     console=False,                                        # без чёрного окна консоли
     version=VERSION_INFO,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Wave")
+# Лицензии Python и пакетов, которые PyInstaller действительно положил в сборку (S4): _internal/licenses/python/
+WEBVIEW2_SDK = os.path.join(ROOT, "licenses", "webview2-sdk")   # версия и лицензия SDK из pywebview
+_sdk_version = open(os.path.join(WEBVIEW2_SDK, "VERSION"), encoding="utf-8").read().strip()
+LICENSE_TOC = python_notices.collect(
+    [name for name, _src, _kind in a.pure],
+    [dest for dest, _src, _kind in a.binaries] + [dest for dest, _src, _kind in a.datas],
+    os.path.join(workpath, "licenses"),
+    extra=[("Microsoft.Web.WebView2 SDK", _sdk_version,
+            "библиотеки Microsoft.Web.WebView2.Core.dll, .WinForms.dll и WebView2Loader.dll в составе pywebview; "
+            "лицензия Microsoft (BSD-подобная), текст: licenses/webview2-sdk/LICENSE.txt")],
+)
+coll = COLLECT(exe, a.binaries, a.datas + LICENSE_TOC, name="Wave")

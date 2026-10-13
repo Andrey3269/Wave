@@ -187,6 +187,16 @@ jobs:
             throw "Wave.exe version resource: ProductVersion=$($vi.ProductVersion) FileVersion=$($vi.FileVersion) raw=$($vi.FileVersionRaw), expected $ver"
           }
           "::notice title=Wave.exe version::$($vi.ProductName) $($vi.ProductVersion) ($($vi.CompanyName); $($vi.FileDescription))"
+          # S4: перечни лицензий — Rust/V8 компонентов Deno и Python-пакетов, собранный по составу этой сборки
+          foreach ($f in "licenses\deno\THIRD_PARTY_RUST.txt", "licenses\deno\V8_COMPONENTS.txt", "licenses\python\PACKAGES.txt") {
+            if (-not (Test-Path "dist\Wave\_internal\$f")) { throw "$f is not bundled" }
+          }
+          $pk = Get-Content "dist\Wave\_internal\licenses\python\PACKAGES.txt" -Encoding utf8
+          foreach ($need in "pywebview ", "pythonnet ", "fastapi ", "yt-dlp ", "Microsoft.Web.WebView2 SDK ") {
+            if (-not ($pk | Where-Object { $_.StartsWith($need) })) { throw "PACKAGES.txt has no $need" }
+          }
+          if ($pk | Where-Object { $_ -match "^(PyInstaller|pyinstaller|pillow|Pillow|setuptools) " }) { throw "build tools listed as bundled" }
+          "::notice title=licenses\python\PACKAGES.txt::$(($pk | Where-Object { $_ -match ' — ' }) -join ' || ')"
           $gpl = Get-ChildItem -Path "dist\Wave\_internal" -Directory -Filter "mutagen*"
           if ($gpl) { throw "mutagen (GPL) must not be bundled" }
           $mb = { param($p) (Get-ChildItem -Path $p -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB }
@@ -195,6 +205,32 @@ jobs:
 
       # Собранный Wave.exe без окна и без сети. Оконная программа: Start-Process -Wait даёт код возврата,
       # -RedirectStandardOutput проверяет вывод через перенаправленный дескриптор (launcher._cli_stream).
+      # Лицензия Microsoft WebView2 SDK (библиотеки внутри pywebview): версия DLL в сборке совпадает с
+      # licenses/webview2-sdk/VERSION, текст — с файлом лицензии официального пакета NuGet этой версии
+      - name: WebView2 SDK license matches the official NuGet package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = (Get-Content licenses\webview2-sdk\VERSION -Raw).Trim()
+          $dll = Get-ChildItem dist\Wave\_internal -Recurse -Filter Microsoft.Web.WebView2.Core.dll | Select-Object -First 1
+          if (-not $dll) { throw "Microsoft.Web.WebView2.Core.dll is not in dist\Wave" }
+          if ($dll.VersionInfo.FileVersion -ne $ver) { throw "WebView2 SDK in dist is $($dll.VersionInfo.FileVersion), licenses/webview2-sdk/VERSION says $ver" }
+          $pkg = Join-Path $env:RUNNER_TEMP "microsoft.web.webview2.$ver.nupkg"
+          $ProgressPreference = "SilentlyContinue"
+          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$ver" -OutFile $pkg
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($pkg)
+          $entry = $zip.Entries | Where-Object { $_.FullName -match '^LICENSE' } | Select-Object -First 1
+          if (-not $entry) { $names = ($zip.Entries | Select-Object -First 30 | ForEach-Object FullName) -join ', '; $zip.Dispose(); throw "no LICENSE in nupkg: $names" }
+          $reader = [IO.StreamReader]::new($entry.Open()); $text = $reader.ReadToEnd(); $reader.Dispose(); $zip.Dispose()
+          $norm = { param($t) (($t -replace "`r`n", "`n") -split "`n" | ForEach-Object { $_.TrimEnd() }) -join "`n" | ForEach-Object { $_.Trim() } }
+          $mine = if (Test-Path licenses\webview2-sdk\LICENSE.txt) { Get-Content licenses\webview2-sdk\LICENSE.txt -Raw -Encoding utf8 } else { "" }
+          if ((& $norm $mine) -ne (& $norm $text)) {
+            "::error title=WebView2 SDK license differs from NuGet $ver ($($entry.FullName))::$(($text -replace "`r?`n", ' ¶ '))"
+            exit 1
+          }
+          "::notice title=WebView2 SDK license::Microsoft.Web.WebView2 $ver — licenses/webview2-sdk/LICENSE.txt matches $($entry.FullName) of the NuGet package"
+
       - name: Diagnostics of the built app (Wave.exe --diagnostics)
         shell: pwsh
         timeout-minutes: 10

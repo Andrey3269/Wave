@@ -1,11 +1,11 @@
-Wave / «ВОЛНА» — уведомления о сторонних компонентах воспроизведения YouTube
-===========================================================================
+Wave / «ВОЛНА» — уведомления о сторонних компонентах
+====================================================
 
-Этот файл и папка licenses/ поставляются вместе с приложением (в собранной папке:
-_internal\licenses\). Здесь перечислены компоненты, которые этап S3 добавил или закрепил
-в распространяемой сборке для воспроизведения YouTube. Полный перечень лицензий всех
-компонентов сборки (Python, pywebview, pythonnet, FastAPI и др.) составляется на этапе S4
-вместе с установщиком.
+Этот файл и папка licenses/ поставляются вместе с приложением: в установленной программе файл лежит
+рядом с Wave.exe (THIRD_PARTY_NOTICES.txt), а полные тексты — в папке _internal\licenses\.
+Ниже перечислены компоненты, которые входят в распространяемую сборку, и где лежат их лицензии.
+Перечень составлен по фактическому составу сборки и исходникам закреплённых версий (этап S4);
+пункты, которые проверены не полностью, отмечены прямо. Это не юридическое заключение.
 
 
 1. Deno 2.9.7 — JavaScript-runtime
@@ -19,12 +19,22 @@ _internal\licenses\). Здесь перечислены компоненты, к
           (из репозитория Deno, тег v2.9.7).
 Исходный код: https://github.com/denoland/deno/tree/v2.9.7
 
-В исполняемый файл Deno статически встроены движок V8 (версия 15.0.245.2) и библиотеки
-на Rust. Текст лицензии V8 (BSD-3-Clause и лицензии встроенных в V8 библиотек):
-licenses\v8\LICENSE (из репозитория V8, тег 15.0.245.2). Официальный архив Deno не содержит
-сводного файла уведомлений для встроенных библиотек Rust; их перечень и лицензии определяются
-по Cargo.lock исходного кода Deno v2.9.7. Состав этих уведомлений для публичного
-распространения подлежит проверке на этапе S4.
+В исполняемый файл Deno статически встроены:
+  * Rust-библиотеки (756 пакетов): перечень с версиями, лицензиями и полные тексты лицензий из
+    самих пакетов — licenses\deno\THIRD_PARTY_RUST.txt. Перечень получен из исходников Deno v2.9.7
+    тем же набором функций, что у релизной сборки Deno, для цели x86_64-pc-windows-msvc
+    (packaging\deno_notices.py; метод и ограничения описаны в начале файла). У 69 пакетов на
+    crates.io нет файла лицензии — для них приведены правообладатели из Cargo.toml и стандартные
+    тексты SPDX.
+  * движок V8 15.0.245.2 и встроенные в него библиотеки C/C++ (ICU 77.1, libc++/libc++abi, Abseil,
+    Highway, simdutf и др.) — перечень с обоснованием и тексты лицензий:
+    licenses\deno\V8_COMPONENTS.txt; основной текст лицензии V8: licenses\v8\LICENSE.
+    Состав установлен по исходникам крейта v8 150.4.0, по самому бинарнику не сверялся.
+  * В том числе, по исходникам V8, функции sin/cos из glibc (IBM Accurate Mathematical Library)
+    под лицензией GNU LGPL 2.1 или более поздней. Исходный код этих файлов:
+    https://github.com/v8/v8/tree/15.0.245.2/third_party/glibc ; Deno и V8 — открытый код, deno.exe
+    можно пересобрать с изменёнными версиями этих функций. Текст LGPL-2.1 приведён в
+    licenses\deno\V8_COMPONENTS.txt.
 
 
 2. yt-dlp 2026.8.19
@@ -41,6 +51,41 @@ licenses\v8\LICENSE (из репозитория V8, тег 15.0.245.2). Офи�
   * astring 1.9.0 — MIT License, Copyright (c) 2015, David Bonnet.
 Полные тексты: licenses\yt-dlp-ejs\BUNDLED_DEPENDENCIES.txt (тот же текст стоит в начале
 файла yt_dlp_ejs\yt\solver\lib.min.js).
+
+
+4. Python и Python-пакеты
+-------------------------
+Сборка содержит интерпретатор Python 3.12 (python312.dll и стандартную библиотеку) и пакеты,
+которые нужны приложению: FastAPI, Starlette, Pydantic, Uvicorn, HTTPX, ytmusicapi, pywebview,
+pythonnet и их зависимости. Перечень формируется при каждой сборке по фактическому составу
+(packaging\python_notices.py): licenses\python\PACKAGES.txt — имя, версия, лицензия из метаданных
+пакета; рядом, в папках <имя>-<версия>\, — файлы лицензий из самих пакетов.
+Python — PSF License; файл licenses\python\python-<версия>\LICENSE.txt из установки Python содержит
+и уведомления о встроенных в Python библиотеках (OpenSSL, libffi, SQLite, zlib, bzip2, xz, expat,
+mpdecimal и др.).
+Инструменты сборки (PyInstaller, Pillow, setuptools) в приложение не входят.
+
+
+5. Microsoft WebView2 SDK 1.0.3856.49 (в составе pywebview)
+------------------------------------------------------------
+Библиотеки Microsoft.Web.WebView2.Core.dll, Microsoft.Web.WebView2.WinForms.dll и WebView2Loader.dll
+поставляются внутри пакета pywebview (_internal\webview\lib\). Лицензия Microsoft (BSD-подобная):
+licenses\webview2-sdk\LICENSE.txt — текст из официального пакета NuGet Microsoft.Web.WebView2
+той же версии (https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3856.49).
+
+
+6. Microsoft Edge WebView2 Runtime
+----------------------------------
+В приложение не входит: окно ВОЛНЫ использует WebView2 Runtime, установленный в Windows. Если его нет,
+установщик ВОЛНЫ запускает официальный загрузчик Microsoft (MicrosoftEdgeWebview2Setup.exe), который
+скачивает и устанавливает Runtime на условиях Microsoft:
+https://developer.microsoft.com/microsoft-edge/webview2/
+
+
+7. Установщик
+-------------
+Установщик Wave-Setup-<версия>.exe создан с помощью Inno Setup (Copyright (C) 1997-2026 Jordan Russell,
+Copyright (C) 2000-2026 Martijn Laan; https://jrsoftware.org/).
 
 
 Не входят в сборку
