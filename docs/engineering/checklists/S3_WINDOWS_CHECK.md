@@ -21,6 +21,12 @@ Get-Command deno -ErrorAction SilentlyContinue      # ожидается: пус
 # Если Deno установлен — убрать его из PATH только для этого окна:
 $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'deno.exe')) }) -join ';'
 
+# WAVE_JS_RUNTIME проверяется раньше упакованного Deno (backend/jsruntime.py) — убрать её только из этого сеанса
+# (PowerShell 5.1 и 7; системные и пользовательские переменные Windows не меняются)
+Remove-Item Env:WAVE_JS_RUNTIME -ErrorAction SilentlyContinue
+Test-Path Env:WAVE_JS_RUNTIME                       # ожидается: False
+Get-Command deno -ErrorAction SilentlyContinue      # ожидается: пусто
+
 # Временный профиль, загрузки и чистый кэш yt-dlp (иначе решённые ранее JS-задачи берутся из кэша)
 $T = "$env:TEMP\wave-s3-check"
 Remove-Item $T -Recurse -Force -ErrorAction SilentlyContinue
