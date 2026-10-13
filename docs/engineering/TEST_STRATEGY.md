@@ -43,6 +43,17 @@
 | `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
 | WIN-5 (настройки в WebView2), WIN-12 (сторож) | **NOT RUN** | нужна Windows-машина |
 
+### Состояние после S3 (2026-10-13, ветка `claude/s3-ytdlp-deno`)
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 589 тестов (было 482). Linux: 574 passed + 2 skipped (только Windows) + 13 xfail; Windows: 576 passed, 0 skipped + 13 xfail. Тесты с настоящим Deno 2.9.7 (`test_jsruntime_real.py`) выполнены на обеих ОС; Job Object и отсутствие окна консоли — на Windows | Linux, Python 3.12.3; CI `ubuntu-latest`, `windows-latest` (итог pytest — аннотацией) |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 123 (было 122; + сообщение об отсутствии компонента воспроизведения YouTube) + 27, 0 ошибок консоли | Linux Chromium; CI Linux и Windows Chromium (не WebView2) |
+| `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
+| `windows-build`: Deno по lock со сверкой SHA-256, PyInstaller, состав папки, `Wave.exe --diagnostics` | **PASS**: `deno 2.9.7 supported=true`, путь с кириллицей, без runtime → код 1 с понятным сообщением и без системного Deno, `deno.exe` не остаётся; `dist\Wave` 147,1 МБ (Deno 92,9 МБ) | CI `windows-latest` (без WebView2) |
+| LIVE-2, LIVE-3, LIVE-4 | **BLOCKED**: прокси среды отвечает 403 на соединение с YouTube | облачная среда, настоящий Deno |
+| WIN-1 (полный), WIN-6, WIN-7 | **NOT RUN** | нужна Windows-машина с WebView2 и доступом к YouTube |
+
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
 ## 3. Изоляция данных (обязательно с этапа S0)
@@ -57,7 +68,9 @@
    - каждый тест получает свой профиль (`wave_profile`: свои `data/` и `downloads/`) и сброшенное модульное состояние backend (кэши, задачи загрузок, соединение SQLite); асинхронное состояние резолвера с S2b создаёт и закрывает lifespan (`app.state.resolver`), сбрасывать его не нужно; фикстура `db` инициализирует `library`, `userdata`, `playlists`;
    - в конце сессии сверяет реальные каталоги пользователя (существование, размер и время изменения `wave.db`) с состоянием до запуска;
    - `api`/`harness`: приложение с подменёнными `YTMusic`, httpx-клиентом (`FakeNet` на `httpx.MockTransport`), резолвером yt-dlp и SoundCloud API; запрос к неизвестному хосту роняет тест. `harness.serve()` (S2a) запускает то же приложение настоящим uvicorn на свободном порту loopback — для проверок, где важен порт;
-   - самопроверки защиты: `tests/unit/test_isolation.py`.
+   - самопроверки защиты: `tests/unit/test_isolation.py`;
+   - S3: запись в устройства, а не в файлы профиля, разрешена — `os.devnull` (`subprocess.DEVNULL` при запуске JS-runtime) и на Windows `CONOUT$`/`CONIN$` (их открывает `YoutubeDL.__init__`); файл с таким именем в реальном каталоге по-прежнему блокируется;
+   - S3: статус JS-runtime по умолчанию — «исправен» (`conftest.healthy_runtime_status`), чтобы тесты резолвера не зависели от того, установлен ли Deno; состояния «нет», «сломан», «старый» проверяются явно. Поиск Deno в `PATH` в тестах `jsruntime` отключён.
 2. **e2e** (`tests/e2e_smoke.py`):
    - перед первым действием запрашивает `GET /api/settings`;
    - продолжает только если `paths.data` содержит файл-метку `.wave-test-profile`, созданный раннером, либо лежит внутри `tempfile.gettempdir()`;
@@ -112,12 +125,20 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/unit/test_db_migrations.py` (S6) | фикстура базы «как в 5a7f27c» и «старее, без `downloads.root`» → миграция до последней версии без потери строк; бэкап создан; повторный запуск идемпотентен; ошибка миграции → откат и исходная база цела |
 | `tests/api/test_downloads.py` | старт → `jobs` → done (CDN через `MockTransport`); апстрим без Range (200); `Content-Range */*`; ошибка посередине → каталог `.part` удалён, индекс не тронут; сбой LRCLIB не отменяет загрузку (M8: xfail до S11); после S5 — 403 `download_not_allowed` для запрещённых источников |
 | `tests/unit/test_lyrics.py` | `_parse_lrc`: таймкоды `mm:ss.xx`, пустые строки, без таймкодов; 404 → пустой результат; не-JSON → `None`, без исключения |
-| `tests/unit/test_jsruntime.py` (S3) | порядок поиска (env → bundle → PATH); парсинг `deno --version`; версия ниже 2.3.0 → не поддерживается; таймаут проверки; `ydl_opts()` содержит `js_runtimes` с путём |
+| `tests/unit/test_jsruntime.py` (S3) | поддельный Deno в путях с пробелами и кириллицей: найден и совместим, отсутствует, не запускается, неожиданный ответ, старая версия, граница 2.3.0, таймаут; порядок поиска (env без подмены → bundle → PATH только в разработке), frozen не берёт системный Deno и cwd; настоящий `YoutubeDL` получает наш путь или пустой `js_runtimes`; `DENO_DIR`/`DENO_NO_UPDATE_CHECK`; пересоздание `YoutubeDL` при смене runtime; сторож процессов (таймаут, завершение, счётчик `run`); только Windows: нет окна консоли, Job Object завершает процесс; логгер yt-dlp |
+| `tests/unit/test_jsruntime_real.py` (S3) | **настоящий** Deno из `WAVE_TEST_REAL_DENO` (в CI — после `fetch_runtime.py`): закреплённая версия, путь с кириллицей, yt-dlp его принимает, скрипты yt-dlp-ejs исполняются без сети с флагами yt-dlp, кэш только в `DENO_DIR`, зависший процесс завершается |
+| `tests/unit/test_fetch_runtime.py` (S3) | `deno.lock` полный и указывает на официальный релиз; уведомления, `wave.spec`, `.gitignore` согласованы с lock; загрузка с подменённым скачиванием: проверка и распаковка, повторное использование, восстановление подменённого файла, несовпадение хэша архива и исполняемого файла, ошибка загрузки без частичных файлов, битый архив, небезопасный lock отклоняется до загрузки, `--check` |
+| `tests/unit/test_dependencies.py` (S3) | версия yt-dlp-ejs = extra `[default]` = версии решателя yt-dlp; requirements и constraints закрепляют установленные версии; GPL-зависимость не подтягивается |
+| `tests/unit/test_launcher_cli.py` (S3) | `--diagnostics` в отдельном процессе: без импорта webview, коды 0/1, JSON, зависший runtime завершается; режим диагностики без модальных окон; отчёт в UTF-8 при stdout в cp1252 (причина зависания CI); обычный запуск (и с посторонними аргументами) создаёт окно |
+| `tests/api/test_diagnostics.py` (S3) | `/api/diagnostics`: исправный и отсутствующий runtime, расхождение версии в frozen, yt-dlp-ejs отсутствует / другой версии / не читается — критично, без секретов и окружения; `--live` с подменёнными резолвером и CDN не раскрывает ссылку |
+| `tests/api/test_js_runtime_errors.py` (S3) | нет runtime → `js_runtime` (503), а не «Трек недоступен»; настоящие причины (удалён, нет сети, возраст) не подменяются; сбой решения JS-задачи → `js_runtime_failed`; SoundCloud и скачанные треки не затронуты; остановка backend завершает дочерние процессы |
+| `tests/live/test_live_youtube_runtime.py` (S3) | LIVE-2, LIVE-3, LIVE-4 (§7) |
+| `tests/unit/test_ci_annotate.py` (S3) | аннотации CI для упавших тестов и итог pytest со списком пропущенных |
 | `tests/unit/test_policy.py` (S5) | матрица возможностей; API соблюдает `download_allowed` и `mixing_allowed` |
 | `tests/api/test_origin_guard.py` (S13) | мутирующий запрос с чужим `Origin` → 403; без `Origin` и со своим → OK; GET не затронут |
 | `tests/js/queue.test.mjs` (S9) | модель очереди: add/next/prev/remove/move/clear, индекс текущего при перестановках, shuffle без повторов и с историей для «назад», repeat off/one/all, сериализация и восстановление |
 | `tests/js/format.test.mjs` (S9) | `fmtTime`, `plural`, `thumb` |
-| `tests/e2e_smoke.py` | 122 проверки после S2: + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c); дальше — запрет скачивания (S5), клавиатурная навигация (S12) |
+| `tests/e2e_smoke.py` | 123 проверки после S3: + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); дальше — запрет скачивания (S5), клавиатурная навигация (S12) |
 | `tests/e2e_settings.py` (S2a) | 24 проверки: настройки интерфейса через UI на порту A → те же значения после перезапуска на порту B в новом окне (тема до отрисовки, имя, громкость, тексты, обложки миксов); однократный перенос из localStorage, старые ключи не удаляются |
 
 **Фикстуры провайдеров** (`tests/fixtures/ytmusic/*.json`, `tests/fixtures/soundcloud/*.json`):
@@ -155,6 +176,8 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 
 **Изменения в S2** (число тестов pytest после этапа): `test_settings.py` 19 → 64 (S2a); `test_stream_lifespan.py` 6 → 9 (S2b); `test_recommendations.py` 17 → 21 (S2c); `test_ranges.py` 48 → 81 и `test_stream_proxy.py` 38 → 40 (S2d: тексты и типы ошибок стрима, реальные сообщения yt-dlp для Linux и Windows, отсутствие технических подробностей и секретов). Всего 482 теста pytest (469 PASS + 13 xfail), было 395.
 
+**Изменения в S3** (число тестов после этапа): новые `test_jsruntime.py` 37, `test_fetch_runtime.py` 26, `test_js_runtime_errors.py` 13, `test_diagnostics.py` 11, `test_launcher_cli.py` 8, `test_jsruntime_real.py` 5 (только с настоящим Deno), `test_dependencies.py` 4, `test_ci_annotate.py` 2; `test_isolation.py` 12 → 13; live: + 3 (LIVE-2/3/4). Всего 589 тестов pytest без live (было 482); xfail по-прежнему 13. e2e smoke 122 → 123.
+
 ## 6. Обязательные проверки по группам изменений
 
 | Изменение | Минимум перед коммитом |
@@ -174,12 +197,22 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | ID | Проверка | Этап |
 |---|---|---|
 | LIVE-1 | `ytmusicapi`: поиск треков, артистов, альбомов возвращает непустые нормализованные данные | S1, далее при обновлениях |
-| LIVE-2 | yt-dlp с `yt-dlp-ejs` и Deno: резолв публичного трека YouTube, `requested_formats` с прямым URL | S3 |
-| LIVE-3 | Стрим YouTube: 206 на `bytes=0-`, повторная перемотка в середину, перерезолв после принудительной инвалидации | S3, S8 |
-| LIVE-4 | Без JS-runtime: задокументировать фактическую деградацию (какие форматы и ошибки) | S3 |
+| LIVE-2 | yt-dlp с `yt-dlp-ejs` и Deno: резолв публичного трека YouTube, прямой URL, `deno run` действительно запускался для JS-задач (`jsruntime.GUARD.runs`) | S3 |
+| LIVE-3 | Стрим YouTube через настоящее приложение: 206 на `bytes=0-`, перемотка в середину, перерезолв после принудительной инвалидации | S3, S8 |
+| LIVE-4 | Без JS-runtime: задокументировать фактическую деградацию (какие форматы и ошибки); при недоступности YouTube — FAIL с пометкой BLOCKED, а не PASS | S3 |
 | LIVE-5 | SoundCloud: поиск и стрим прогрессивного формата; поведение при отказе API | S5, S7 |
 | LIVE-6 | LRCLIB: синхронный текст для известного трека | S1 |
 | LIVE-7 | Рекомендации: радио трека YouTube и SoundCloud непустые | S14 |
+
+**LIVE-2/3/4 (S3)** реализованы в `tests/live/test_live_youtube_runtime.py`, трек — публичный `youtube_video_id` из `tests/live_targets.json`. Запуск на машине с доступом к YouTube:
+
+```bat
+python packaging\fetch_runtime.py --platform windows-x86_64
+set WAVE_JS_RUNTIME=%CD%\packaging\runtime\deno\deno.exe
+python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
+```
+
+Вывод `-rP` содержит итог каждой проверки одной строкой JSON (время резолва, число решений JS-задач, размер трека, у LIVE-4 — форматы или тип ошибки); ссылки на поток в вывод не попадают. В собранном приложении то же самое для одного трека проверяет `Wave.exe --diagnostics --live <videoId>` (поле `js_challenge_runs`). В облачной среде S3 все три — **BLOCKED**: прокси отвечает `Tunnel connection failed: 403 Forbidden` на соединение с YouTube (reports/S3.md §9).
 
 ## 8. Что требует Windows
 
@@ -203,12 +236,20 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | WIN-14 | Длинные пути и кириллица в каталоге загрузок | S11 |
 | WIN-15 | Сборка не содержит пользовательских баз, логов, cookies, `.env`, `__pycache__` вне PyInstaller-архива | S4, S19 |
 
+**Что из WIN-1, WIN-6, WIN-7 покрывает CI после S3, а что — нет.** Job `windows-build` на `windows-latest` выполняет загрузку Deno со сверкой SHA-256, PyInstaller и `Wave.exe --diagnostics` собранной папки (из `dist`, из пути с пробелами и кириллицей, без упакованного Deno — понятная ошибка и код 1, Deno из `PATH` и текущего каталога не подхватывается, после выхода нет `deno.exe`), а также команды запуска диагностики из README (`start /wait`, `Start-Process -Wait`). Тесты `test_jsruntime.py` на `windows-latest` проверяют Job Object и отсутствие окна консоли у дочернего процесса. Это **не** WIN-1 целиком (нет чистой машины и ISCC — установщик на S4), **не** WIN-6 (нет окна WebView2 и воспроизведения YouTube — на раннере нет доступа к YouTube и проверки звука) и **не** WIN-7 (закрытие окна приложения пользователем). Эти пункты выполняет владелец:
+
+1. **WIN-1 (часть S3):** на Windows 11 x64 без установленного Deno запустить `build_windows.bat`; ожидается «Готово: Deno 2.9.7 … SHA-256 …», сборка `dist\Wave`, «Диагностика собранного приложения: OK». Шаг ISCC упадёт до S4 — это ожидаемо.
+2. **WIN-6:** запустить `dist\Wave\Wave.exe`, включить трек YouTube, дождаться движения позиции, перемотать в середину, переключить на следующий трек. В `%LOCALAPPDATA%\Wave\logs\wave.log` должна быть строка `JS-runtime для yt-dlp: deno 2.9.7 (bundled, <app>\runtime\deno\deno.exe)`. Окно консоли не должно мелькать. Дополнительно: `start /wait dist\Wave\Wave.exe --diagnostics --live <videoId> --output live.json` → код 0, `js_challenge_runs` > 0.
+3. **WIN-7:** во время воспроизведения закрыть окно; в диспетчере задач (или `tasklist /fi "imagename eq deno.exe"`) не должно остаться `Wave.exe` и `deno.exe`.
+4. **Сообщение без runtime:** в копии `dist\Wave` удалить `_internal\runtime\deno\deno.exe`, запустить, включить трек YouTube — тост «Компонент воспроизведения YouTube (Deno) не найден или повреждён. Переустановите приложение.»
+
 ## 9. CI (решение владельца ADR-8; реализовано в S1: `.github/workflows/ci.yml`)
 
 - Запускается на push в `main` и `claude/**`, на pull request и вручную. Секретов не использует, к живым источникам не обращается, права — только `contents: read`.
 - `checks (ubuntu-latest)` и `checks (windows-latest)`: Python 3.12, установка с `constraints.txt`, Playwright Chromium, затем `python tests/run_checks.py` — hygiene, compileall, pyflakes, `node --check`, pytest, e2e через раннер, проверка неизменности рабочего каталога. Шаг успешен только при коде 0, то есть все шаги PASS (BLOCKED даёт код 3).
 - `windows-build`: команды `build_windows.bat` без шага установщика — `svg_to_ico.py`, `PyInstaller packaging/wave.spec`; проверка, что в `dist\Wave` есть `Wave.exe` и `frontend\index.html`, а баз, журналов, `.env`, cookies и медиа нет. Это проверка spec, а не запуск приложения.
-- Не входят в CI: окно WebView2, воспроизведение в собранном приложении, `--diagnostics` (появится в S3), Inno Setup (S4), live-тесты, ручной Windows-чек-лист §8. `node --test` появится вместе с JS-модулями (S9).
+- S3: в `checks` перед тестами шаг `fetch_runtime.py` скачивает закреплённый Deno (Linux или Windows) со сверкой SHA-256 для `test_jsruntime_real.py`; итог pytest со списком пропущенных тестов и упавшие проверки выводятся аннотациями (`tests/ci_annotate.py`) — они доступны через API check-runs, даже когда полный журнал запуска недоступен. В `windows-build` — загрузка Deno, проверка состава папки (хэш `deno.exe` = `deno.lock`, лицензии, скрипты yt-dlp-ejs, нет `mutagen`), размеры аннотацией, `Wave.exe --diagnostics` в нескольких сценариях (§8) с таймаутами и сбором улик при зависании.
+- Не входят в CI: окно WebView2, воспроизведение в собранном приложении, Inno Setup (S4), live-тесты, ручной Windows-чек-лист §8. `node --test` появится вместе с JS-модулями (S9).
 - Первый запуск: https://github.com/Andrey3269/Wave/actions/runs/38310405338 — все три job'а зелёные.
 
 ## 10. Формат отчёта по этапу

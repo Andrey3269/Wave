@@ -18,6 +18,7 @@
 | Microsoft Edge WebView2 Runtime | окно приложения | актуальная |
 | Python | разработка и тесты | ≥ 3.10; **сборка выпусков — 3.12** |
 | Node.js | только проверка синтаксиса фронтенда | любая актуальная LTS |
+| Deno | воспроизведение YouTube при запуске из исходников (в сборку входит свой) | ≥ 2.3.0; закреплён 2.9.7 (`packaging/runtime/deno.lock`) |
 | Inno Setup 6 | сборка установщика | 6.x |
 
 Разработку backend и тесты можно вести и на Linux или macOS. Окно приложения (`launcher.py`) рассчитано на Windows.
@@ -43,6 +44,15 @@ python -m playwright install chromium
 ```
 
 `constraints.txt` закрепляет проверенные версии всех пакетов. Устанавливайте зависимости всегда с `-c constraints.txt`, тогда у всех окажется один и тот же набор. Обновление версий делается отдельным коммитом; порядок описан в заголовке `constraints.txt`.
+
+**JS-runtime для YouTube.** yt-dlp решает JS-задачи плеера YouTube во внешнем runtime; Wave использует Deno ≥ 2.3.0 (`backend/jsruntime.py`). Для запуска из исходников подойдёт установленный Deno из `PATH` либо закреплённая версия, подготовленная скриптом сборки:
+
+```bat
+python packaging\fetch_runtime.py --platform windows-x86_64
+set WAVE_JS_RUNTIME=%CD%\packaging\runtime\deno\deno.exe
+```
+
+(на Linux: `--platform linux-x86_64` и `export WAVE_JS_RUNTIME=$PWD/packaging/runtime/deno/deno`). Без runtime YouTube работает в урезанном режиме, а ошибка воспроизведения называет причину. Проверить: `python backend/launcher.py --diagnostics`.
 
 ## Запуск в разработке
 
@@ -118,9 +128,20 @@ pytest защищён сильнее: до импорта backend каталог
 build_windows.bat
 ```
 
-Скрипт создаёт `.venv-build`, ставит зависимости с `constraints.txt`, рисует иконку, собирает `dist\Wave\` через PyInstaller (`packaging\wave.spec`) и затем запускает Inno Setup.
+Скрипт создаёт `.venv-build`, ставит зависимости с `constraints.txt`, скачивает закреплённый Deno (`packaging\fetch_runtime.py`: официальный архив из `packaging\runtime\deno.lock`, сверка SHA-256 до распаковки, без совпадения хэша сборка останавливается), рисует иконку, собирает `dist\Wave\` через PyInstaller (`packaging\wave.spec`), проверяет собранное приложение командой `Wave.exe --diagnostics` и затем запускает Inno Setup. Интернет нужен только на время сборки; повторная сборка Deno заново не скачивает.
 
-**Известное ограничение (этап S4 дорожной карты).** Скрипта установщика `installer\wave.iss` в репозитории нет, поэтому шаг установщика завершается ошибкой. Папка `dist\Wave\` к этому моменту уже собрана. Полноценное воспроизведение YouTube в собранной версии требует JS-runtime для yt-dlp (этап S3).
+В `dist\Wave\_internal\` попадают `runtime\deno\deno.exe` (около 93 МБ), `runtime\deno.lock` и `licenses\` (тексты лицензий, `THIRD_PARTY_NOTICES.txt`).
+
+**Диагностика собранного приложения** (без окна и без сети; проверяет конфигурацию, а не воспроизведение):
+
+```bat
+start /wait dist\Wave\Wave.exe --diagnostics --output diag.json
+echo %errorlevel%
+```
+
+Код возврата 0 — компоненты в порядке, 1 — критическая проблема (подробности в `diag.json` и в журнале). `Wave.exe` — оконная программа, поэтому в cmd нужен `start /wait`; в PowerShell: `Start-Process .\dist\Wave\Wave.exe -ArgumentList '--diagnostics --output diag.json' -Wait -PassThru`. Текстовый отчёт (UTF-8) печатается в консоль или в перенаправленный вывод, `--json` — в JSON; для сценариев надёжнее `--output` и код возврата. Проверка настоящего трека (нужна сеть): `--live <videoId>`, ссылка на поток в отчёт не попадает. Тот же отчёт без сети отдаёт `GET /api/diagnostics`.
+
+**Известное ограничение (этап S4 дорожной карты).** Скрипта установщика `installer\wave.iss` в репозитории нет, поэтому шаг установщика завершается ошибкой. Папка `dist\Wave\` к этому моменту уже собрана и проверена диагностикой.
 
 ## Каталоги и переменные окружения
 
@@ -137,6 +158,7 @@ build_windows.bat
 | `ALLOWED_ORIGINS` | dev-адреса localhost | CORS для разработки фронтенда отдельным сервером |
 | `YTDLP_COOKIES` | — | путь к cookies.txt для yt-dlp. **Секрет: не коммитить и не прикладывать к отчётам** |
 | `YTDLP_PROXY` | — | прокси для yt-dlp и аудио. Может содержать пароль: не коммитить |
+| `WAVE_JS_RUNTIME` | — | путь к Deno (файл или папка). Если задан, используется только он; иначе — упакованный runtime, а при запуске из исходников ещё `deno` из `PATH`. Кэш Deno — `<каталог данных>\deno` |
 
 ## Источники музыки и ограничения
 
@@ -161,7 +183,8 @@ frontend/     index.html, style.css, app.js, assets/
 tests/        unit/, api/ (pytest), live/ (живые источники), fixtures/, wavetest/ (защита и подделки),
               e2e_smoke.py, e2e_settings.py (Playwright), run_e2e.py, run_checks.py
 .github/      workflows/ci.yml (GitHub Actions: Linux и Windows)
-packaging/    wave.spec (PyInstaller), иконки, зависимости сборки
+packaging/    wave.spec (PyInstaller), fetch_runtime.py и runtime/deno.lock (Deno для сборки), иконки, зависимости сборки
+licenses/     лицензии компонентов, входящих в сборку (Deno, V8, yt-dlp, yt-dlp-ejs), THIRD_PARTY_NOTICES.txt
 docs/         инженерная документация
 ```
 
