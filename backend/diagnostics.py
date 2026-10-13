@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 
 import jsruntime
+from version import __version__
 
 SCHEMA = 1
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -135,7 +136,7 @@ def collect(refresh: bool = True) -> dict:
         "schema": SCHEMA,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "duration_ms": round((time.monotonic() - t0) * 1000),
-        "app": {"frozen": jsruntime.is_frozen(), "python": platform.python_version(), "platform": sys.platform,
+        "app": {"version": __version__, "frozen": jsruntime.is_frozen(), "python": platform.python_version(), "platform": sys.platform,
                 "os": platform.platform(terse=True), "machine": platform.machine()},
         "youtube_playback": "degraded" if critical else "configured",
         "playback_verified": False,
@@ -234,6 +235,7 @@ def format_text(report: dict) -> str:
     """Отчёт для человека (вывод `Wave.exe --diagnostics`)."""
     rt, solver, app = report["js_runtime"], report["solver"], report["app"]
     lines = ["Wave — диагностика воспроизведения YouTube",
+             f"Версия приложения: {app['version']}",
              f"Сборка: {'собранное приложение' if app['frozen'] else 'запуск из исходников'}; "
              f"Python {app['python']}; {app['os']} ({app['machine']})",
              f"yt-dlp: {report['yt_dlp']['version']}"]

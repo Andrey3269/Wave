@@ -141,6 +141,13 @@ jobs:
                          "licenses\yt-dlp\LICENSE", "licenses\yt-dlp-ejs\LICENSE", "yt_dlp_ejs\yt\solver\core.min.js", "yt_dlp_ejs\yt\solver\lib.min.js") {
             if (-not (Test-Path "dist\Wave\_internal\$f")) { throw "$f is not bundled" }
           }
+          # S4: version-resource Wave.exe совпадает с backend/version.py (единственный источник версии)
+          $ver = (python backend/version.py).Trim()
+          $vi = (Get-Item "dist\Wave\Wave.exe").VersionInfo
+          if ($vi.ProductVersion -ne $ver -or $vi.FileVersion -ne $ver -or $vi.FileVersionRaw.ToString() -ne "$ver.0") {
+            throw "Wave.exe version resource: ProductVersion=$($vi.ProductVersion) FileVersion=$($vi.FileVersion) raw=$($vi.FileVersionRaw), expected $ver"
+          }
+          "::notice title=Wave.exe version::$($vi.ProductName) $($vi.ProductVersion) ($($vi.CompanyName); $($vi.FileDescription))"
           $gpl = Get-ChildItem -Path "dist\Wave\_internal" -Directory -Filter "mutagen*"
           if ($gpl) { throw "mutagen (GPL) must not be bundled" }
           $mb = { param($p) (Get-ChildItem -Path $p -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB }

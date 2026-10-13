@@ -9,6 +9,8 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 sys.path.insert(0, os.path.join(ROOT, "packaging"))
 import fetch_runtime  # noqa: E402  (packaging/fetch_runtime.py: проверка подготовленного Deno)
+sys.path.insert(0, os.path.join(ROOT, "backend"))
+import version as app_version  # noqa: E402  (backend/version.py: единственный источник версии, S4)
 
 datas = [(os.path.join(ROOT, "frontend"), "frontend")]    # интерфейс: backend раздаёт его из этой папки
 binaries, hidden = [], []
@@ -54,6 +56,33 @@ a = Analysis(
     hiddenimports=hidden,
     excludes=["tkinter", "matplotlib", "numpy", "pandas", "scipy", "IPython", "pytest"],
 )
+# Version-resource Wave.exe (свойства файла; installer/wave.iss читает отсюда версию, название и издателя).
+# Модуль versioninfo PyInstaller импортируется только на Windows; на других ОС ресурса у exe нет.
+_ver = app_version.version_tuple()                        # неверный формат версии останавливает сборку
+VERSION_INFO = None
+if sys.platform == "win32":
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo, VarStruct, VSVersionInfo,
+    )
+
+    _text = ".".join(map(str, _ver[:3]))
+    VERSION_INFO = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=_ver, prodvers=_ver, mask=0x3F, flags=0x0, OS=0x40004, fileType=0x1,
+                          subtype=0x0, date=(0, 0)),
+        kids=[
+            StringFileInfo([StringTable("041904B0", [        # русский, Unicode
+                StringStruct("CompanyName", app_version.PUBLISHER),
+                StringStruct("FileDescription", app_version.DESCRIPTION),
+                StringStruct("FileVersion", _text),
+                StringStruct("InternalName", "Wave"),
+                StringStruct("OriginalFilename", app_version.EXE_NAME),
+                StringStruct("ProductName", app_version.PRODUCT_NAME),
+                StringStruct("ProductVersion", _text),
+            ])]),
+            VarFileInfo([VarStruct("Translation", [0x0419, 1200])]),
+        ],
+    )
+
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [],
@@ -61,5 +90,6 @@ exe = EXE(
     name="Wave",
     icon=os.path.join(ROOT, "packaging", "wave.ico"),
     console=False,                                        # без чёрного окна консоли
+    version=VERSION_INFO,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="Wave")

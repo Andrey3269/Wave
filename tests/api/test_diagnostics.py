@@ -14,6 +14,7 @@ import pytest
 import diagnostics
 import jsruntime
 import stream
+from version import __version__
 from wavetest.fakedeno import fake_name, make_fake_deno
 
 SECRET_VALUES = ("/very/secret/cookies.txt", "user:pa55word", "10.9.8.7")
@@ -35,6 +36,7 @@ def test_endpoint_reports_configured_runtime(api, fake_runtime, monkeypatch):
     assert r.status_code == 200
     d = r.json()
     assert d["schema"] == 1 and d["youtube_playback"] == "configured" and d["playback_verified"] is False
+    assert d["app"]["version"] == __version__                        # S4: версия приложения из version.py
     assert d["js_runtime"]["ok"] and d["js_runtime"]["version"] == "2.9.7" and d["js_runtime"]["source"] == "env"
     assert d["js_runtime"]["min_version"] == "2.3.0" and d["js_runtime"]["configured_for_yt_dlp"] is True
     assert d["yt_dlp"]["version"] and d["solver"]["ejs_installed"] and d["solver"]["ejs_scripts_readable"]
@@ -121,6 +123,7 @@ def test_unreadable_ejs_scripts_are_critical(monkeypatch, fake_runtime):
 
 def test_text_report_states_that_playback_was_not_verified(fake_runtime):
     text = diagnostics.format_text(diagnostics.collect())
+    assert f"\nВерсия приложения: {__version__}\n" in text
     assert "deno 2.9.7 supported=true" in text and "yt-dlp-ejs: 0.8.0" in text
     assert "не проверялось" in text and "Итог: конфигурация в порядке" in text
 

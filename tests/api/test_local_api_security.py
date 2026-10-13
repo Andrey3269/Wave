@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from version import __version__
 
 
 def test_foreign_host_header_rejected(api):
@@ -13,7 +14,7 @@ def test_foreign_host_header_rejected(api):
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "127.0.0.1:8765"])
 def test_local_host_header_allowed(api, host):
     r = api.get("/api/health", headers={"Host": host})
-    assert r.status_code == 200 and r.json() == {"status": "ok"}
+    assert r.status_code == 200 and r.json() == {"status": "ok", "version": __version__}
 
 
 def test_cors_does_not_allow_foreign_origin(api):
@@ -42,5 +43,5 @@ def test_frontend_is_served_after_api_routes(api):
     """Фронтенд смонтирован на / после всех /api-маршрутов: API не перехватывается статикой."""
     assert api.get("/").status_code == 200
     assert "text/html" in api.get("/").headers["content-type"]
-    assert api.get("/api/health").json() == {"status": "ok"}
+    assert api.get("/api/health").json() == {"status": "ok", "version": __version__}
     assert api.get("/api/does-not-exist").status_code == 404

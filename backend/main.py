@@ -38,6 +38,7 @@ from downloads import cleanup_partial, router as downloads_router
 from lyrics import router as lyrics_router
 from soundcloud import search_tracks as sc_search_raw
 from stream import ResolverState, make_http_client, router as stream_router
+from version import __version__
 
 log = logging.getLogger("musicmeta")
 logging.basicConfig(level=logging.INFO)
@@ -298,7 +299,7 @@ async def lifespan(app: FastAPI):
         _cache.clear()
 
 
-app = FastAPI(title="Music Meta Client", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Music Meta Client", version=__version__, lifespan=lifespan)   # версия — backend/version.py
 
 app.add_middleware(
     CORSMiddleware,
@@ -325,7 +326,9 @@ app.include_router(catalog.router)  # /api/search/{artists|albums}, /api/artist,
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    # version (S4, аддитивно): по ней проверка собранного backend (WIN-13) убеждается, что отвечает
+    # именно установленная версия, а не другой запущенный экземпляр
+    return {"status": "ok", "version": __version__}
 
 
 @app.get("/api/diagnostics")
