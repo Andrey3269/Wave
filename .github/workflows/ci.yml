@@ -135,7 +135,7 @@ jobs:
           $iscc = Join-Path $dir "ISCC.exe"
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found in $dir" }
           "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "::notice title=Inno Setup::$((Get-Item $iscc).VersionInfo.ProductVersion) signed by $($sig.SignerCertificate.Subject -replace ',', ';')"
+          "::notice title=Inno Setup::ISCC $((Get-Item $iscc).VersionInfo.FileVersion); installer signed by $($sig.SignerCertificate.Subject -replace ',', ';')"
 
       # WIN-1: тот же скрипт, что у владельца. WAVE_BUILD_PYTHON — Python 3.12 из setup-python (py launcher
       # на раннере может его не видеть); версию и разрядность проверяет verify_build_env.py.

@@ -24,10 +24,16 @@ param(
 )
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 3
+# Сбой вне шагов (параметры, подготовка) — аннотацией: журнал CI не всегда доступен
+trap {
+    $line = $_.InvocationInfo.ScriptLineNumber
+    Write-Host "::error title=run_installer_checks fatal::line ${line}: $($_.Exception.Message -replace '[\r\n]+', ' | ')"
+    exit 1
+}
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Root
-$Version = (& $Python backend\version.py).Trim()
+$Version = (& $Python (Join-Path "backend" "version.py")).Trim()
 $AppId = "{314C4533-1390-4F2A-B0B8-7003E0F6F200}"
 $UninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\${AppId}_is1"
 $AppDir = Join-Path $env:LOCALAPPDATA "Programs\Wave"
@@ -41,11 +47,15 @@ New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
 $Track = @{ id = "AAAAAAAAAA1"; source = "yt"; title = "S4 трек"; artist = "S4 исполнитель";
             stream_url = "/api/stream/yt/AAAAAAAAAA1" }
-$Status = [ordered]@{}
+$Checks = [ordered]@{}
 
+# GitHub показывает не больше 10 аннотаций каждого вида на шаг: FAIL и BLOCKED выводятся сразу,
+# PASS — в конце, несколькими сводными аннотациями
 function Note([string]$id, [string]$status, [string]$detail) {
-    $Status[$id] = [ordered]@{ status = $status; detail = $detail }
-    $kind = if ($status -eq "FAIL") { "error" } elseif ($status -eq "PASS") { "notice" } else { "warning" }
+    $Checks[$id] = [ordered]@{ status = $status; detail = $detail }
+    Write-Host "$status  $id :: $detail"
+    if ($status -eq "PASS") { return }
+    $kind = if ($status -eq "FAIL") { "error" } else { "warning" }
     $one = ($detail -replace "[\r\n]+", " | ")
     $title = ("$id $status" -replace "[,:]", ";")             # запятая и двоеточие разделяют свойства аннотации
     Write-Host "::${kind} title=${title}::$one"
@@ -125,13 +135,13 @@ function New-Profile([string]$name) {
     return @{ data = $data; downloads = $dl }
 }
 
-function Start-Wave([string]$exe, [int]$port, $profile) {
+function Start-Wave([string]$exe, [int]$port, $prof) {
     $psi = [Diagnostics.ProcessStartInfo]::new($exe)
     $psi.UseShellExecute = $false
     $psi.WorkingDirectory = Split-Path $exe
     $psi.Environment["WAVE_PORT"] = "$port"
-    $psi.Environment["WAVE_DATA_DIR"] = $profile.data
-    $psi.Environment["WAVE_DOWNLOADS_DIR"] = $profile.downloads
+    $psi.Environment["WAVE_DATA_DIR"] = $prof.data
+    $psi.Environment["WAVE_DOWNLOADS_DIR"] = $prof.downloads
     # музыкальные источники не нужны: внешняя сеть приложения закрыта неработающим прокси
     foreach ($k in "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY") { $psi.Environment[$k] = "http://127.0.0.1:9" }
     $psi.Environment["NO_PROXY"] = "127.0.0.1,localhost"
@@ -156,18 +166,18 @@ function Api([int]$port, [string]$method, [string]$path, $body = $null) {
     return Invoke-RestMethod @req
 }
 
-function Log-Tail($profile, [int]$n = 15) {
-    $log = Join-Path $profile.data "logs\wave.log"
+function Log-Tail($prof, [int]$n = 15) {
+    $log = Join-Path $prof.data "logs\wave.log"
     if (Test-Path $log) { return (Get-Content $log -Tail $n -Encoding utf8) -join " | " } else { return "no wave.log" }
 }
 
-function Close-Wave([Diagnostics.Process]$p, $profile, [int]$timeoutSec = 40) {
+function Close-Wave([Diagnostics.Process]$p, $prof, [int]$timeoutSec = 40) {
     # как пользователь: закрыть окно (WM_CLOSE). Возвращает true, если процесс завершился сам.
     $deadline = (Get-Date).AddSeconds(20)
     while ($p.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300; $p.Refresh() }
     $null = $p.CloseMainWindow()
     if ($p.WaitForExit($timeoutSec * 1000)) { return $true }
-    Write-Host "Wave did not close by window message; log: $(Log-Tail $profile)"
+    Write-Host "Wave did not close by window message; log: $(Log-Tail $prof)"
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     $null = $p.WaitForExit(10000)
     return $false
@@ -264,7 +274,7 @@ Step "WIN-13 installed app on WAVE_PORT" {
 
 Step "WIN-13 e2e against installed app" {
     $shots = Join-Path $Work "e2e-shots"
-    $out = & $Python tests\e2e_smoke.py "http://127.0.0.1:$P1" $shots 2>&1 | Out-String
+    $out = & $Python (Join-Path "tests" "e2e_smoke.py") "http://127.0.0.1:$P1" $shots 2>&1 | Out-String
     $code = $LASTEXITCODE
     Set-Content -Path (Join-Path $Work "e2e-installed.txt") -Value $out -Encoding utf8
     $m = [regex]::Match($out, "Проверок: (\d+), провалено: (\d+)")
@@ -467,13 +477,20 @@ $sizes = [ordered]@{
     dist_mb = [math]::Round(((Get-ChildItem $Dist -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
     installer_mb = [math]::Round(((Get-Item $Installer).Length / 1MB), 1)
 }
-$report = [ordered]@{ version = $Version; installer = [IO.Path]::GetFileName($Installer); sizes = $sizes; checks = $Status }
+$report = [ordered]@{ version = $Version; installer = [IO.Path]::GetFileName($Installer); sizes = $sizes; checks = $Checks }
 $report | ConvertTo-Json -Depth 5 | Set-Content -Path $Results -Encoding utf8
 Write-Host ""
 Write-Host ("{0,-60} {1}" -f "check", "status")
-foreach ($k in $Status.Keys) { Write-Host ("{0,-60} {1}" -f $k, $Status[$k].status) }
+foreach ($k in $Checks.Keys) { Write-Host ("{0,-60} {1}" -f $k, $Checks[$k].status) }
 Write-Host ("sizes: dist\Wave {0} MB, installer {1} MB" -f $sizes.dist_mb, $sizes.installer_mb)
+$passed = @($Checks.Keys | Where-Object { $Checks[$_].status -eq "PASS" } | ForEach-Object { "[$_] $($Checks[$_].detail)" })
+for ($i = 0; $i -lt $passed.Count; $i += 3) {
+    $chunk = ($passed[$i..([math]::Min($i + 2, $passed.Count - 1))] -join " || ") -replace "[\r\n]+", " | "
+    Write-Host "::notice title=S4 PASS ($([int]($i / 3) + 1))::$chunk"
+}
+$line = ($Checks.Keys | ForEach-Object { "$_=$($Checks[$_].status)" }) -join "; "
+Write-Host "::notice title=S4 installer checks::$($line -replace ',', ' ')"
 Write-Host "::notice title=S4 sizes::dist\Wave $($sizes.dist_mb) MB; $($report.installer) $($sizes.installer_mb) MB"
-$failed = @($Status.Keys | Where-Object { $Status[$_].status -eq "FAIL" })
+$failed = @($Checks.Keys | Where-Object { $Checks[$_].status -eq "FAIL" })
 if ($failed) { Write-Host "FAILED: $($failed -join ', ')"; exit 1 }
 exit 0
