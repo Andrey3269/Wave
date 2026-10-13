@@ -18,9 +18,11 @@ venv/
 env/
 
 # Сборка PyInstaller / Inno Setup и скачиваемые при сборке бинарники
+# (WebView2 bootstrapper с S4 скачивается в build\webview2\; старое место — на случай прежних сборок)
 build/
 dist/
 installer/MicrosoftEdgeWebview2Setup.exe
+installer/Output/
 packaging/runtime/**/*.exe
 packaging/runtime/**/*.zip
 # Deno, подготовленный packaging/fetch_runtime.py (в git — только packaging/runtime/deno.lock)
