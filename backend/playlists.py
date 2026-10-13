@@ -33,13 +33,10 @@ def _clean(name: str) -> str:
     return name
 
 
-def _exists(pid: int) -> None:
-    if not library._q("SELECT 1 FROM playlists WHERE id = ?", (pid,)):
+def _require(db, pid: int) -> None:
+    """Плейлист есть (проверка внутри транзакции: он не исчезнет до конца операции), иначе 404."""
+    if db.execute("SELECT 1 FROM playlists WHERE id = ?", (pid,)).fetchone() is None:
         raise HTTPException(404, "Плейлист не найден.")
-
-
-def _touch(pid: int) -> None:
-    library._q("UPDATE playlists SET updated_at = ? WHERE id = ?", (time.time(), pid))
 
 
 @router.get("/playlists")
@@ -63,15 +60,17 @@ def create_playlist(body: NameIn):
 
 @router.patch("/playlists/{pid}")
 def rename_playlist(pid: int, body: NameIn):
-    _exists(pid)
-    library._q("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?", (_clean(body.name), time.time(), pid))
+    with library.transaction() as db:
+        _require(db, pid)                            # как раньше: сначала 404, потом проверка имени
+        db.execute("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?", (_clean(body.name), time.time(), pid))
     return {"ok": True}
 
 
 @router.delete("/playlists/{pid}")
 def delete_playlist(pid: int):
-    library._q("DELETE FROM playlist_tracks WHERE playlist_id = ?", (pid,))
-    library._q("DELETE FROM playlists WHERE id = ?", (pid,))
+    with library.transaction() as db:                 # треки и сам плейлист — вместе или никак
+        db.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (pid,))
+        db.execute("DELETE FROM playlists WHERE id = ?", (pid,))
     return {"ok": True}
 
 
@@ -89,19 +88,28 @@ def get_playlist(pid: int):
 
 @router.post("/playlists/{pid}/tracks")
 def add_track(pid: int, t: userdata.TrackIn):
-    _exists(pid)
+    """
+    Проверка плейлиста, позиция, вставка и updated_at — одна транзакция (находка M5). Дубль отсекает
+    UNIQUE (playlist_id, key) через INSERT OR IGNORE: повторное и одновременное добавление одного трека
+    дают {"added": false}, а не IntegrityError и HTTP 500. Порядок: новый трек всегда в конец.
+    """
     key = f"{t.source}:{t.id}"
-    if library._q("SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND key = ?", (pid, key)):
-        return {"added": False}                       # такой трек в плейлисте уже есть
-    pos = library._q("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM playlist_tracks WHERE playlist_id = ?", (pid,))[0]["p"]
-    library._q("INSERT INTO playlist_tracks (playlist_id, position, key, data, added_at) VALUES (?, ?, ?, ?, ?)",
-               (pid, pos, key, json.dumps(userdata._dump(t), ensure_ascii=False), time.time()))
-    _touch(pid)
+    data = json.dumps(userdata._dump(t), ensure_ascii=False)
+    with library.transaction() as db:
+        _require(db, pid)
+        cur = db.execute(
+            "INSERT OR IGNORE INTO playlist_tracks (playlist_id, position, key, data, added_at)"
+            " SELECT ?, COALESCE(MAX(position), -1) + 1, ?, ?, ? FROM playlist_tracks WHERE playlist_id = ?",
+            (pid, key, data, time.time(), pid))
+        if cur.rowcount == 0:
+            return {"added": False}                   # такой трек в плейлисте уже есть
+        db.execute("UPDATE playlists SET updated_at = ? WHERE id = ?", (time.time(), pid))
     return {"added": True}
 
 
 @router.delete("/playlists/{pid}/tracks/{source}/{track_id}")
 def remove_track(pid: int, source: str, track_id: str):
-    library._q("DELETE FROM playlist_tracks WHERE playlist_id = ? AND key = ?", (pid, f"{source}:{track_id}"))
-    _touch(pid)
+    with library.transaction() as db:                 # удаление и updated_at — вместе
+        db.execute("DELETE FROM playlist_tracks WHERE playlist_id = ? AND key = ?", (pid, f"{source}:{track_id}"))
+        db.execute("UPDATE playlists SET updated_at = ? WHERE id = ?", (time.time(), pid))
     return {"ok": True}

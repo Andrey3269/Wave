@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -113,23 +114,24 @@ def test_playlist_survives_restart(harness):
     assert body["playlist"]["name"] == "Сохранится" and [t["id"] for t in body["tracks"]] == [A]
 
 
-@pytest.mark.xfail(strict=True, reason="M5: add_track — проверка дубля и вставка разными запросами; гонка даёт IntegrityError (HTTP 500)")
 def test_concurrent_add_of_same_track(db, monkeypatch):
-    """Два одновременных добавления одного трека. Барьер после проверки дубля делает гонку детерминированной."""
+    """
+    M5 (исправлено в S6): два одновременных добавления одного трека. Барьер выпускает оба потока к записи
+    одновременно, когда оба уже прошли проверку запроса. Раньше проверка дубля и вставка были разными
+    запросами, и второй поток получал IntegrityError (через API — HTTP 500).
+    """
     pid = playlists.create_playlist(playlists.NameIn(name="race"))["id"]
     barrier = threading.Barrier(2, timeout=5)
-    real_q = library._q
+    real_tx = library.transaction
 
-    def racing_q(sql, args=()):
-        rows = real_q(sql, args)
-        if sql.startswith("SELECT 1 FROM playlist_tracks"):
-            try:
-                barrier.wait()
-            except threading.BrokenBarrierError:
-                pass
-        return rows
+    def racing_tx():
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real_tx()
 
-    monkeypatch.setattr(library, "_q", racing_q)
+    monkeypatch.setattr(library, "transaction", racing_tx)
     results, errors = [], []
 
     def worker():
@@ -145,6 +147,72 @@ def test_concurrent_add_of_same_track(db, monkeypatch):
         t.join(10)
     assert not errors, [type(e).__name__ for e in errors]
     assert sorted(r["added"] for r in results) == [False, True]
+    assert db.sql("SELECT key, position FROM playlist_tracks") == [(f"yt:{A}", 0)]
+
+
+def test_concurrent_api_adds_keep_order_and_no_duplicates(api):
+    """Много параллельных POST: дубль одного трека — один раз, разные треки — без потерь и с разными позициями."""
+    pid = _create(api)
+    same = [track_payload(id_=A)] * 8
+    distinct = [track_payload(id_=f"DDDDDDDDDD{i}") for i in range(8)]
+
+    def post(body):
+        return api.post(f"/api/playlists/{pid}/tracks", json=body)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        answers = list(pool.map(post, same + distinct))
+    assert all(r.status_code == 200 for r in answers), [r.status_code for r in answers]
+    assert [r.json()["added"] for r in answers[:8]].count(True) == 1
+    assert all(r.json()["added"] for r in answers[8:])
+    rows = api.profile.sql("SELECT key, position FROM playlist_tracks ORDER BY position")
+    assert len(rows) == 9 and sorted(k for k, _ in rows) == sorted({f"yt:{A}"} | {f"yt:DDDDDDDDDD{i}" for i in range(8)})
+    assert [pos for _, pos in rows] == list(range(9))                       # позиции без пропусков и повторов
+
+
+def test_add_to_deleted_playlist_is_404_not_500(api):
+    """Плейлист удалили между открытием и добавлением: 404, «висячая» строка не появляется (foreign_keys=ON)."""
+    pid = _create(api)
+    api.delete(f"/api/playlists/{pid}")
+    r = api.post(f"/api/playlists/{pid}/tracks", json=track_payload(id_=A))
+    assert r.status_code == 404
+    assert api.profile.sql("SELECT COUNT(*) FROM playlist_tracks") == [(0,)]
+
+
+def _fail_playlist_updates(profile) -> None:
+    """Триггер в тестовой базе: любое изменение playlists падает — проверяем, что операция откатывается целиком."""
+    con = sqlite3.connect(profile.db_path)
+    con.execute("CREATE TRIGGER fail_touch BEFORE UPDATE ON playlists BEGIN SELECT RAISE(ABORT, 'сбой записи'); END")
+    con.commit()
+    con.close()
+
+
+def test_add_track_is_atomic(db):
+    pid = playlists.create_playlist(playlists.NameIn(name="atomic"))["id"]
+    _fail_playlist_updates(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        playlists.add_track(pid, userdata.TrackIn(**track_payload(id_=A)))
+    assert db.sql("SELECT COUNT(*) FROM playlist_tracks") == [(0,)]           # вставка откатилась вместе с updated_at
+
+
+def test_remove_track_is_atomic(db):
+    pid = playlists.create_playlist(playlists.NameIn(name="atomic"))["id"]
+    playlists.add_track(pid, userdata.TrackIn(**track_payload(id_=A)))
+    _fail_playlist_updates(db)
+    with pytest.raises(sqlite3.IntegrityError):
+        playlists.remove_track(pid, "yt", A)
+    assert db.sql("SELECT key FROM playlist_tracks") == [(f"yt:{A}",)]        # трек на месте
+
+
+def test_delete_playlist_is_atomic(db):
+    pid = playlists.create_playlist(playlists.NameIn(name="atomic"))["id"]
+    playlists.add_track(pid, userdata.TrackIn(**track_payload(id_=A)))
+    con = sqlite3.connect(db.db_path)
+    con.execute("CREATE TRIGGER fail_delete BEFORE DELETE ON playlists BEGIN SELECT RAISE(ABORT, 'сбой'); END")
+    con.commit()
+    con.close()
+    with pytest.raises(sqlite3.IntegrityError):
+        playlists.delete_playlist(pid)
+    assert db.sql("SELECT COUNT(*) FROM playlist_tracks") == [(1,)]          # треки не потеряны
 
 
 def test_unique_constraint_backs_duplicate_check(db):
