@@ -231,7 +231,7 @@ def test_identical_search_is_cached(both):
 
 
 def test_cache_expires(both, monkeypatch):
-    monkeypatch.setattr(main, "CACHE_TTL_SEC", 0)
+    monkeypatch.setattr(main._cache, "ttl", 0)                  # S7: срок — у кэша LRU+TTL (было main.CACHE_TTL_SEC)
     both.get("/api/search", params={"q": "test"})
     both.get("/api/search", params={"q": "test"})
     assert both.ytm.count("search") == 2

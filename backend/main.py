@@ -38,6 +38,7 @@ from downloads import cleanup_partial, router as downloads_router
 from lyrics import router as lyrics_router
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import ProviderError
+from providers.cache import TTLCache
 from stream import ResolverState, make_http_client, router as stream_router
 from version import __version__
 
@@ -116,23 +117,19 @@ def _interleave(groups: list[list[Track]], limit: int) -> list[Track]:
 
 
 # ---------------------------------------------------------------------------
-# Простой in-memory кэш (TTL), чтобы не дёргать YouTube на каждый повтор запроса
+# Кэш поиска в памяти: LRU + TTL (S7, providers/cache.py), чтобы не дёргать источники на каждый повтор
+# запроса. Ключ — нормализованный запрос, limit, offset и набор источников; неполные результаты
+# (какой-то источник не ответил) не кэшируются. Число записей ограничено при любом числе разных запросов.
 # ---------------------------------------------------------------------------
-_cache: dict[tuple[str, int], tuple[float, list[Track]]] = {}
+_cache: TTLCache[list[Track]] = TTLCache(maxsize=CACHE_MAX_ITEMS, ttl=CACHE_TTL_SEC)
 
 
-def _cache_get(key: tuple[str, int]) -> list[Track] | None:
-    hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < CACHE_TTL_SEC:
-        return hit[1]
-    _cache.pop(key, None)
-    return None
+def _cache_get(key: tuple) -> list[Track] | None:
+    return _cache.get(key)
 
 
-def _cache_set(key: tuple[str, int], value: list[Track]) -> None:
-    if len(_cache) >= CACHE_MAX_ITEMS:
-        _cache.pop(next(iter(_cache)))  # выкидываем самую старую запись
-    _cache[key] = (time.monotonic(), value)
+def _cache_set(key: tuple, value: list[Track]) -> None:
+    _cache.set(key, value)
 
 
 # ---------------------------------------------------------------------------

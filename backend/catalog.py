@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -19,6 +18,7 @@ import providers
 from domain.models import album_card, artist_card
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import Provider, ProviderError
+from providers.cache import TTLCache
 
 log = logging.getLogger("musicmeta.catalog")
 router = APIRouter(prefix="/api", tags=["catalog"])
@@ -27,7 +27,13 @@ MAX_RESULTS = 100
 YT_ARTIST_MAX = yt_provider.ARTIST_SONGS_MAX     # сколько песен артиста YouTube Music подгружаем максимум
 CATALOG_TIMEOUT = 25           # сколько секунд ждём ответа источника на один вызов каталога (как до S7)
 _ID_RE = re.compile(r"^[\w-]{1,64}$")
-_artist_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+# Кэш страниц артистов (находка M9): не больше ARTIST_CACHE_ITEMS артистов, каждый — 10 минут. У артиста
+# YouTube Music в записи копятся «сырые» песни по мере прокрутки (до 500), поэтому лимит небольшой.
+# Вытесненный артист при следующем открытии просто загружается заново. Неполная страница (часть данных
+# источник не отдал) не кэшируется — как и неполный результат поиска.
+ARTIST_CACHE_ITEMS = 32
+ARTIST_CACHE_TTL = 600
+_artist_cache: TTLCache[dict] = TTLCache(maxsize=ARTIST_CACHE_ITEMS, ttl=ARTIST_CACHE_TTL)
 
 # Прежние имена помощников (тесты карточек, live-тесты) — теперь это функции адаптеров и domain/models.py
 _artist_card = artist_card
@@ -69,16 +75,19 @@ async def search_cards(request: Request, kind: str, q: str = Query(..., min_leng
 
 # ---------- страница артиста ----------
 async def _artist_info(request: Request, source: str, id_: str) -> dict:
+    """Данные страницы артиста (из кэша или от источника). Поле `degraded` — часть данных не получена."""
     hit = _artist_cache.get((source, id_))
-    if hit and time.time() - hit[0] < 600:
-        return hit[1]
-    info, _degraded = await providers.get(source).artist_info(request.app.state, id_, timeout=CATALOG_TIMEOUT)
-    _artist_cache[(source, id_)] = (time.time(), info)
+    if hit is not None:
+        return hit
+    info, degraded = await providers.get(source).artist_info(request.app.state, id_, timeout=CATALOG_TIMEOUT)
+    info["degraded"] = degraded
+    if not degraded:
+        _artist_cache.set((source, id_), info)
     return info
 
 
-async def _artist_tracks(request: Request, source: str, id_: str, offset: int, limit: int):
-    info = await _artist_info(request, source, id_)
+async def _artist_tracks(request: Request, source: str, id_: str, offset: int, limit: int, info: dict | None = None):
+    info = info if info is not None else await _artist_info(request, source, id_)
     return await providers.get(source).artist_tracks(request.app.state, id_, info, offset, limit,
                                                      timeout=CATALOG_TIMEOUT)
 
@@ -88,7 +97,7 @@ async def artist_page(request: Request, source: str, artist_id: str):
     _check(source, artist_id)
     try:
         info = await _artist_info(request, source, artist_id)
-        tracks, more = await _artist_tracks(request, source, artist_id, 0, 20)
+        tracks, more = await _artist_tracks(request, source, artist_id, 0, 20, info)
     except Exception as exc:
         raise _fail(providers.get(source), exc) from exc
     head = {k: info[k] for k in ("name", "cover", "subtitle")}

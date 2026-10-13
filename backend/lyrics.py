@@ -15,12 +15,15 @@ import re
 from fastapi import APIRouter, Request
 
 import library
+from providers.cache import TTLCache
 
 log = logging.getLogger("musicmeta.lyrics")
 router = APIRouter(prefix="/api", tags=["lyrics"])
 
 _LRC = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)")
-_cache: dict[tuple[str, str], dict] = {}
+# Найденные тексты (и «текста нет») в памяти: не больше 512 записей, сутки (S7, находка M9: раньше без
+# лимита и срока). Временный сбой LRCLIB не кэшируется. Очистка — «Очистить кэш» в настройках.
+_cache: TTLCache[dict] = TTLCache(maxsize=512, ttl=24 * 3600)
 
 
 def _parse_lrc(text: str) -> list[dict]:
@@ -70,10 +73,11 @@ async def lyrics(request: Request, artist: str, title: str, duration: int | None
             return json.loads(p.read_text(encoding="utf-8"))
 
     key = (artist.strip().lower()[:200], title.strip().lower()[:200])
-    if key in _cache:
-        return _cache[key]
+    hit = _cache.get(key)
+    if hit is not None:
+        return hit
     out = await fetch_lyrics(request.app.state.http, artist, title, duration)
     if out is None:
         return {"synced": [], "plain": None, "provider": "lrclib"}   # временный сбой: не кэшируем
-    _cache[key] = out
+    _cache.set(key, out)
     return out
