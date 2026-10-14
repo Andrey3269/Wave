@@ -172,17 +172,17 @@ def _http_client():
     import certifi
     import httpx
 
-    import stream
+    from streaming import config
 
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    transport = httpx.HTTPTransport(verify=ssl_ctx, retries=1, proxy=stream.YTDLP_PROXY or None,
-                                    local_address=None if stream.YTDLP_PROXY else "0.0.0.0")
+    transport = httpx.HTTPTransport(verify=ssl_ctx, retries=1, proxy=config.YTDLP_PROXY or None,
+                                    local_address=None if config.YTDLP_PROXY else "0.0.0.0")
     return httpx.Client(transport=transport, timeout=httpx.Timeout(15.0), follow_redirects=True)
 
 
 def live_check(video_id: str) -> dict:
     """
-    Резолв публичного трека тем же кодом, что у плеера (stream._extract_sync), и один запрос
+    Резолв публичного трека тем же кодом, что у плеера (streaming.resolver._extract_sync), и один запрос
     `Range: bytes=0-1023` к полученной ссылке. Ссылка в отчёт не попадает.
     """
     report: dict = {"video_id": video_id, "ok": False, "resolve_seconds": None, "js_runtime_processes": 0,
@@ -191,16 +191,17 @@ def live_check(video_id: str) -> dict:
         report.update(error_kind="bad_id", error="Идентификатор видео YouTube — 11 символов [A-Za-z0-9_-].")
         return report
 
-    import stream
     from yt_dlp.utils import DownloadError
+
+    from streaming import errors, resolver
 
     spawned, runs = jsruntime.GUARD.spawned, jsruntime.GUARD.runs
     t0 = time.monotonic()
     try:
-        res = stream._extract_sync("yt", video_id)
+        res = resolver._extract_sync("yt", video_id)
     except DownloadError as exc:
-        err = stream._runtime_error("yt", stream._resolve_error("yt", exc), getattr(exc, "wave_js_issue", None))
-        report.update(error_kind=err.headers.get(stream.ERROR_HEADER), error=f"{err.detail} ({_sanitize(str(exc))})")
+        err = errors._runtime_error("yt", errors._resolve_error("yt", exc), getattr(exc, "wave_js_issue", None))
+        report.update(error_kind=err.headers.get(errors.ERROR_HEADER), error=f"{err.detail} ({_sanitize(str(exc))})")
         return report
     except Exception as exc:                                      # noqa: BLE001 — отчёт, а не падение
         report.update(error_kind="internal", error=_sanitize(f"{type(exc).__name__}: {exc}"))

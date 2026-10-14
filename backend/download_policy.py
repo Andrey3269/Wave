@@ -3,7 +3,7 @@
 `preparing`, до первого байта аудио; прямой POST /api/downloads проходит её же.
 
 Правило: трек YouTube Music или SoundCloud скачивается, если его аудиопоток штатно получен тем же
-резолвером, что и для воспроизведения (stream._resolve: yt-dlp, кэш ссылок, JS-runtime, обработка
+резолвером, что и для воспроизведения (streaming.resolver._resolve: yt-dlp, кэш ссылок, JS-runtime, обработка
 ошибок). Сохраняется ровно этот поток в исходном формате. Лицензия Creative Commons и признак
 `downloadable` SoundCloud условием НЕ являются.
 
@@ -22,10 +22,10 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-import stream
+from streaming import errors, resolver
 
-# Заголовок с машинным кодом причины — как у потока (stream.ERROR_HEADER)
-ERROR_HEADER = stream.ERROR_HEADER
+# Заголовок с машинным кодом причины — как у потока (streaming.errors.ERROR_HEADER)
+ERROR_HEADER = errors.ERROR_HEADER
 
 
 def refuse(status: int, code: str, detail: str) -> HTTPException:
@@ -34,9 +34,9 @@ def refuse(status: int, code: str, detail: str) -> HTTPException:
 
 async def check(rs, source: str, track_id: str) -> None:
     """Поток трека штатно доступен целиком — или HTTPException с понятной причиной и кодом в X-Wave-Error."""
-    if source not in stream.SOURCES:
+    if source not in resolver.SOURCES:
         raise refuse(400, "unknown_source", "Некорректный трек")
-    res = await stream._resolve(rs, source, track_id)        # ошибки резолва (сеть, бот, возраст …) — как есть
+    res = await resolver._resolve(rs, source, track_id)        # ошибки резолва (сеть, бот, возраст …) — как есть
     if res.preview:
-        raise refuse(403, "preview_only", f"{stream.SOURCES[source].label} отдаёт только короткий фрагмент этого "
+        raise refuse(403, "preview_only", f"{resolver.SOURCES[source].label} отдаёт только короткий фрагмент этого "
                                           "трека (полная версия — по подписке), поэтому он не сохранён.")

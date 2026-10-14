@@ -22,7 +22,7 @@
     одному, и зависший запрос держал остальные) — свой экземпляр в каждом потоке пула;
   * socket_timeout yt-dlp ограничивает каждый HTTP-запрос: по нему зависший поток завершается сам.
 
-Аудиопоток SoundCloud резолвит stream.py (yt-dlp), не этот модуль.
+Аудиопоток SoundCloud резолвит streaming/resolver.py (yt-dlp), не этот модуль.
 """
 from __future__ import annotations
 
@@ -36,9 +36,9 @@ from yt_dlp import YoutubeDL
 from yt_dlp.networking.exceptions import HTTPError as YdlHTTPError, TransportError
 from yt_dlp.utils import ExtractorError
 
-import stream
 from domain.models import Track, album_card, artist_card
 from providers.base import Capabilities, Provider, ProviderError
+from streaming import resolver as stream_resolver
 
 log = logging.getLogger("musicmeta.providers.sc")
 
@@ -80,7 +80,7 @@ def _api_get(ie, url: str, query: dict) -> dict:
 
 def ydl_options() -> dict:
     """Настройки yt-dlp для запросов к API: общие (прокси, cookies, IPv4) + свой таймаут сокета."""
-    opts = stream.ydl_opts()
+    opts = stream_resolver.ydl_opts()
     opts["socket_timeout"] = SOCKET_TIMEOUT
     return opts
 

@@ -39,7 +39,10 @@ from lyrics import router as lyrics_router
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import ProviderError
 from providers.cache import TTLCache
-from stream import ResolverState, make_http_client, router as stream_router
+from streaming import proxy as _proxy, resolver as _resolver
+from streaming.proxy import make_http_client
+from streaming.resolver import ResolverState
+from streaming.router import router as stream_router
 from version import __version__
 
 log = logging.getLogger("musicmeta")
@@ -329,7 +332,5 @@ else:
 
 # «Очистить кэш» в настройках сбрасывает эти кэши в памяти (загрузки и история не затрагиваются)
 import lyrics as _lyrics  # noqa: E402
-import stream as _stream  # noqa: E402
-
-for _fn in (_cache.clear, _lyrics._cache.clear, catalog._artist_cache.clear, _stream._heads.clear, _stream._cache.clear):
+for _fn in (_cache.clear, _lyrics._cache.clear, catalog._artist_cache.clear, _proxy._heads.clear, _resolver._cache.clear):
     userdata.register_cache_clear(_fn)

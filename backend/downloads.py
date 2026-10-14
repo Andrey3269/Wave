@@ -37,7 +37,10 @@ import download_policy
 import library
 import paths
 from lyrics import fetch_lyrics
-from stream import CHUNK_SIZE, CONTENT_RANGE_RE, ERROR_HEADER, SOURCES, _connect
+from streaming.errors import ERROR_HEADER
+from streaming.proxy import CHUNK_SIZE, _connect
+from streaming.ranges import CONTENT_RANGE_RE
+from streaming.resolver import SOURCES
 
 log = logging.getLogger("musicmeta.downloads")
 router = APIRouter(prefix="/api", tags=["downloads"])
