@@ -9,7 +9,8 @@ HLS-прокси Wave (S8): плейлисты и сегменты SoundCloud ч
 приложением трека создаёт сеанс с непрозрачным токеном (secrets.token_urlsafe), и дальше плеер обращается
 только к /api/stream/hls/{token}/...: варианты, дорожки, сегменты и init-секции адресуются номерами внутри
 сеанса. Адреса источника backend берёт из своего резолвера и из разобранных им же плейлистов; каждый
-запрос и каждый редирект проходит netguard (https, только публичные IP). Сеансы ограничены по числу,
+запрос и каждый редирект проходит netguard (https, только публичные IP), а соединение устанавливается только с
+проверенным IP (отдельный клиент app.state.hls_http, netguard.make_client). Сеансы ограничены по числу,
 времени простоя и общему возрасту; плейлисты — по размеру; соединения — по числу и таймаутам. Сегменты
 передаются потоком, без загрузки в память.
 
@@ -171,6 +172,13 @@ def _blocked(s: Session, exc: Exception) -> Exception:
                                                 "остановлено ради безопасности.")
 
 
+def _unverifiable(s: Session, exc: Exception) -> Exception:
+    log.warning("HLS %s: адрес источника нельзя проверить: %s", s.key, exc)
+    return errors._err(502, "upstream_unverifiable", f"Не удалось проверить адрес сервера аудио {_label(s)} "
+                                                     "(имя не разрешается без прокси или прокси не поддерживает "
+                                                     "проверку), воспроизведение остановлено ради безопасности.")
+
+
 def _network(s: Session, exc: Exception) -> Exception:
     log.info("HLS %s: сбой сети: %s", s.key, type(exc).__name__)
     return errors._err(503, "network", f"Нет связи с сервером аудио {_label(s)}. Проверьте подключение к интернету.")
@@ -201,6 +209,8 @@ async def _open(client: httpx.AsyncClient, rs: resolver.ResolverState, s: Sessio
     async with rs.hls_sem:
         try:
             resp = await netguard.send(client, url, headers)
+        except netguard.Unverifiable as exc:
+            raise _unverifiable(s, exc) from exc
         except netguard.BlockedUrl as exc:
             raise _blocked(s, exc) from exc
         except httpx.HTTPError as exc:
@@ -331,14 +341,14 @@ def _render(s: Session, pl: str, text: str, parsed: hls.Playlist) -> str:
 async def prepare(request: Request, s: Session) -> None:
     """Проверить корневой плейлист сразу при /playback: честная ошибка до старта плеера, и плеер получает
     уже проверенный плейлист без второго запроса к источнику."""
-    await _load_root(request.app.state.http, request.app.state.resolver, s)
+    await _load_root(request.app.state.hls_http, request.app.state.resolver, s)
 
 
 async def playlist(request: Request, token: str, pl: str) -> Response:
     s = get_session(token)
     if s is None or not PLAYLIST_ID_RE.fullmatch(pl):
         raise session_expired()
-    text, parsed = await _load_playlist(request.app.state.http, request.app.state.resolver, s, pl)
+    text, parsed = await _load_playlist(request.app.state.hls_http, request.app.state.resolver, s, pl)
     return Response(_render(s, pl, text, parsed), media_type=PLAYLIST_TYPE, headers={"Cache-Control": "no-store"})
 
 
@@ -356,7 +366,7 @@ async def resource(request: Request, token: str, pl: str, res: str) -> Response:
     m = RESOURCE_RE.fullmatch(res or "")
     if s is None or not PLAYLIST_ID_RE.fullmatch(pl) or m is None:
         raise session_expired()
-    client, rs = request.app.state.http, request.app.state.resolver
+    client, rs = request.app.state.hls_http, request.app.state.resolver
     kind, num = m.group(1), int(m.group(2))
     for attempt in range(2):
         _text, parsed = await _load_playlist(client, rs, s, pl, refresh=bool(attempt))

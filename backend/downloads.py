@@ -157,7 +157,7 @@ async def _fetch_lyrics_safe(client, req: DownloadRequest) -> dict | None:
         return None
 
 
-async def _run(client, rs, req: DownloadRequest) -> None:
+async def _run(client, rs, req: DownloadRequest, hls_client) -> None:
     key = f"{req.source}:{req.id}"
     job = jobs[key]
     name = library.safe_folder(req.artist, req.title, req.source, req.id)
@@ -172,7 +172,7 @@ async def _run(client, rs, req: DownloadRequest) -> None:
 
         job["state"] = "downloading"
         if res.kind == HLS:                                  # S8: тот же HLS-поток, что играет плеер
-            ext = await hls_download.download(client, rs, req.source, req.id, tmp / "audio.part", job)
+            ext = await hls_download.download(hls_client, rs, req.source, req.id, tmp / "audio.part", job)
         else:
             ext = await _download_audio(client, rs, req, tmp / "audio.part", job)
         audio = f"audio{ext}"
@@ -228,7 +228,9 @@ async def start_download(req: DownloadRequest, request: Request):
     if key in jobs and jobs[key]["state"] in ACTIVE:
         return jobs[key]
     jobs[key] = {"state": "preparing", "progress": 0, "error": None, "code": None, "received": 0, "total": None}
-    task = asyncio.create_task(_run(request.app.state.http, request.app.state.resolver, req))
+    # HLS-путь — только клиентом с закреплением проверенных IP (netguard.make_client), без запасного варианта
+    task = asyncio.create_task(_run(request.app.state.http, request.app.state.resolver, req,
+                                    request.app.state.hls_http))
     _background.add(task)
     task.add_done_callback(_background.discard)
     return jobs[key]

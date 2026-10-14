@@ -361,6 +361,9 @@ class ApiHarness:
         # «публичные»; тест может добавить имя, указывающее, например, на 127.0.0.1 или 169.254.169.254.
         self.dns: dict[str, list[str]] = {CDN_HOST: ["93.184.216.34"]}
         monkeypatch.setattr(modules["netguard"], "resolve_host", self._resolve_host)
+        # Клиент HLS (netguard.make_client: закрепление проверенного IP в момент соединения) в API-тестах
+        # заменён тем же CDN-двойником; само закрепление проверяют tests/unit/test_netguard_pinning.py
+        monkeypatch.setattr(modules["netguard"], "make_client", self.net.client)
         self.http = None
 
     async def _resolve_host(self, host: str, port: int) -> list[str]:

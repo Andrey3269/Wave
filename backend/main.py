@@ -39,7 +39,7 @@ from lyrics import router as lyrics_router
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import ProviderError
 from providers.cache import TTLCache
-from streaming import hls_proxy as _hls_proxy, proxy as _proxy, resolver as _resolver
+from streaming import hls_proxy as _hls_proxy, netguard, proxy as _proxy, resolver as _resolver
 from streaming.proxy import make_http_client
 from streaming.resolver import ResolverState
 from streaming.router import router as stream_router
@@ -148,6 +148,8 @@ async def lifespan(app: FastAPI):
     log.info("YTMusic инициализирован")
     # Один httpx-клиент на всё приложение: пул соединений и keep-alive к googlevideo
     app.state.http = make_http_client()
+    # S8: отдельный клиент HLS-прокси и HLS-загрузок — соединения только с проверенными IP (streaming/netguard.py)
+    app.state.hls_http = netguard.make_client()
     # Асинхронное состояние резолвера (семафор, задачи) принадлежит циклу ЭТОГО запуска: сторож лаунчера
     # поднимает uvicorn заново в том же процессе с новым event loop (находка M1)
     app.state.resolver = ResolverState()
@@ -163,6 +165,7 @@ async def lifespan(app: FastAPI):
         # уже никому не нужны, а процесс не должен пережить остановку backend (S3, находка L8)
         await asyncio.to_thread(jsruntime.terminate_children)
         await app.state.http.aclose()
+        await app.state.hls_http.aclose()
         providers.shutdown_pending()  # запросы к источникам, ждущие в очереди пулов, этому запуску уже не нужны
         _cache.clear()
 

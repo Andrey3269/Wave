@@ -70,13 +70,19 @@ def test_blocked_urls(dns, url):
         _run(netguard.check_url(url))
 
 
-def test_unresolvable_public_name_allowed_only_via_user_proxy(dns, monkeypatch):
-    monkeypatch.setattr(config, "YTDLP_PROXY", "socks5://127.0.0.1:1080")
-    _run(netguard.check_url("https://nxdomain.example/a"))            # имя разрешит прокси пользователя
+def test_unresolvable_name_is_refused_even_with_user_proxy(dns, monkeypatch):
+    """
+    Замечание аудита S8: прежде при настроенном YTDLP_PROXY имя, которое локально не разрешается, пропускалось
+    («разрешит прокси») — а DNS прокси мог вернуть частный адрес. Теперь такой адрес непроверяем — отказ.
+    """
+    monkeypatch.setattr(config, "YTDLP_PROXY", "http://127.0.0.1:3128")
+    with pytest.raises(netguard.Unverifiable):
+        _run(netguard.check_url("https://nxdomain.example/a"))
     with pytest.raises(netguard.BlockedUrl):
         _run(netguard.check_url("https://localhost/a"))               # локальные имена — нет и через прокси
     with pytest.raises(netguard.BlockedUrl):
         _run(netguard.check_url("https://meta.example/a"))            # разрешилось в metadata — нет
+    assert _run(netguard.check_url("https://cdn.example/a")) == ["93.184.216.34"]
 
 
 def test_redact_keeps_only_host():

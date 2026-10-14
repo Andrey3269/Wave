@@ -478,6 +478,18 @@ def test_upstream_connections_are_bounded(harness, monkeypatch):
     assert 1 < state["peak"] <= resolver.HLS_PARALLEL
 
 
+def test_unresolvable_host_with_user_proxy_is_refused(api, monkeypatch):
+    """Замечание аудита S8: настроенный YTDLP_PROXY больше не делает непроверенное имя допустимым."""
+    from streaming import config
+    monkeypatch.setattr(config, "YTDLP_PROXY", "http://127.0.0.1:3128")
+    api.net.add_file(ROOT, media_playlist(["https://nxdomain.test/a.mp3"]).encode(), "application/vnd.apple.mpegurl")
+    api.resolver.hls[KEY] = "mp3"
+    token = play(api)["url"].split("/")[4]
+    r = api.get(f"/api/stream/hls/{token}/main/s0")
+    assert r.status_code == 502 and r.headers[stream.ERROR_HEADER] == "upstream_unverifiable"
+    assert not [q for q in api.net.requests if q.url.host == "nxdomain.test"]
+
+
 def test_logs_do_not_contain_signed_urls(api, caplog):
     caplog.set_level(logging.DEBUG)
     mp3_hls(api)
