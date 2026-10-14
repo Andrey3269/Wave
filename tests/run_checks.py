@@ -8,6 +8,8 @@
   compileall — синтаксис Python (байткод пишется во временную папку, не в репозиторий);
   pyflakes   — статические ошибки Python;
   node       — синтаксис JavaScript фронтенда (node --check);
+  jstest     — unit-тесты фронтенда без браузера: node --test tests/js (модель очереди, форматирование,
+               граф ES-модулей). Нет node — BLOCKED; нет тестов или упал хотя бы один — FAIL;
   pytest     — unit- и API-тесты без сети и на временном профиле (python -m pytest, live выключены);
   e2e        — браузерный тест на одноразовом профиле (tests/run_e2e.py);
   worktree   — после всех шагов в рабочем каталоге не появилось новых неигнорируемых файлов.
@@ -83,6 +85,34 @@ def step_node() -> tuple[str, str]:
     return ("FAIL", "\n".join(errors)) if errors else ("PASS", f"{len(files)} файл(ов)")
 
 
+JS_TESTS = ROOT / "tests" / "js"
+
+
+def step_jstest() -> tuple[str, str]:
+    node = shutil.which("node")
+    if not node:
+        return "BLOCKED", "node не найден"
+    files = sorted(JS_TESTS.glob("*.test.mjs")) if JS_TESTS.is_dir() else []
+    if not files:                          # пустой набор не выдаём за успех
+        return "FAIL", f"нет тестов {JS_TESTS.relative_to(ROOT)}/*.test.mjs"
+    # Явный список файлов: одинаково работает во всех версиях Node 20+ (разбор каталога в --test менялся).
+    # TAP — стабильный формат для разбора. Файл без тестов Node показывает одним «пройденным» тестом с именем
+    # самого файла — такой файл считаем ошибкой, а не успехом.
+    names = [str(f.relative_to(ROOT)) for f in files]
+    code, out = run([node, "--test", "--test-reporter=tap", *names])
+    if code != 0:
+        return "FAIL", out[-4000:]
+    if not re.search(r"^# fail 0$", out, re.M):
+        return "FAIL", "node --test не сообщил итог:\n" + out[-2000:]
+    top = re.findall(r"^# Subtest: (.+)$", out, re.M)
+    empty = [n for n in names if n in top or n.replace("\\", "/") in top]
+    if empty:
+        return "FAIL", "в файлах нет ни одного теста: " + ", ".join(empty)
+    if not top:
+        return "FAIL", "node --test не нашёл тестов:\n" + out[-2000:]
+    return "PASS", f"{len(files)} файл(ов), тестов: {len(top)}"
+
+
 def step_pytest() -> tuple[str, str]:
     if importlib.util.find_spec("pytest") is None:
         return "BLOCKED", "pytest не установлен (requirements-dev.txt)"
@@ -119,7 +149,7 @@ def main() -> int:
 
     before = git_status()
     steps = [("hygiene", step_hygiene), ("compileall", step_compileall), ("pyflakes", step_pyflakes),
-             ("node", step_node)]
+             ("node", step_node), ("jstest", step_jstest)]
     results = []
 
     def record(name: str, status: str, note: str) -> None:
