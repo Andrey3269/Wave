@@ -125,6 +125,13 @@ def test_hls_track_plays_seeks_switches_and_releases(harness):
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.startsWith('blob:') && !a.paused && a.currentTime > 0.5 })()",
                                    timeout=20000)
             assert hls_proxy.stats()["sessions"] == 1
+
+            # 6. естественный конец HLS-трека: событие ended, очередь переходит к следующему треку
+            page.evaluate("(() => { const a = document.querySelector('#audio'); a.currentTime = a.duration - 1.5 })()")
+            page.wait_for_function(f"document.querySelector('#audio').src.endsWith('/api/stream/sc/{PROG_ID}')", timeout=20000)
+            page.wait_for_function("!document.querySelector('#audio').paused", timeout=15000)
+            page.wait_for_timeout(300)
+            assert hls_proxy.stats()["sessions"] == 0                        # сеанс закончившегося трека освобождён
         finally:
             browser.close()
     assert errors == [], errors

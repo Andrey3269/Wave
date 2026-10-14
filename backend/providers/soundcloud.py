@@ -212,7 +212,7 @@ class SoundCloudProvider(Provider):
     capabilities = Capabilities(
         search_tracks=True, search_artists=True, search_albums=True, artist_page=True, album_page=True,
         radio=True,                 # tracks/{id}/related
-        stream=True,                # stream.py: только прогрессивный поток
+        stream=True,                # streaming/resolver.py: прогрессивный поток или HLS (S8)
         download=True,              # ADR-10 (download_policy.py); 30-секундный фрагмент Go+ не сохраняется
         attribution_required=True,  # условия SoundCloud; Wave показывает автора и ссылку на трек (url), логотипа нет
         mixing_allowed=True,        # так ведёт себя Wave (решение владельца); условия API SoundCloud это запрещают
