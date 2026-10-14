@@ -15,7 +15,7 @@ import pytest
 
 import library
 import stream
-from streaming import hls_proxy, netguard, resolver
+from streaming import hls_proxy, resolver
 from wavetest.hlsfix import fmp4_init, fmp4_segment, master_playlist, media_playlist, mp3_frames
 
 SC = "1000000001"
@@ -453,29 +453,193 @@ def test_segment_break_keeps_received_bytes(harness):
     assert all(m.get("more_body") for m in bodies)
 
 
-def test_upstream_connections_are_bounded(harness, monkeypatch):
-    """Не больше HLS_PARALLEL одновременных соединений прокси с источником."""
-    segs = [mp3_frames(5) for _ in range(12)]
-    mp3_hls(harness, segs)
-    state = {"active": 0, "peak": 0}
-    real = netguard.send
+# ---------------------------------------------------------------------------
+# Лимит соединений с источником держится всё время передачи тела (замечание аудита S8)
+# ---------------------------------------------------------------------------
+class _Bodies:
+    """Учёт тел ответов CDN: «активно» — от первого байта до закрытия соединения."""
 
-    async def slow_send(client, url, headers):
-        state["active"] += 1
-        state["peak"] = max(state["peak"], state["active"])
-        try:
-            await asyncio.sleep(0.05)
-            return await real(client, url, headers)
-        finally:
-            state["active"] -= 1
-    monkeypatch.setattr(netguard, "send", slow_send)
+    def __init__(self):
+        self.started = self.active = self.peak = self.closed = 0
+
+
+class _HeldBody(httpx.AsyncByteStream):
+    """Тело сегмента: первый кусок сразу, остальное — после gate. Закрытие считается один раз."""
+
+    def __init__(self, data: bytes, gate: asyncio.Event | None, stats: _Bodies):
+        self.data, self.gate, self.stats, self._open = data, gate, stats, False
+
+    async def __aiter__(self):
+        self.stats.started += 1
+        self.stats.active += 1
+        self.stats.peak = max(self.stats.peak, self.stats.active)
+        self._open = True
+        yield self.data[:100]
+        if self.gate is not None:
+            await self.gate.wait()
+        yield self.data[100:]
+
+    async def aclose(self):
+        if self._open:
+            self._open = False
+            self.stats.active -= 1
+            self.stats.closed += 1
+
+
+def _held_segments(h, n: int, stats: _Bodies, gate_box: dict, data: bytes):
+    """n сегментов, тело каждого удерживается до gate_box["gate"].set()."""
+    mp3_hls(h, [data] * n)
+    for i in range(n):
+        h.net.queue(f"/sc/{SC}/seg{i}.mp3", lambda req: httpx.Response(
+            200, headers={"Content-Type": "audio/mpeg", "Content-Length": str(len(data))},
+            stream=_HeldBody(data, gate_box.get("gate"), stats)))
+
+
+async def _wait_for(cond, timeout: float = 5.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not cond():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("условие не наступило")
+        await asyncio.sleep(0.01)
+
+
+def test_upstream_body_transfers_are_bounded(harness):
+    """
+    12 параллельных запросов сегментов (> HLS_PARALLEL), тела CDN удерживаются открытыми. Одновременно
+    передаётся не больше HLS_PARALLEL тел; остальные запросы ждут слота и не начинаются, пока тела не закрыты.
+    Затем все 12 завершаются полностью, все соединения закрыты, все слоты свободны. (Прежний тест считал только
+    открытие соединения — слот отпускался сразу после заголовков, и такой тест это не замечал.)
+    """
+    n, data = 12, mp3_frames(5)
+    stats, box = _Bodies(), {}
 
     async def go(c):
+        box["gate"] = asyncio.Event()
+        _held_segments(harness, n, stats, box, data)
+        sem = harness.app.state.resolver.hls_sem
         token = (await c.get(f"/api/stream/sc/{SC}/playback")).json()["url"].split("/")[4]
-        return await asyncio.gather(*(c.get(f"/api/stream/hls/{token}/main/s{i}") for i in range(12)))
-    rs = harness.run(go)
-    assert [r.status_code for r in rs] == [200] * 12
-    assert 1 < state["peak"] <= resolver.HLS_PARALLEL
+        tasks = [asyncio.create_task(c.get(f"/api/stream/hls/{token}/main/s{i}")) for i in range(n)]
+        await _wait_for(lambda: stats.active >= resolver.HLS_PARALLEL)
+        await asyncio.sleep(0.3)                                  # время, чтобы лишние запросы «прорвались», если бы могли
+        held = (stats.active, stats.started, sem._value)
+        box["gate"].set()
+        responses = await asyncio.gather(*tasks)
+        return held, responses, sem._value
+
+    held, responses, free = harness.run(go)
+    assert held == (resolver.HLS_PARALLEL, resolver.HLS_PARALLEL, 0)  # 6 тел передаются, остальные 6 ждут
+    assert stats.peak == resolver.HLS_PARALLEL                       # и никогда больше
+    assert [r.status_code for r in responses] == [200] * n and all(r.content == data for r in responses)
+    assert stats.started == stats.closed == n and stats.active == 0
+    assert free == resolver.HLS_PARALLEL
+
+
+def test_slot_is_released_when_client_disconnects_mid_body(harness):
+    """Клиент оборвал HLS_PARALLEL передач посередине тела: слоты и соединения CDN освобождены, следующий
+    сегмент загружается сразу (не ждёт сборки мусора и SLOT_WAIT)."""
+    data = mp3_frames(5)
+    stats, box = _Bodies(), {}
+
+    async def one_disconnect(path):
+        sent: list[dict] = []
+        first_body = asyncio.Event()
+        given = []
+
+        async def receive():
+            if not given:                                         # тело запроса — один раз, дальше ждём обрыва
+                given.append(1)
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await first_body.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(msg):
+            sent.append(msg)
+            if msg["type"] == "http.response.body" and msg.get("body"):
+                first_body.set()
+        scope = {"type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1",
+                 "method": "GET", "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+                 "root_path": "", "headers": [(b"host", b"127.0.0.1")], "client": ("127.0.0.1", 1),
+                 "server": ("127.0.0.1", 80)}
+        await asyncio.wait_for(harness.app(scope, receive, send), 5)
+
+    async def go(c):
+        box["gate"] = asyncio.Event()                             # тела не завершатся никогда
+        _held_segments(harness, resolver.HLS_PARALLEL + 1, stats, box, data)
+        sem = harness.app.state.resolver.hls_sem
+        token = (await c.get(f"/api/stream/sc/{SC}/playback")).json()["url"].split("/")[4]
+        await asyncio.gather(*(one_disconnect(f"/api/stream/hls/{token}/main/s{i}")
+                               for i in range(resolver.HLS_PARALLEL)))
+        after_disconnect = (sem._value, stats.active, stats.closed)
+        box["gate"] = None                                         # следующий сегмент — без удержания
+        harness.net.queues[f"/sc/{SC}/seg{resolver.HLS_PARALLEL}.mp3"].clear()
+        harness.net.add_file(f"/sc/{SC}/seg{resolver.HLS_PARALLEL}.mp3", data, "audio/mpeg")
+        r = await asyncio.wait_for(c.get(f"/api/stream/hls/{token}/main/s{resolver.HLS_PARALLEL}"), 5)
+        return after_disconnect, r, sem._value
+
+    after_disconnect, r, free = harness.run(go)
+    assert after_disconnect == (resolver.HLS_PARALLEL, 0, resolver.HLS_PARALLEL)
+    assert r.status_code == 200 and r.content == data and free == resolver.HLS_PARALLEL
+
+
+def test_slot_is_released_on_every_error_path(harness, monkeypatch):
+    """Протухшая ссылка, ошибка CDN, обрыв тела, запрещённый и непроверяемый адрес — слот всегда возвращается."""
+    from streaming import config
+    mp3_hls(harness)
+    harness.dns["evil.test"] = ["10.0.0.1"]
+    harness.net.add_file(f"/sc/{SC}/bad.m3u8", media_playlist(["https://evil.test/a.mp3",
+                                                               "https://nxdomain.test/b.mp3"]).encode(),
+                         "application/vnd.apple.mpegurl")
+
+    async def go(c):
+        sem = harness.app.state.resolver.hls_sem
+        seen = []
+        token = (await c.get(f"/api/stream/sc/{SC}/playback")).json()["url"].split("/")[4]
+        harness.net.queue(f"/sc/{SC}/seg0.mp3", 403, 403)          # протухла и после перерезолва
+        seen.append(((await c.get(f"/api/stream/hls/{token}/main/s0")).headers.get("x-wave-error"), sem._value))
+        harness.net.queue(f"/sc/{SC}/seg1.mp3", 500)
+        seen.append(((await c.get(f"/api/stream/hls/{token}/main/s1")).headers.get("x-wave-error"), sem._value))
+        harness.net.fail_after, harness.net.chunk = 1, 1000          # обрыв тела посередине (N2: ответ прерван)
+        try:
+            await c.get(f"/api/stream/hls/{token}/main/s2")
+            broken = "complete"
+        except AssertionError:                                       # httpx.ASGITransport не принимает прерванный ответ
+            broken = "aborted"
+        harness.net.fail_after = None
+        seen.append((broken, sem._value))
+        harness.net.queue(ROOT, lambda req: httpx.Response(200, stream=httpx.ByteStream(
+            harness.net.files[f"/sc/{SC}/bad.m3u8"][0]), headers={"Content-Type": "application/vnd.apple.mpegurl"}))
+        hls_proxy.clear()
+        monkeypatch.setattr(config, "YTDLP_PROXY", "http://127.0.0.1:3128")
+        token = (await c.get(f"/api/stream/sc/{SC}/playback")).json()["url"].split("/")[4]
+        seen.append(((await c.get(f"/api/stream/hls/{token}/main/s0")).headers.get("x-wave-error"), sem._value))
+        seen.append(((await c.get(f"/api/stream/hls/{token}/main/s1")).headers.get("x-wave-error"), sem._value))
+        return seen
+
+    p = resolver.HLS_PARALLEL
+    assert harness.run(go) == [("link_unavailable", p), ("upstream_status", p), ("aborted", p),
+                               ("upstream_blocked", p), ("upstream_unverifiable", p)]
+
+
+def test_waiting_for_a_slot_is_bounded(harness, monkeypatch):
+    """Все слоты заняты дольше SLOT_WAIT — ответ 503 hls_busy, а не бесконечное ожидание."""
+    monkeypatch.setattr(hls_proxy, "SLOT_WAIT", 0.3)
+    stats, box = _Bodies(), {}
+    data = mp3_frames(5)
+
+    async def go(c):
+        box["gate"] = asyncio.Event()
+        _held_segments(harness, resolver.HLS_PARALLEL + 1, stats, box, data)
+        token = (await c.get(f"/api/stream/sc/{SC}/playback")).json()["url"].split("/")[4]
+        held = [asyncio.create_task(c.get(f"/api/stream/hls/{token}/main/s{i}")) for i in range(resolver.HLS_PARALLEL)]
+        await _wait_for(lambda: stats.active == resolver.HLS_PARALLEL)
+        extra = await c.get(f"/api/stream/hls/{token}/main/s{resolver.HLS_PARALLEL}")
+        box["gate"].set()
+        done = await asyncio.gather(*held)
+        return extra, done, harness.app.state.resolver.hls_sem._value
+
+    extra, done, free = harness.run(go)
+    assert extra.status_code == 503 and extra.headers["x-wave-error"] == "hls_busy"
+    assert [r.status_code for r in done] == [200] * resolver.HLS_PARALLEL and free == resolver.HLS_PARALLEL
 
 
 def test_unresolvable_host_with_user_proxy_is_refused(api, monkeypatch):

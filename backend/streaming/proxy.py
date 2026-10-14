@@ -156,6 +156,22 @@ class AbortableStreamingResponse(StreamingResponse):
             return
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
+    async def __call__(self, scope, receive, send) -> None:
+        """
+        Тело закрывается всегда — и после обычного конца, и при отключении клиента (Starlette тогда отменяет
+        передачу, а генератор, остановленный на yield, иначе закрылся бы только сборщиком мусора). Закрытие
+        генератора закрывает ответ источника и освобождает слот соединения HLS (hls_proxy._LeasedStream).
+        """
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            closer = getattr(self.body_iterator, "aclose", None)
+            if closer is not None:
+                try:
+                    await closer()
+                except Exception as exc:                     # закрытие не должно подменять исходную ошибку
+                    log.info("Тело ответа закрыто с ошибкой: %s", type(exc).__name__)
+
 
 # ---------------------------------------------------------------------------
 # Прогрев: ссылка + первая порция трека заранее лежат на сервере

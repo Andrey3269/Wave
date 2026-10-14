@@ -44,6 +44,7 @@ IDLE_TTL = 30 * 60                # сеанс без обращений дол�
 MAX_AGE = 6 * 3600                # и в любом случае не живёт дольше 6 ч
 MAX_PLAYLIST_BYTES = 2 * 1024 * 1024
 PLAYLIST_TIMEOUT = 20.0           # на получение плейлиста целиком (включая редиректы)
+SLOT_WAIT = 30.0                  # сколько ждать свободного соединения с источником, потом 503 hls_busy
 ROOT_REUSE_SEC = 60.0             # корневой плейлист, проверенный /playback, плеер получает без нового запроса
 PLAYLIST_TYPE = "application/vnd.apple.mpegurl"
 
@@ -202,19 +203,87 @@ class _Stale(Exception):
         self.status = status
 
 
+class _LeasedStream(httpx.AsyncByteStream):
+    """
+    Тело ответа источника, которое держит слот ResolverState.hls_sem до своего закрытия. httpx закрывает
+    поток и при полном чтении тела (aiter_raw), и при Response.aclose(); слот освобождается ровно один раз —
+    после закрытия соединения, в том числе при ошибке и отмене (finally).
+    """
+
+    def __init__(self, inner: httpx.AsyncByteStream, release) -> None:
+        self._inner = inner
+        self._release = release
+
+    async def __aiter__(self):
+        async for chunk in self._inner:
+            yield chunk
+
+    async def aclose(self) -> None:
+        try:
+            await self._inner.aclose()
+        finally:
+            self._release()
+
+
+def _lease(resp: httpx.Response, release) -> None:
+    """
+    Привязывает освобождение слота к закрытию ответа. Двух путей два: закрытие потока (_LeasedStream) и сам
+    Response.aclose() — у ответа, тело которого httpx уже прочитал при создании, aclose() поток не трогает.
+    release() идемпотентен; httpx вызывает aclose() и сам в конце aiter_raw().
+    """
+    resp.stream = _LeasedStream(resp.stream, release)
+    original = resp.aclose
+
+    async def aclose() -> None:
+        try:
+            await original()
+        finally:
+            release()
+    resp.aclose = aclose
+
+
+def _busy(s: Session) -> Exception:
+    log.info("HLS %s: все %d соединений с источником заняты дольше %.0f с", s.key, resolver.HLS_PARALLEL, SLOT_WAIT)
+    return errors._err(503, "hls_busy", "Wave уже загружает много фрагментов потока одновременно. Повторите через "
+                                        "несколько секунд.")
+
+
 async def _open(client: httpx.AsyncClient, rs: resolver.ResolverState, s: Session, url: str,
                 extra: dict[str, str] | None = None) -> httpx.Response:
-    """Соединение с источником под семафором и netguard. _Stale — ссылка протухла (401/403/404/410)."""
+    """
+    Соединение с источником через netguard. Слот rs.hls_sem занят от отправки запроса до закрытия ответа:
+    лимит HLS_PARALLEL действует и на передачу тела, а не только на ожидание заголовков. Ответ, который вернул
+    _open, вызывающий обязан закрыть (aclose или полное чтение тела) — тогда освобождается и слот.
+    _Stale — ссылка протухла (401/403/404/410); ответ уже закрыт.
+    """
     headers = {**s.headers, "Accept-Encoding": "identity", **(extra or {})}
-    async with rs.hls_sem:
-        try:
-            resp = await netguard.send(client, url, headers)
-        except netguard.Unverifiable as exc:
-            raise _unverifiable(s, exc) from exc
-        except netguard.BlockedUrl as exc:
-            raise _blocked(s, exc) from exc
-        except httpx.HTTPError as exc:
-            raise _network(s, exc) from exc
+    try:
+        await asyncio.wait_for(rs.hls_sem.acquire(), SLOT_WAIT)
+    except asyncio.TimeoutError:
+        raise _busy(s) from None
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            rs.hls_sem.release()
+
+    try:
+        resp = await netguard.send(client, url, headers)
+    except netguard.Unverifiable as exc:
+        release()
+        raise _unverifiable(s, exc) from exc
+    except netguard.BlockedUrl as exc:
+        release()
+        raise _blocked(s, exc) from exc
+    except httpx.HTTPError as exc:
+        release()
+        raise _network(s, exc) from exc
+    except BaseException:
+        release()
+        raise
+    _lease(resp, release)
     if resp.status_code in STALE_STATUSES:
         await resp.aclose()
         raise _Stale(resp.status_code)
