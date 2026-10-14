@@ -57,6 +57,8 @@ def test_packaging_bundles_whole_frontend_folder():
     assert '(os.path.join(ROOT, "licenses"), "licenses")' in spec
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "vendor.lock.json" in ci and "licenses\\hls.js\\LICENSE" in ci  # сборка проверяет файл и его SHA-256
+    # S9: интерфейс — ES-модули; сборка проверяет, что каждый файл frontend\js попал в dist без изменений
+    assert 'Get-ChildItem -Path "frontend\\js" -Recurse' in ci and "stale frontend\\app.js in dist" in ci
 
 
 def test_hls_file_is_served_by_backend(api):

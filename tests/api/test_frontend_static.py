@@ -19,7 +19,7 @@ def registry_says_text_plain(monkeypatch):
     assert mimetypes.guess_type("x.js")[0] == "text/plain"
 
 
-@pytest.mark.parametrize("path", ["/app.js", "/vendor/hls.light.min.js"])
+@pytest.mark.parametrize("path", ["/js/main.js", "/js/player/queue.js", "/vendor/hls.light.min.js"])
 def test_js_is_served_as_javascript_despite_registry(api, registry_says_text_plain, path):
     r = api.get(path)
     assert r.status_code == 200
@@ -27,7 +27,7 @@ def test_js_is_served_as_javascript_despite_registry(api, registry_says_text_pla
 
 
 @pytest.mark.parametrize("path, ctype", [("/", "text/html"), ("/index.html", "text/html"), ("/style.css", "text/css"),
-                                         ("/app.js", "text/javascript")])
+                                         ("/js/main.js", "text/javascript")])
 def test_frontend_files_are_revalidated(api, path, ctype):
     r = api.get(path)
     assert r.status_code == 200 and r.headers["content-type"].startswith(ctype)
@@ -36,8 +36,8 @@ def test_frontend_files_are_revalidated(api, path, ctype):
 
 
 def test_unchanged_file_is_not_sent_again(api):
-    etag = api.get("/app.js").headers["etag"]
-    r = api.get("/app.js", headers={"If-None-Match": etag})
+    etag = api.get("/js/main.js").headers["etag"]
+    r = api.get("/js/main.js", headers={"If-None-Match": etag})
     assert r.status_code == 304 and r.content == b"" and r.headers["cache-control"] == "no-cache"
 
 

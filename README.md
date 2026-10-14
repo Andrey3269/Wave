@@ -229,7 +229,7 @@ echo %errorlevel%
 
 ```
 backend/      FastAPI-приложение, лаунчер, провайдеры, стриминг, SQLite
-frontend/     index.html, style.css, app.js, assets/
+frontend/     index.html, style.css, js/ (ES-модули: core, state, player, components, views, main.js), vendor/, assets/
 tests/        unit/, api/ (pytest), live/ (живые источники), fixtures/, wavetest/ (защита и подделки),
               e2e_smoke.py, e2e_settings.py (Playwright), run_e2e.py, run_checks.py
               installer/run_installer_checks.ps1 (проверки установщика в CI)

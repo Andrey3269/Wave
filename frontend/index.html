@@ -11,8 +11,9 @@
   <title>Волна — музыка</title>
   <link rel="icon" type="image/svg+xml" href="assets/wave_icon.svg">
   <link rel="stylesheet" href="style.css">
-  <!-- Интерфейс — ES-модуль (S9): выполняется после разбора страницы, как defer, до DOMContentLoaded -->
-  <script type="module" src="app.js"></script>
+  <!-- Интерфейс — ES-модули frontend/js/** (S9). Входной модуль выполняется после разбора страницы, как defer,
+       до DOMContentLoaded; остальные модули он импортирует сам -->
+  <script type="module" src="js/main.js"></script>
 </head>
 <body data-view="home" data-track="0">
 
@@ -393,7 +394,7 @@
     <ol class="queue__list" id="queue-list"></ol>
   </aside>
 
-  <!-- Меню трека (строится в app.js) -->
+  <!-- Меню трека (строится в js/components/menu.js) -->
   <div class="menu" id="menu" role="menu" hidden></div>
 
   <!-- Диалог ввода текста (название плейлиста) -->
@@ -535,7 +536,7 @@
     <audio id="audio" preload="auto"></audio>
   </footer>
 
-  <!-- Шаблон строки трека: клонируется в app.js -->
+  <!-- Шаблон строки трека: клонируется в js/components/track-row.js -->
   <template id="track-template">
     <li class="row">
       <button class="track" type="button">

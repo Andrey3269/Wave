@@ -189,6 +189,18 @@ jobs:
           if ($hh -ne $vlock.'hls.js'.sha256) { throw "bundled hls.js SHA-256 $hh does not match vendor.lock.json" }
           if (-not (Test-Path "dist\Wave\_internal\licenses\hls.js\LICENSE")) { throw "licenses\hls.js\LICENSE is not bundled" }
           "::notice title=hls.js::bundled $($vlock.'hls.js'.version) ($([math]::Round((Get-Item $hlsjs).Length / 1KB)) KB), SHA-256 matches vendor.lock.json"
+          # S9: интерфейс — ES-модули frontend\js\**: каждый файл репозитория собран без изменений, старого app.js нет
+          $front = (Resolve-Path "frontend").Path
+          $mods = Get-ChildItem -Path "frontend\js" -Recurse -File -Filter *.js
+          if (-not $mods) { throw "no frontend\js modules in the repository" }
+          foreach ($m in $mods) {
+            $rel = $m.FullName.Substring($front.Length + 1)
+            $dst = "dist\Wave\_internal\frontend\$rel"
+            if (-not (Test-Path $dst)) { throw "$rel is not bundled" }
+            if ((Get-FileHash $dst).Hash -ne (Get-FileHash $m.FullName).Hash) { throw "$rel in dist differs from the repository" }
+          }
+          if (Test-Path "dist\Wave\_internal\frontend\app.js") { throw "stale frontend\app.js in dist" }
+          "::notice title=frontend modules::$($mods.Count) ES modules from frontend\js bundled unchanged"
           # S4: version-resource Wave.exe совпадает с backend/version.py (единственный источник версии)
           $ver = (python backend/version.py).Trim()
           $vi = (Get-Item "dist\Wave\Wave.exe").VersionInfo

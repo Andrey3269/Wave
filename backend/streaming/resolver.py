@@ -47,7 +47,7 @@ class Source:
 
     hls=False — источник играет только прогрессивный файл (выбор формата делает yt-dlp по `fmt`, HLS/DASH
     YouTube отключены в ydl_opts); hls=True — формат выбирает choose_format: прогрессивный, если есть,
-    иначе HLS (S8, N4). Фронтенд держит тот же признак в PROGRESSIVE_ONLY (frontend/app.js).
+    иначе HLS (S8, N4). Фронтенд держит тот же признак в PROGRESSIVE_ONLY (frontend/js/player/controller.js).
     """
     label: str
     page_url: Callable[[str], str]

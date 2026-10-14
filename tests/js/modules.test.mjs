@@ -128,7 +128,7 @@ test("каждый файл frontend/js подключён (нет забыты�
 });
 
 test("нет динамического import() и загрузки скриптов из сети", () => {
-  const files = [...listJs(join(FRONT, "js")), ...[join(FRONT, "app.js")].filter(existsSync)];
+  const files = listJs(join(FRONT, "js"));
   for (const f of files) {
     const src = readFileSync(f, "utf8");
     assert.ok(!/\bimport\s*\(/.test(src), `${rel(f)}: динамический import()`);

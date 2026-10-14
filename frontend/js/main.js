@@ -6,39 +6,40 @@
    Кнопки управления плеером (play/prev/next/like/...) помечены data-do и обрабатываются
    одним обработчиком на документе: сколько бы таких кнопок ни было на экране, состояние одно.
 
-   Этот файл — запуск: связывает модули frontend/js/** (TARGET_ARCHITECTURE §11), регистрирует общие
-   обработчики (в том же порядке, что и раньше) и открывает первый экран.
+   Входной модуль (index.html: <script type="module" src="js/main.js">, TARGET_ARCHITECTURE §11): связывает
+   модули frontend/js/**, регистрирует общие обработчики (порядок регистрации — как в прежнем app.js)
+   и открывает первый экран. Модули выполняются после разбора страницы, до DOMContentLoaded.
    ========================================================================== */
-import { initImageFallback } from "./js/core/dom.js";
-import { api, trackKey } from "./js/core/api.js";
-import { el, now, fs } from "./js/core/elements.js";
-import { state, queue, current, heroTrack, nav } from "./js/state/store.js";
-import { initSettingsSync, initThemeFollowSystem } from "./js/state/settings.js";
-import { toast } from "./js/components/toast.js";
-import { initEmptyRetry } from "./js/components/skeleton.js";
-import { initPickPlaylist } from "./js/components/dialogs.js";
-import { initLyrics } from "./js/components/lyrics.js";
-import { bindCardClicks, initRowScroll } from "./js/components/cards.js";
-import { openMenu, closeMenu, initMenu } from "./js/components/menu.js";
-import { repaintFav, toggleFav } from "./js/components/favorites.js";
-import { shareTrack } from "./js/components/share.js";
-import { toggleMute, initSliders } from "./js/player/sliders.js";
+import { initImageFallback } from "./core/dom.js";
+import { api, trackKey } from "./core/api.js";
+import { el, now, fs } from "./core/elements.js";
+import { state, queue, current, heroTrack, nav } from "./state/store.js";
+import { initSettingsSync, initThemeFollowSystem } from "./state/settings.js";
+import { toast } from "./components/toast.js";
+import { initEmptyRetry } from "./components/skeleton.js";
+import { initPickPlaylist } from "./components/dialogs.js";
+import { initLyrics } from "./components/lyrics.js";
+import { bindCardClicks, initRowScroll } from "./components/cards.js";
+import { openMenu, closeMenu, initMenu } from "./components/menu.js";
+import { repaintFav, toggleFav } from "./components/favorites.js";
+import { shareTrack } from "./components/share.js";
+import { toggleMute, initSliders } from "./player/sliders.js";
 import { setIdleAction, playIndex, togglePlay, playNext, playPrev, setShuffle, setRepeat,
-  initPlayer } from "./js/player/controller.js";
-import { fetchPage, playFromList, initList, initListWarm } from "./js/views/list.js";
-import { syncTabs } from "./js/views/shell.js";
-import { openArtist, openAlbum, goAlbum } from "./js/views/detail.js";
-import { showSearch, goArtist, initSearchForm, initSearchTabs } from "./js/views/search.js";
-import { renderThemeMixes, renderArtistMixes, computeArtists, initSidebar } from "./js/views/sidebar.js";
-import { goHome, startWave, loadMoreHome, initHomeGrids, initHomeMixRow, initHomeHero } from "./js/views/home.js";
-import { openNowFromUi, toggleLyrics, similar, initSimilarGrid, initNow } from "./js/views/now.js";
-import { initPlayerBar } from "./js/views/player-bar.js";
-import { openFs, closeFs, setFsMode, initFullscreen } from "./js/views/fullscreen.js";
-import { queueAdd, queueRemove, queueMove, queueMoveTo, toggleQueue, initQueueDrawer } from "./js/views/queue-drawer.js";
+  initPlayer } from "./player/controller.js";
+import { fetchPage, playFromList, initList, initListWarm } from "./views/list.js";
+import { syncTabs } from "./views/shell.js";
+import { openArtist, openAlbum, goAlbum } from "./views/detail.js";
+import { showSearch, goArtist, initSearchForm, initSearchTabs } from "./views/search.js";
+import { renderThemeMixes, renderArtistMixes, computeArtists, initSidebar } from "./views/sidebar.js";
+import { goHome, startWave, loadMoreHome, initHomeGrids, initHomeMixRow, initHomeHero } from "./views/home.js";
+import { openNowFromUi, toggleLyrics, similar, initSimilarGrid, initNow } from "./views/now.js";
+import { initPlayerBar } from "./views/player-bar.js";
+import { openFs, closeFs, setFsMode, initFullscreen } from "./views/fullscreen.js";
+import { queueAdd, queueRemove, queueMove, queueMoveTo, toggleQueue, initQueueDrawer } from "./views/queue-drawer.js";
 import { showLiked, showHistory, initHistory, createPlaylistFlow, showPlaylists, openPlaylist, initPlaylistActions,
-  addToPlaylistFlow, removeFromPlaylist, showCollection, initCollectionTiles } from "./js/views/collection.js";
-import { refreshDownloads, pollJobs, toggleDownload, showDownloads } from "./js/views/downloads.js";
-import { loadSettings, showSettings, renderProfile, initSettingsView } from "./js/views/settings.js";
+  addToPlaylistFlow, removeFromPlaylist, showCollection, initCollectionTiles } from "./views/collection.js";
+import { refreshDownloads, pollJobs, toggleDownload, showDownloads } from "./views/downloads.js";
+import { loadSettings, showSettings, renderProfile, initSettingsView } from "./views/settings.js";
 
 initImageFallback();
 initSettingsSync();

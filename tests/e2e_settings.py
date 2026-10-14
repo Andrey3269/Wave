@@ -142,7 +142,7 @@ def backend_values(page) -> dict:
     return page.evaluate("fetch('/api/settings').then(r => r.json())")
 
 
-SAVE_TIMEOUT_MS = 10_000          # верхняя граница ожидания записи (пауза записи громкости в app.js — 400 мс)
+SAVE_TIMEOUT_MS = 10_000          # верхняя граница ожидания записи (пауза записи громкости в js/state/settings.js — 400 мс)
 
 
 def wait_backend(page, expect: dict, timeout_ms: int = SAVE_TIMEOUT_MS) -> tuple[dict, bool]:
