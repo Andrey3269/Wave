@@ -104,8 +104,10 @@ def step_jstest() -> tuple[str, str]:
         return "FAIL", out[-4000:]
     if not re.search(r"^# fail 0$", out, re.M):
         return "FAIL", "node --test не сообщил итог:\n" + out[-2000:]
-    top = re.findall(r"^# Subtest: (.+)$", out, re.M)
-    empty = [n for n in names if n in top or n.replace("\\", "/") in top]
+    top = [t.strip() for t in re.findall(r"^# Subtest: (.+)$", out, re.M)]
+    # Имя «теста-файла» Node пишет по-разному (относительный или полный путь; в TAP на Windows `\` экранируется),
+    # поэтому сравниваем по имени файла в конце строки
+    empty = [str(f.relative_to(ROOT)) for f in files if any(t == f.name or t.endswith(("/" + f.name, "\\" + f.name)) for t in top)]
     if empty:
         return "FAIL", "в файлах нет ни одного теста: " + ", ".join(empty)
     if not top:
