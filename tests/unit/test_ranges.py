@@ -162,13 +162,25 @@ def test_extract_without_url_fails(monkeypatch):
         stream._extract_sync("yt", "AAAAAAAAAA1")
 
 
-def test_soundcloud_requires_progressive_http(monkeypatch):
+def test_soundcloud_hls_only_resolves_as_hls(monkeypatch):
+    """
+    S8 (N4): раньше ответ SoundCloud только с HLS давал StreamUnavailable («нет прямого потока»). Теперь это
+    поток типа hls (его играет hls.js через HLS-прокси); прогрессивный файл по-прежнему предпочтительнее.
+    """
     ydl = _use_ydl(monkeypatch, {"url": "https://cf-hls-media.sndcdn.com/playlist.m3u8", "protocol": "m3u8_native"})
-    with pytest.raises(stream.StreamUnavailable):
-        stream._extract_sync("sc", "1000000001")
+    res = stream._extract_sync("sc", "1000000001")
     assert ydl.urls == ["https://api.soundcloud.com/tracks/1000000001"]
+    assert (res.kind, res.url) == ("hls", "https://cf-hls-media.sndcdn.com/playlist.m3u8")
     ydl.info = {"url": "https://cf-media.sndcdn.com/a.mp3", "protocol": "https"}
-    assert stream._extract_sync("sc", "1000000001").url == "https://cf-media.sndcdn.com/a.mp3"
+    res = stream._extract_sync("sc", "1000000001")
+    assert (res.kind, res.url) == ("progressive", "https://cf-media.sndcdn.com/a.mp3")
+
+
+def test_youtube_never_resolves_to_hls(monkeypatch):
+    """YouTube играет только прогрессивный файл: HLS-ответ (если yt-dlp его выбрал) — «нет прямого потока»."""
+    _use_ydl(monkeypatch, {"url": "https://manifest.googlevideo.com/x/index.m3u8", "protocol": "m3u8_native"})
+    with pytest.raises(stream.StreamUnavailable):
+        stream._extract_sync("yt", "AAAAAAAAAA1")
 
 
 def test_ydl_options(monkeypatch):

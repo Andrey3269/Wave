@@ -5,9 +5,31 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 import library
-from streaming import local, proxy, resolver
+from streaming import hls_proxy, local, proxy, resolver
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
+
+
+# ---------------------------------------------------------------------------
+# HLS (S8). Маршруты объявлены раньше общего /{source}/{track_id}: «hls» — не источник.
+# ---------------------------------------------------------------------------
+@router.get("/hls/{token}/{pl}.m3u8")
+async def hls_playlist(token: str, pl: str, request: Request):
+    """Плейлист сеанса (корневой main, вариант vN, дорожка aN) с адресами прокси вместо адресов источника."""
+    return await hls_proxy.playlist(request, token, pl)
+
+
+@router.get("/hls/{token}/{pl}/{res}")
+async def hls_resource(token: str, pl: str, res: str, request: Request):
+    """Сегмент (sSEQ) или init-секция (mN) — потоком от источника."""
+    return await hls_proxy.resource(request, token, pl, res)
+
+
+@router.delete("/hls/{token}", status_code=204)
+async def hls_release(token: str):
+    """Плеер больше не играет этот трек: сеанс и разобранные плейлисты освобождаются сразу, не дожидаясь TTL."""
+    hls_proxy.release(token)
+    return Response(status_code=204)
 
 
 def _check(source: str, track_id: str) -> resolver.Source:
@@ -17,6 +39,28 @@ def _check(source: str, track_id: str) -> resolver.Source:
     if not cfg.id_re.fullmatch(track_id):
         raise HTTPException(400, "Некорректный идентификатор трека")
     return cfg
+
+
+@router.get("/{source}/{track_id}/playback")
+async def playback(source: str, track_id: str, request: Request):
+    """
+    Как играть трек (S8): {"kind": "local" | "progressive" | "hls", "url": ..., "preview": ...}.
+      local       — скачанный файл, url = /api/stream/{source}/{id} (с диска, без сети);
+      progressive — обычный поток, url = /api/stream/{source}/{id} (Range-прокси);
+      hls         — url = /api/stream/hls/{token}/main.m3u8 для hls.js; корневой плейлист уже проверен.
+    Ошибки — как у потока: понятный текст в detail и тип в X-Wave-Error.
+    """
+    _check(source, track_id)
+    direct = f"/api/stream/{source}/{track_id}"
+    if library.audio_path(source, track_id):
+        return {"kind": "local", "url": direct, "preview": False}
+    res = await resolver._resolve(request.app.state.resolver, source, track_id)
+    if res.kind != resolver.HLS:
+        return {"kind": "progressive", "url": direct, "preview": res.preview}
+    session = hls_proxy.open_session(source, track_id)
+    await hls_proxy.prepare(request, session)
+    return {"kind": "hls", "url": f"/api/stream/hls/{session.token}/main.m3u8", "preview": res.preview,
+            "codec": res.codec}
 
 
 @router.get("/{source}/{track_id}")

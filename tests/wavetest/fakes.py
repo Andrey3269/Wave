@@ -187,6 +187,9 @@ class FakeResolver:
         self.headers = {"User-Agent": "test-agent", "Referer": "https://www.youtube.com/"}
         self.gate: threading.Event | None = None            # если задан, резолв ждёт события
         self.previews: set[str] = set()                      # "source:id", для которых источник отдаёт лишь фрагмент
+        # S8: "source:id" -> кодек ("mp3", "aac" или None): источник отдаёт только HLS. Ссылка — плейлист
+        # https://cdn.test/{source}/{id}/main.m3u8?v=<номер резолва>
+        self.hls: dict[str, str | None] = {}
         self._lock = threading.Lock()
 
     def fail(self, source: str, track_id: str, *errors: Exception) -> None:
@@ -207,6 +210,10 @@ class FakeResolver:
             time.sleep(self.delay)
         if err is not None:
             raise err
+        if key in self.hls:
+            return self._stream.Resolved(url=f"https://{CDN_HOST}/{source}/{track_id}/main.m3u8?v={n}",
+                                         headers=dict(self.headers), expires_at=time.time() + self.expires_in,
+                                         preview=key in self.previews, kind="hls", codec=self.hls[key])
         return self._stream.Resolved(url=f"https://{CDN_HOST}/{source}/{track_id}?v={n}", headers=dict(self.headers),
                                      expires_at=time.time() + self.expires_in, preview=key in self.previews)
 
@@ -350,7 +357,16 @@ class ApiHarness:
         monkeypatch.setattr(modules["stream"], "_extract_sync", self.resolver)
         monkeypatch.setattr(modules["sc_provider"], "search_raw", self.sc.search_tracks)
         monkeypatch.setattr(modules["sc_provider"], "api_get", self.sc.api_get)
+        # S8: DNS для защиты HLS-прокси (streaming.netguard) — без настоящих запросов. cdn.test и хосты обложек
+        # «публичные»; тест может добавить имя, указывающее, например, на 127.0.0.1 или 169.254.169.254.
+        self.dns: dict[str, list[str]] = {CDN_HOST: ["93.184.216.34"]}
+        monkeypatch.setattr(modules["netguard"], "resolve_host", self._resolve_host)
         self.http = None
+
+    async def _resolve_host(self, host: str, port: int) -> list[str]:
+        if host in self.dns:
+            return list(self.dns[host])
+        raise OSError(f"тест: имя {host} не разрешается")
 
     def _make_ytm(self):
         self.lifespans += 1

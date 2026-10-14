@@ -1,0 +1,65 @@
+{
+ "_comment": "Форматы yt-dlp 2026.8.19 для публичного трека SoundCloud, снято 2026-10-14 (S8). Адреса и подписи заменены на тестовые; протоколы, format_id, ext, acodec, abr — как в живом ответе. full: все 4 формата; hls_aac_only: так же трек в соседнем резолве (N4).",
+ "full": [
+  {
+   "format_id": "hls_mp3_0_0",
+   "protocol": "m3u8_native",
+   "ext": "mp3",
+   "acodec": "mp3",
+   "vcodec": "none",
+   "abr": 128,
+   "url": "https://cf-hls-media.sndcdn.com/playlist/TRACK.128.mp3/playlist.m3u8?Policy=P&Signature=S&Key-Pair-Id=K"
+  },
+  {
+   "format_id": "http_mp3_0_0",
+   "protocol": "http",
+   "ext": "mp3",
+   "acodec": "mp3",
+   "vcodec": "none",
+   "abr": 128,
+   "url": "https://cf-media.sndcdn.com/TRACK.128.mp3?Policy=P&Signature=S&Key-Pair-Id=K"
+  },
+  {
+   "format_id": "hls_aac_96k",
+   "protocol": "m3u8_native",
+   "ext": "m4a",
+   "acodec": "mp4a.40.2",
+   "vcodec": "none",
+   "abr": 96,
+   "container": "m4a_dash",
+   "url": "https://playback.media-streaming.soundcloud.cloud/TRACK/aac_96k/UUID/playlist.m3u8?expires=2000000000&Policy=P&Signature=S&Key-Pair-Id=K"
+  },
+  {
+   "format_id": "hls_aac_160k",
+   "protocol": "m3u8_native",
+   "ext": "m4a",
+   "acodec": "mp4a.40.2",
+   "vcodec": "none",
+   "abr": 160,
+   "container": "m4a_dash",
+   "url": "https://playback.media-streaming.soundcloud.cloud/TRACK/aac_160k/UUID/playlist.m3u8?expires=2000000000&Policy=P&Signature=S&Key-Pair-Id=K"
+  }
+ ],
+ "hls_aac_only": [
+  {
+   "format_id": "hls_aac_96k",
+   "protocol": "m3u8_native",
+   "ext": "m4a",
+   "acodec": "mp4a.40.2",
+   "vcodec": "none",
+   "abr": 96,
+   "container": "m4a_dash",
+   "url": "https://playback.media-streaming.soundcloud.cloud/TRACK/aac_96k/UUID/playlist.m3u8?expires=2000000000&Policy=P&Signature=S&Key-Pair-Id=K"
+  },
+  {
+   "format_id": "hls_aac_160k",
+   "protocol": "m3u8_native",
+   "ext": "m4a",
+   "acodec": "mp4a.40.2",
+   "vcodec": "none",
+   "abr": 160,
+   "container": "m4a_dash",
+   "url": "https://playback.media-streaming.soundcloud.cloud/TRACK/aac_160k/UUID/playlist.m3u8?expires=2000000000&Policy=P&Signature=S&Key-Pair-Id=K"
+  }
+ ]
+}

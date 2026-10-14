@@ -74,6 +74,8 @@ async def _connect(
     last: int | None = None                       # HTTP-статус последней неудачи или None (нет соединения)
     for _attempt in range(2):
         res = await resolver._resolve(rs, source, track_id)
+        if res.kind != resolver.PROGRESSIVE:
+            raise hls_required()
         headers = {**res.headers, "Accept-Encoding": "identity", "Range": upstream_range}
         try:
             upstream = await client.send(
@@ -102,6 +104,15 @@ async def _connect(
 
 class UpstreamBroken(Exception):
     """Источник оборвал тело ответа раньше, чем передал всё объявленное (N2)."""
+
+
+def hls_required() -> Exception:
+    """
+    Трек доступен только как HLS (S8). Адрес progressive-потока никогда не отдаёт плейлист m3u8 под видом
+    аудиофайла: плеер получает HLS через /api/stream/{source}/{id}/playback, загрузчик — свой путь (downloads).
+    """
+    return errors._err(409, "hls_required", "Этот трек передаётся по HLS: его воспроизводит плеер Wave, прямой "
+                                            "аудиофайл недоступен.")
 
 
 async def _body(upstream: httpx.Response, expected: int | None = None) -> AsyncIterator[bytes]:
@@ -203,6 +214,10 @@ async def _prefetch_head(client: httpx.AsyncClient, rs: resolver.ResolverState, 
     key = f"{source}:{track_id}"
     t0 = time.monotonic()
     try:
+        res = await resolver._resolve(rs, source, track_id)
+        if res.kind != resolver.PROGRESSIVE:
+            log.info("Прогрет %s: HLS-поток, ссылка получена за %.1f с", key, time.monotonic() - t0)
+            return                                # для HLS прогрев = готовая ссылка; «голова» не нужна
         upstream = await _connect(client, rs, source, track_id, f"bytes=0-{STREAM_CHUNK_BYTES - 1}")
         try:
             m = ranges.CONTENT_RANGE_RE.fullmatch(upstream.headers.get("content-range", ""))

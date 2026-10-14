@@ -94,10 +94,11 @@ def _backend():
     import stream
     import userdata
     from providers import soundcloud as sc_provider, youtube_music as yt_provider
+    from streaming import hls_proxy, netguard
     return {"catalog": catalog, "downloads": downloads, "jsruntime": jsruntime, "library": library, "lyrics": lyrics,
             "main": main, "paths": paths, "playlists": playlists, "providers": providers, "recs": recs,
             "soundcloud": soundcloud, "sc_provider": sc_provider, "stream": stream, "userdata": userdata,
-            "yt_provider": yt_provider}
+            "yt_provider": yt_provider, "hls_proxy": hls_proxy, "netguard": netguard}
 
 
 # Статус JS-runtime по умолчанию в тестах: «исправен» (как в правильно собранном приложении), чтобы тесты
@@ -122,6 +123,7 @@ def reset_backend_state() -> None:
     # с S2b создаёт и закрывает lifespan (app.state.resolver), сбрасывать его здесь не нужно.
     st._cache.clear()
     st._heads.clear()
+    m["hls_proxy"].clear()                               # S8: сеансы HLS-прокси (токены) — тоже данные процесса
     m["catalog"]._artist_cache.clear()
     m["lyrics"]._cache.clear()
     m["downloads"].jobs.clear()

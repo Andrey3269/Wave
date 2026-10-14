@@ -33,6 +33,7 @@ SC_ID_RE = re.compile(r"^\d{1,15}$")                  # числовой id тр
 DEFAULT_TTL = 30 * 60             # TTL ссылки, если в ней нет параметра expire
 EXPIRY_MARGIN = 120               # обновляем ссылку за 2 минуты до истечения
 MAX_PARALLEL_RESOLVES = 4         # одновременных запусков yt-dlp
+HLS_PARALLEL = 6                  # одновременных соединений HLS-прокси с источником
 
 # Из заголовков yt-dlp оставляем только безопасные. Accept-Encoding задаём сами:
 # сжатие вместе с Range ломает подсчёт байтов.
@@ -41,12 +42,18 @@ FORWARD_HEADERS = {"user-agent", "accept", "accept-language", "referer", "origin
 
 @dataclass(frozen=True)
 class Source:
-    """Описание источника: как строить URL для yt-dlp и какой формат брать."""
+    """
+    Описание источника: как строить URL для yt-dlp и какой формат брать.
+
+    hls=False — источник играет только прогрессивный файл (выбор формата делает yt-dlp по `fmt`, HLS/DASH
+    YouTube отключены в ydl_opts); hls=True — формат выбирает choose_format: прогрессивный, если есть,
+    иначе HLS (S8, N4). Фронтенд держит тот же признак в PROGRESSIVE_ONLY (frontend/app.js).
+    """
     label: str
     page_url: Callable[[str], str]
     id_re: re.Pattern
     fmt: str
-    progressive_only: bool = False   # нужен обычный HTTP-файл (HLS через Range не проксируется)
+    hls: bool = False
 
 
 SOURCES: dict[str, Source] = {
@@ -61,11 +68,15 @@ SOURCES: dict[str, Source] = {
         label="SoundCloud",
         page_url=lambda i: f"https://api.soundcloud.com/tracks/{i}",
         id_re=SC_ID_RE,
-        # только прогрессивный mp3 по http(s); HLS-варианты (m3u8) пропускаем
-        fmt="bestaudio[protocol=https]/bestaudio[protocol=http]",
-        progressive_only=True,
+        # Любой формат, лишь бы yt-dlp не падал с «Requested format is not available», когда SoundCloud
+        # не предложил прогрессивный mp3 (N4); сам поток выбирает choose_format по полному списку форматов.
+        fmt="bestaudio/best",
+        hls=True,
     ),
 }
+
+PROGRESSIVE = "progressive"
+HLS = "hls"
 
 
 @dataclass(slots=True)
@@ -76,9 +87,21 @@ class Resolved:
     # Источник отдал только фрагмент (SoundCloud Go+: 30-секундный превью, format_id yt-dlp с «preview»).
     # Загрузка такой трек не сохраняет (download_policy, S5); воспроизведение этим полем не управляется.
     preview: bool = False
+    # S8: тип потока. progressive — обычный файл (Range-прокси, <audio src>), hls — плейлист m3u8 (только
+    # HLS-прокси и hls.js; через Range-прокси не отдаётся никогда). codec — mp3 | aac | None (неизвестен).
+    kind: str = PROGRESSIVE
+    codec: str | None = None
 
     def alive(self) -> bool:
         return time.time() < self.expires_at
+
+
+class HlsEncrypted(Exception):
+    """Источник предложил только зашифрованные (AES/DRM) варианты."""
+
+
+class NoPlayableFormat(Exception):
+    """Ни один формат источника Wave воспроизвести не может (например, только Opus-HLS)."""
 
 
 # Ссылки — просто данные: они не привязаны к event loop и переживают перезапуск uvicorn сторожем
@@ -101,6 +124,8 @@ class ResolverState:
     def __init__(self, max_parallel: int = MAX_PARALLEL_RESOLVES):
         self.loop = asyncio.get_running_loop()            # создаётся только внутри работающего цикла
         self.sem = asyncio.Semaphore(max_parallel)
+        # S8: одновременных соединений HLS-прокси с источником (плейлисты и сегменты; ждём только заголовки)
+        self.hls_sem = asyncio.Semaphore(HLS_PARALLEL)
         self.inflight: dict[str, asyncio.Task[Resolved]] = {}
         self.prefetching: set[str] = set()
         self.background: set[asyncio.Task] = set()
@@ -133,12 +158,17 @@ class ResolverState:
 
 
 def _url_expiry(url: str) -> float:
-    """У googlevideo в ссылке есть ?expire=<unix>. Если нет — берём TTL по умолчанию."""
-    try:
-        exp = int(parse_qs(urlparse(url).query).get("expire", [""])[0])
-        return exp - EXPIRY_MARGIN
-    except ValueError:
-        return time.time() + DEFAULT_TTL
+    """
+    У googlevideo в ссылке есть ?expire=<unix>, у плейлистов SoundCloud — ?expires=<unix>. Если нет — берём
+    TTL по умолчанию.
+    """
+    q = parse_qs(urlparse(url).query)
+    for name in ("expire", "expires"):
+        try:
+            return int(q.get(name, [""])[0]) - EXPIRY_MARGIN
+        except ValueError:
+            continue
+    return time.time() + DEFAULT_TTL
 
 
 def ydl_opts(fmt: str = "bestaudio/best") -> dict:
@@ -190,6 +220,77 @@ def _get_ydl(source: str) -> YoutubeDL:
     return ydls[source][0]
 
 
+# ---------------------------------------------------------------------------
+# Выбор формата (S8, N4)
+# ---------------------------------------------------------------------------
+_HLS_PROTOCOLS = ("m3u8", "m3u8_native")
+_PLAYABLE_HLS_CODECS = ("mp3", "aac", None)   # то, что демультиплексирует hls.js (MP3, AAC в fMP4/ADTS/TS)
+
+
+def _codec(f: dict) -> str | None:
+    acodec = str(f.get("acodec") or "").lower()
+    ext = str(f.get("ext") or "").lower()
+    if acodec.startswith("mp3") or (acodec in ("", "none") and ext == "mp3"):
+        return "mp3"
+    if acodec.startswith(("mp4a", "aac")) or (acodec in ("", "none") and ext in ("m4a", "aac", "mp4")):
+        return "aac"
+    if acodec in ("", "none"):
+        return None
+    return acodec.split(".", 1)[0]               # opus, vorbis, flac … — для HLS не подходят
+
+
+def classify(f: dict) -> tuple[str, str | None] | None:
+    """
+    (тип, кодек) формата yt-dlp: ("progressive" | "hls" | "encrypted", кодек) или None — не аудиопоток.
+    Тип определяется по протоколу yt-dlp И адресу: .m3u8 по http(s) — тоже HLS, а не файл.
+    """
+    url = f.get("url")
+    if not url:
+        return None
+    proto = str(f.get("protocol") or "").lower()
+    fid = str(f.get("format_id") or "").lower()
+    if f.get("has_drm") or fid.startswith("hls-aes") or "encrypted" in fid or proto.startswith(("ctr-", "cbc-")):
+        return ("encrypted", None)
+    path = urlparse(url).path.lower()
+    if proto in _HLS_PROTOCOLS or path.endswith(".m3u8"):
+        return (HLS, _codec(f))
+    if proto in ("http", "https"):
+        return (PROGRESSIVE, _codec(f))
+    return None                                  # DASH, f4m, ism … — Wave их не проксирует
+
+
+def choose_format(info: dict) -> tuple[dict, str, str | None]:
+    """
+    Формат для воспроизведения и загрузки (один и тот же — правило S5): прогрессивный, если есть; иначе
+    HLS с mp3, затем AAC, затем с неизвестным кодеком. Превью (30-секундные фрагменты) — только если ничего
+    другого нет, как и раньше у yt-dlp (preference -10). Внутри группы — больший битрейт.
+    HlsEncrypted / NoPlayableFormat — если подходящего формата нет.
+    """
+    formats = info.get("formats") or info.get("requested_formats") or [info]
+    best: tuple | None = None
+    encrypted = False
+    for f in formats:
+        kind_codec = classify(f)
+        if kind_codec is None:
+            continue
+        kind, codec = kind_codec
+        if kind == "encrypted":
+            encrypted = True
+            continue
+        if kind == HLS and codec not in _PLAYABLE_HLS_CODECS:
+            continue
+        preview = "preview" in str(f.get("format_id") or "").lower()
+        rank = (preview, 0 if kind == PROGRESSIVE else 1, {"mp3": 0, "aac": 1}.get(codec, 2) if kind == HLS else 0,
+                -(f.get("abr") or f.get("tbr") or 0))
+        if best is None or rank < best[0]:
+            best = (rank, f, kind, codec)
+    if best is None:
+        if encrypted:
+            raise HlsEncrypted("только зашифрованные варианты")
+        raise NoPlayableFormat(", ".join(sorted({str(f.get("format_id")) for f in formats})) or "нет форматов")
+    return best[1], best[2], best[3]
+
+
 def _extract_sync(source: str, track_id: str) -> Resolved:
     """Блокирующий вызов yt-dlp (выполняется в потоке пула _resolve_pool)."""
     cfg = SOURCES[source]
@@ -202,18 +303,24 @@ def _extract_sync(source: str, track_id: str) -> Resolved:
         exc.wave_js_issue = jsruntime.YDL_LOGGER.take_js_issue()
         raise
 
-    # При выборе одного формата url лежит на верхнем уровне; на случай слияния берём первый.
-    fmt = (info.get("requested_formats") or [info])[0]
+    if cfg.hls:
+        fmt, kind, codec = choose_format(info)
+    else:
+        # Формат выбрал yt-dlp (fmt). При выборе одного формата url лежит на верхнем уровне; на случай
+        # слияния берём первый. Источник без HLS играет только прогрессивный файл.
+        fmt = (info.get("requested_formats") or [info])[0]
+        kind_codec = classify(fmt) if fmt.get("url") else None
+        kind, codec = kind_codec if kind_codec else (PROGRESSIVE, None)
+        if kind != PROGRESSIVE:
+            raise errors.StreamUnavailable(f"{cfg.label}: не прогрессивный поток ({fmt.get('protocol')})")
     url = fmt.get("url")
     if not url:
         raise RuntimeError("yt-dlp не вернул прямой URL")
-    if cfg.progressive_only and fmt.get("protocol") not in ("http", "https"):
-        raise errors.StreamUnavailable(f"{cfg.label}: только HLS-поток ({fmt.get('protocol')})")
 
     raw_headers = fmt.get("http_headers") or info.get("http_headers") or {}
     headers = {k: v for k, v in raw_headers.items() if k.lower() in FORWARD_HEADERS}
     return Resolved(url=url, headers=headers, expires_at=_url_expiry(url),
-                    preview="preview" in str(fmt.get("format_id") or "").lower())
+                    preview="preview" in str(fmt.get("format_id") or "").lower(), kind=kind, codec=codec)
 
 
 async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Resolved:
@@ -224,10 +331,19 @@ async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Re
             res = await asyncio.get_running_loop().run_in_executor(
                 _resolve_pool, _extract_sync, source, track_id
             )
-            log.info("Резолв %s занял %.1f с", key, time.monotonic() - t0)
+            log.info("Резолв %s занял %.1f с (%s%s)", key, time.monotonic() - t0, res.kind,
+                     f", {res.codec}" if res.codec else "")
         except errors.StreamUnavailable as exc:
             log.warning("Нет прямого потока %s: %s", key, exc)
             raise errors._err(404, "no_direct_stream", "Для этого трека нет прямого аудиопотока") from exc
+        except HlsEncrypted as exc:
+            log.warning("Только зашифрованный поток %s", key)
+            raise errors._err(403, "hls_encrypted", f"{SOURCES[source].label} передаёт этот трек только в "
+                                                    "зашифрованном виде — Wave такие потоки не воспроизводит.") from exc
+        except NoPlayableFormat as exc:
+            log.warning("Нет воспроизводимого формата %s: %s", key, exc)
+            raise errors._err(404, "no_playable_format", f"{SOURCES[source].label} не предложил формат, который "
+                                                         "Wave умеет воспроизводить.") from exc
         except DownloadError as exc:
             err = errors._runtime_error(source, errors._resolve_error(source, exc),
                                         getattr(exc, "wave_js_issue", None))
