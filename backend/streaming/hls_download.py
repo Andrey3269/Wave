@@ -161,6 +161,7 @@ async def download(client, rs, source: str, track_id: str, dest: Path, job: dict
                         f"длительность {joiner.seconds:.1f} с вместо {expected:.1f} с по плейлисту")
     except containers.ContainerError as exc:
         raise _bad_data(label, exc) from exc
+    job["total"] = job["received"] = dest.stat().st_size        # размер стал известен только в конце
     log.info("HLS-загрузка %s:%s: %s, %d сегментов, %d КБ", source, track_id, container, len(media.segments),
              written // 1024)
     return ".mp3" if container == containers.MP3 else ".m4a"

@@ -1,5 +1,7 @@
 """
-LIVE-5 (TEST_STRATEGY §7, этап S7): SoundCloud без подмен — поиск, прогрессивный поток, отказ API.
+LIVE-5 (TEST_STRATEGY §7, этап S7): SoundCloud без подмен — поиск, поток, отказ API.
+S8: поток может быть прогрессивным или HLS (N4) — проверка потока принимает оба вида (HLS подробно — LIVE-S8,
+tests/live/test_live_hls.py).
 
 По умолчанию НЕ запускается: нужен маркер `-m live` и доступ в сеть.
 
@@ -53,12 +55,27 @@ def test_live5_soundcloud_search():
 
 
 def test_live5_soundcloud_progressive_stream():
-    """Штатный резолвер (yt-dlp) отдаёт прогрессивный поток, CDN отвечает 206 на диапазон."""
+    """
+    Штатный резолвер (yt-dlp) отдаёт воспроизводимый поток. Прогрессивный — CDN отвечает 206 на диапазон
+    (как до S8); HLS (S8, N4) — плейлист m3u8 с сегментами (подробная проверка — LIVE-S8).
+    """
     tid = TARGETS["soundcloud_track_id"]
     t0 = time.monotonic()
-    res = stream._extract_sync("sc", tid)                      # то же извлечение, что у плеера (только http/https)
+    res = stream._extract_sync("sc", tid)                      # то же извлечение, что у плеера
     resolve_s = time.monotonic() - t0
     assert res.url.startswith("http") and not res.preview
+    if res.kind == "hls":
+        async def playlist_head():
+            client = stream.make_http_client()
+            try:
+                r = await client.get(res.url, headers=res.headers)
+                return r.status_code, r.text[:7]
+            finally:
+                await client.aclose()
+        status, head = asyncio.run(playlist_head())
+        assert status == 200 and head == "#EXTM3U"
+        report("LIVE-5 stream", track=tid, kind="hls", codec=res.codec, status=status, resolve_seconds=round(resolve_s, 1))
+        return
 
     async def first_bytes():
         client = stream.make_http_client()                     # тот же клиент, что у прокси приложения
@@ -70,7 +87,7 @@ def test_live5_soundcloud_progressive_stream():
 
     status, size, ctype, crange = asyncio.run(first_bytes())
     assert status == 206 and size == 65536 and crange and crange.startswith("bytes 0-65535/")
-    report("LIVE-5 stream", track=tid, status=status, bytes=size, content_type=ctype,
+    report("LIVE-5 stream", track=tid, kind="progressive", status=status, bytes=size, content_type=ctype,
            total=crange.split("/")[-1], resolve_seconds=round(resolve_s, 1))
 
 

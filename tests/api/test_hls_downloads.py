@@ -55,6 +55,7 @@ def test_mp3_hls_download_and_offline_playback(api):
 
     folder = api.profile.downloads / FOLDER
     audio = (folder / "audio.mp3").read_bytes()
+    assert job["total"] == job["received"] == len(audio)
     assert audio == b"".join(segs) and not audio.startswith(b"#EXTM3U")
     assert sorted(p.name for p in folder.iterdir()) == ["audio.mp3", "metadata.json"]
     meta = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
