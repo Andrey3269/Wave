@@ -103,7 +103,7 @@
 | LIVE-S8 | **PASS**: HLS mp3 и AAC через прокси, загрузка mp3-HLS (5 из 5) и AAC-HLS, 6 из 6 резолвов воспроизводимы | облачная среда |
 | LIVE-8a / 8b | **PASS** | облачная среда |
 | LIVE-1 | артисты — **PASS**; треки и альбомы — **BLOCKED** (как в S7) | облачная среда |
-| Windows 11 / WebView2, ручной чек-лист S8 | **NOT RUN** — нужна машина владельца ([checklists/S8_WINDOWS_CHECK.md](checklists/S8_WINDOWS_CHECK.md)) | — |
+| Windows 11 / WebView2, ручной чек-лист S8 | владелец подтвердил воспроизведение и загрузку YouTube Music и SoundCloud — **PASS**; остальные пункты [checklists/S8_WINDOWS_CHECK.md](checklists/S8_WINDOWS_CHECK.md) отдельно не подтверждены ([reports/S8.md §16](reports/S8.md)) | Windows 11 владельца, собранное приложение; для CDN SoundCloud потребовалась настройка Zapret на машине владельца |
 
 **После доработки S8 по независимому аудиту** (`adfcfd7`, `4539f65`; [reports/S8.md §15](reports/S8.md)):
 
@@ -115,6 +115,9 @@
 | LIVE-S8 mp3 | **BLOCKED**: SoundCloud в день проверки отдавал только AAC-HLS (трек `343609555` и 8 других публичных треков) | облачная среда |
 | LIVE-1 | **BLOCKED / нестабильно** (YouTube Music в этой сети, как в S7) | облачная среда |
 | HLS через настоящий прокси пользователя | **NOT RUN** (туннель проверен на поддельном прокси) | — |
+| CI на `623b50a` ([38564429932](https://github.com/Andrey3269/Wave/actions/runs/38564429932)) и `3eadcba` ([38566178720](https://github.com/Andrey3269/Wave/actions/runs/38566178720)) | **SUCCESS**: Linux, Windows, сборка, установщик; e2e против установленного `Wave.exe` — 144 | GitHub Actions |
+
+Приёмка S8: **ACCEPTED BY OWNER** 2026-10-14 с ограничениями — проверенный коммит `3eadcba`. Статусы BLOCKED и NOT RUN в таблицах выше приёмкой не меняются ([reports/S8.md §16](reports/S8.md)).
 
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
