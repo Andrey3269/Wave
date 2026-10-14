@@ -14,6 +14,9 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
 import { state, current, PAGE, nextSeq, nav } from "./js/state/store.js";
 import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags, applySettings, fetchSettings,
   migrateLocalUi, initThemeFollowSystem } from "./js/state/settings.js";
+import { toast, hideToast } from "./js/components/toast.js";
+import { setBlock, initEmptyRetry, skelRows, skelCards } from "./js/components/skeleton.js";
+import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/components/dialogs.js";
 
 (() => {
   /** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
@@ -31,45 +34,9 @@ import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags,
   const heroTrack = () => current() || state.featured;
   initSettingsSync();
 
-  // ---------- Статус, уведомления, пустые состояния ----------
+  // ---------- Статус и пустые состояния ----------
   function setStatus(text) { state.baseStatus = text; el.status.textContent = text; }
-  let toastTimer = 0;
-  function toast(text, ms = 3600) {
-    el.toast.textContent = text;
-    el.toast.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(hideToast, ms);
-  }
-  function hideToast() { clearTimeout(toastTimer); el.toast.hidden = true; }
-  const flashStatus = toast;                            // совместимость: короткие сообщения теперь тосты
-
-  /** Блок «пусто / ошибка» с необязательной кнопкой «Повторить». */
-  function setBlock(root, text, retry) {
-    $(".empty__t", root).textContent = text || "";
-    $(".empty__retry", root).hidden = !retry;
-    root._retry = retry || null;
-    root.hidden = !text;
-  }
-  document.addEventListener("click", (e) => {
-    const b = e.target.closest(".empty__retry");
-    if (b) b.closest(".empty")?._retry?.();
-  });
-
-  // ---------- Скелетоны (состояние загрузки) ----------
-  const skelRow = () => {
-    const li = mk("li", "row row--skel");
-    const lines = mk("span", "skel__lines");
-    lines.append(mk("span", "skel skel--l1"), mk("span", "skel skel--l2"));
-    li.append(mk("span", "skel skel--cv"), lines);
-    return li;
-  };
-  const skelCard = () => {
-    const d = mk("div", "card card--skel");
-    d.append(mk("span", "skel skel--sq"), mk("span", "skel skel--l1"), mk("span", "skel skel--l2"));
-    return d;
-  };
-  const skelRows = (n = 8) => Array.from({ length: n }, skelRow);
-  const skelCards = (n = 6) => Array.from({ length: n }, skelCard);
+  initEmptyRetry();
 
   // ==========================================================================
   // Экраны и каркас
@@ -1909,58 +1876,7 @@ import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags,
   // ==========================================================================
   // Диалоги (вместо prompt/confirm браузера)
   // ==========================================================================
-  /** Диалог ввода текста: Promise со строкой или null. */
-  function askText(title, value = "", okText = "Готово") {
-    return new Promise((resolve) => {
-      el.dlgTitle.textContent = title;
-      el.dlgInput.value = value;
-      el.dlgOk.textContent = okText;
-      const done = () => {
-        el.dlg.removeEventListener("close", done);
-        resolve(el.dlg.returnValue === "ok" ? (el.dlgInput.value.trim() || null) : null);
-      };
-      el.dlg.addEventListener("close", done);
-      el.dlg.returnValue = "cancel";
-      el.dlg.showModal();
-      el.dlgInput.select();
-    });
-  }
-  /** Подтверждение: Promise<boolean>. */
-  function askConfirm({ title, text = "", ok = "Удалить" }) {
-    return new Promise((resolve) => {
-      el.dcTitle.textContent = title;
-      el.dcText.textContent = text;
-      el.dcOk.textContent = ok;
-      const done = () => { el.dlgConfirm.removeEventListener("close", done); resolve(el.dlgConfirm.returnValue === "ok"); };
-      el.dlgConfirm.addEventListener("close", done);
-      el.dlgConfirm.returnValue = "cancel";
-      el.dlgConfirm.showModal();
-    });
-  }
-  /** Выбор плейлиста: Promise с id плейлиста, "new" или null. */
-  function pickPlaylist() {
-    return new Promise((resolve) => {
-      const dlg = el.dlgPick;
-      el.pickList.replaceChildren(mk("p", "pick__hint", "Загружаем…"));
-      const done = () => { dlg.removeEventListener("close", done); resolve(dlg.returnValue && dlg.returnValue !== "cancel" ? dlg.returnValue : null); };
-      dlg.addEventListener("close", done);
-      dlg.returnValue = "cancel";
-      dlg.showModal();
-      api("/api/playlists").then((d) => d.items).catch(() => []).then((items) => {
-        const item = (text, id, ico) => {
-          const b = mk("button", "pick__item");
-          b.type = "button"; b.dataset.pl = id;
-          b.append(icon(ico), mk("span", null, text));
-          return b;
-        };
-        el.pickList.replaceChildren(item("Новый плейлист…", "new", "i-plus"), ...items.map((p) => item(`${p.name} (${p.count})`, String(p.id), "i-playlists")));
-      });
-    });
-  }
-  el.pickList.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-pl]");
-    if (b) el.dlgPick.close(b.dataset.pl);
-  });
+  initPickPlaylist();
 
   // ==========================================================================
   // Меню трека
