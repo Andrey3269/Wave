@@ -30,12 +30,19 @@ backend/
     soundcloud.py        API-клиент + нормализация (_normalize_sc, _sc_*), политика атрибуции
     policy.py            матрица возможностей источников (download_allowed, mixing_allowed …)
   jsruntime.py           поиск и проверка JS-runtime для yt-dlp (раздел 4)
-  streaming/
-    ranges.py            чистые функции: parse_range, cap_range, serve_from_head
-    resolver.py          класс Resolver: кэш URL, inflight, семафор — создаётся в lifespan
-    proxy.py             _connect/_body, перерезолв протухших ссылок
-    local.py             локальные файлы (FileResponse, MIME)
-    router.py            /api/stream/{source}/{id} (GET + HEAD), ?warm=1
+  streaming/             (S8, сделано — §7)
+    config.py            YTDLP_COOKIES / YTDLP_PROXY
+    errors.py            тексты ошибок S2d, X-Wave-Error
+    ranges.py            чистые функции: parse_single, cap, is_valid_for_file
+    resolver.py          yt-dlp, кэш URL, inflight, ResolverState (lifespan), classify / choose_format
+    proxy.py             progressive: _connect/_body, перерезолв, прогрев, HEAD, обрыв источника (N2)
+    local.py             локальные файлы (FileResponse, MIME, битый Range игнорируется)
+    netguard.py          защита HLS-прокси от SSRF
+    hls.py               разбор и переписывание плейлистов
+    hls_proxy.py         сеансы-токены, плейлисты и сегменты через backend
+    hls_download.py      загрузка HLS-only трека
+    containers.py        проверка MPEG audio и fMP4 перед сохранением
+    router.py            /api/stream/{source}/{id} (GET, HEAD, /playback, ?warm=1), /api/stream/hls/...
   persistence/
     db.py                соединение, PRAGMA, transaction(), бэкап
     migrations.py        список миграций, PRAGMA user_version
@@ -54,7 +61,7 @@ backend/
 | `main.py` (Track, нормализация, поиск, кэш) | `domain/models.py`, `providers/*`, `services/search.py`, `api/search.py` | `main.py` становится тонкой композицией |
 | `catalog.py` | `providers/*` (вызовы источников), `services/catalog.py`, `api/catalog.py` | `_artist_cache` → ограниченный LRU+TTL |
 | `soundcloud.py` | `providers/soundcloud.py` | приватные методы yt-dlp — только как временный путь с флагом, см. раздел 6 |
-| `stream.py` | `streaming/*` | глобальные `_cache/_inflight/_resolve_sem` → `app.state.resolver` (исправляет M1) |
+| `stream.py` | `streaming/*` | глобальные `_cache/_inflight/_resolve_sem` → `app.state.resolver` (исправляет M1, S2b); разделение на модули — **сделано в S8**, `stream.py` оставлен фасадом совместимости (прежние имена и monkeypatch в тестах) |
 | `recs.py` | `services/recommendations.py` | + `failed_sources`, сигналы исключения (S14) |
 | `library.py`, `userdata.py`, `playlists.py` | `persistence/*`, `services/*`, `api/*` | `_q` остаётся адаптером на время перехода |
 | `downloads.py` | `jobs/downloads.py`, `api/downloads.py` | отмена, лимит, политика источника |
@@ -190,7 +197,7 @@ class MusicProvider(Protocol):
 ### Реализация (S7, ветка `claude/s7-provider-adapters`, подробности — [reports/S7.md](reports/S7.md))
 
 **Интерфейс.** Базовый класс `providers.base.Provider` (не `Protocol`: общая логика пула и cooldown в нём). Методы адаптеров принимают `state` (`app.state`, в нём клиент ytmusicapi текущего запуска) и `timeout`:
-`search_tracks(state, q, limit, offset=0)`, `search_cards(state, kind, q, limit, offset) -> (items, has_more)`, `artist_info(state, id) -> (info, degraded)`, `artist_tracks(state, id, info, offset, limit) -> (tracks, has_more)`, `album(state, id, playlist_id) -> (card, tracks, unavailable, degraded)`, `radio(state, track_id, n)`. У SoundCloud дополнительно `search_tracks_plain` — прежний запрос рекомендаций (`search/tracks {q, limit}`). Ответы — прежние `Track` и карточки, не модели `Page[T]`: формы ответов API не менялись. Поток (`stream_page_url`) остаётся в `stream.SOURCES` до S8.
+`search_tracks(state, q, limit, offset=0)`, `search_cards(state, kind, q, limit, offset) -> (items, has_more)`, `artist_info(state, id) -> (info, degraded)`, `artist_tracks(state, id, info, offset, limit) -> (tracks, has_more)`, `album(state, id, playlist_id) -> (card, tracks, unavailable, degraded)`, `radio(state, track_id, n)`. У SoundCloud дополнительно `search_tracks_plain` — прежний запрос рекомендаций (`search/tracks {q, limit}`). Ответы — прежние `Track` и карточки, не модели `Page[T]`: формы ответов API не менялись. Поток остаётся в `streaming/resolver.py:SOURCES` (S8; признак `hls` — может ли источник отдавать HLS).
 
 **Возможности** (`Capabilities`, фактическое поведение Wave, не разрешение платформы): `search_tracks`, `search_artists`, `search_albums`, `artist_page`, `album_page`, `radio`, `stream`, `download` (ADR-10, решает `download_policy.py`), `attribution_required` (SoundCloud — да; Wave показывает автора и ссылку `url`, логотипа нет), `mixing_allowed` (оба — да: так работает Wave; условия API SoundCloud это запрещают, см. §6).
 
@@ -202,7 +209,7 @@ class MusicProvider(Protocol):
 
 **Статусы.** `source_status` в `/api/search`, `/api/search/{kind}`, `/api/artist/...`, `/api/album/...` и в теле ошибок источника: `ok`, `degraded` (страница собрана не полностью, источник занят или упал без паузы), `cooldown`, `disabled` (выключен `SEARCH_SOURCES`, только поиск треков). `/api/recommendations` сохраняет статусы S2 (`ok | partial | failed`). `GET /api/sources` — сводка по источникам (статус, остаток паузы, тип последней ошибки, загрузка пула, возможности).
 
-**Кэши.** Поиск — 256 × 300 с, страницы артистов — 32 × 600 с (неполная страница не кэшируется), тексты — 512 × 24 ч (временный сбой LRCLIB не кэшируется). `stream._cache` (ссылки на поток) остаётся в S8: ограничивается по сроку ссылок, а не по числу.
+**Кэши.** Поиск — 256 × 300 с, страницы артистов — 32 × 600 с (неполная страница не кэшируется), тексты — 512 × 24 ч (временный сбой LRCLIB не кэшируется). `streaming.resolver._cache` (ссылки на поток) ограничивается по сроку ссылок, а не по числу; HLS-сеансы (S8) — ≤ 16, 30 мин простоя, 6 ч.
 
 ## 6. Политика источников и скачивание
 
@@ -215,7 +222,7 @@ class MusicProvider(Protocol):
 | | YouTube Music (`yt`) | SoundCloud (`sc`) |
 |---|---|---|
 | Условие | `stream._resolve` вернул поток — тот же резолвер, кэш ссылок, JS-runtime и обработка ошибок, что у плеера | то же; поток не фрагмент (`Resolved.preview` = `False`) |
-| Что сохраняется | поток резолвера в исходном формате (обычно `.m4a`) | прогрессивный поток в исходном формате (обычно `.mp3`) |
+| Что сохраняется | поток резолвера в исходном формате (обычно `.m4a`) | поток плеера: прогрессивный в исходном формате (обычно `.mp3`) или, с S8, HLS — проверенные и собранные сегменты: mp3-HLS → `.mp3`, fMP4 (AAC) → `.m4a` (`streaming/hls_download.py`, `containers.py`) |
 | Не проверяется | лицензия (Creative Commons) | `downloadable`, `has_downloads_left`, исходный файл автора |
 | Подтверждено живой проверкой | LIVE-8a **PASS** 2026-10-13 (через прокси среды): загрузка, «Скачанные», воспроизведение с диска | LIVE-8b **PASS** 2026-10-13 (через прокси среды): то же |
 
@@ -223,7 +230,9 @@ class MusicProvider(Protocol):
 
 | `code` | Когда | Окончательный (UI не предлагает повторить) |
 |---|---|---|
-| `unavailable`, `age_restricted`, `no_direct_stream` | поток трека штатно не получить (удалён, приватный, ограничен по возрасту, только HLS) — те же текст и код, что у плеера | да |
+| `unavailable`, `age_restricted`, `no_direct_stream`, `no_playable_format`, `hls_encrypted` | поток трека штатно не получить (удалён, приватный, ограничен по возрасту; с S8 «только HLS» больше не причина — отказ только для форматов, которые Wave не играет: Opus-HLS, зашифрованные) — те же текст и код, что у плеера | да |
+| `hls_container_unsupported`, `hls_live` (S8) | HLS с сегментами MPEG-TS или неизвестным контейнером (воспроизводится, но без перепаковки ffmpeg файл не собрать), прямая трансляция | да |
+| `hls_bad_segment`, `upstream_blocked`, `hls_changed` (S8) | данные сегмента не прошли проверку контейнера или длительности; адрес из плейлиста отклонён защитой от SSRF; поток сменился во время загрузки | нет, UI предлагает повторить |
 | `preview_only` | источник отдаёт лишь фрагмент: SoundCloud Go+ (yt-dlp помечает формат `…_preview`). Фрагмент не сохраняется под видом полного трека | да |
 | `bot_check`, `rate_limited`, `network`, `proxy`, `extractor`, `resolve_failed`, `js_runtime`, `js_runtime_failed`, `internal` | временные сбои резолвера, CDN или приложения | нет, UI предлагает повторить |
 
@@ -245,13 +254,15 @@ class MusicProvider(Protocol):
 
 ## 7. Стриминг
 
-- `streaming/ranges.py` — чистые функции без I/O:
-  - `parse_range(header, size | None) -> Full | Partial(start, end) | Suffix(n) | Unsatisfiable | Ignored`;
-  - битый заголовок → `Ignored` (200 по RFC 9110);
-  - `cap_range` и `serve_from_head` — как сейчас.
-- Поддержка `HEAD` для стрима (сейчас 404).
-- Логика перерезолва (401/403/404/410), отдача 206 порциями по 1 МБ и прогрев не меняются по поведению. Меняется структура и появляется тестируемость.
-- Метрики в диагностике: время резолва, процент перерезолвов, попадания head-кэша.
+**Сделано в S8** (ветка `claude/s8-hls-playback`, [reports/S8.md](reports/S8.md)).
+
+- **Range** (`ranges.py`): `parse_single` — один диапазон или «игнорировать» (битый, пустой `bytes=-`, конец раньше начала, несколько диапазонов → 200 по RFC 9110); `cap` — обрезка до порции 1 МБ, суффикс без изменений; `is_valid_for_file` — проверка для `FileResponse` (верный multipart остаётся multipart). Перерезолв (401/403/404/410), отдача 206 порциями, прогрев — без изменений поведения.
+- **HEAD** — отдельный маршрут: 200 и заголовки всего ресурса без тела (локальный файл, прогретая «голова» или запрос `bytes=0-0`), Range для HEAD не применяется.
+- **N2** — байты отдаются по мере получения; обрыв источника (`UpstreamBroken`) прерывает ответ без завершающего сообщения ASGI, клиент видит неполный ответ и запрашивает продолжение.
+- **Тип потока.** `Resolved.kind` = `progressive` | `hls`, `codec`. YouTube — только progressive (выбор yt-dlp не менялся). SoundCloud — `choose_format`: progressive → HLS mp3 → HLS AAC; Opus-HLS и зашифрованные — не выбираются. Progressive-адрес для HLS-трека отвечает 409 `hls_required`: m3u8 никогда не проксируется как аудиофайл.
+- **HLS.** `GET /api/stream/{source}/{id}/playback` → `{kind, url}`; для HLS — сеанс с непрозрачным токеном и проверенный корневой плейлист. `GET /api/stream/hls/{token}/{pl}.m3u8` и `/{pl}/sSEQ`, `/{pl}/mN` — плейлисты с адресами прокси и сегменты потоком; `DELETE` освобождает сеанс. Фронтенд играет HLS через закреплённый hls.js 1.7.3 (light, без EME) из `frontend/vendor/` в тот же `<audio>`; источники без HLS (`PROGRESSIVE_ONLY`) — как раньше, без лишнего запроса.
+- **Ресурсы.** Сеансов ≤ 16 (30 мин простоя, 6 ч), один на трек; плейлист ≤ 2 МБ / 20 с; ≤ 6 соединений с источником на запуск; сегменты — потоком. Фронтенд при смене трека отменяет запрос, уничтожает экземпляр hls.js и освобождает сеанс; восстановление — не больше 2 перезапусков с той же позиции.
+- Метрики в диагностике (время резолва, доля перерезолвов, попадания head-кэша, сеансы HLS) — не сделано, S16.
 
 ## 8. Хранилище
 
@@ -297,6 +308,7 @@ class MusicProvider(Protocol):
   - необязательные `explicit`, `plays`, `released` добавляются в модель (исправление M6).
 - Существующие невалидные строки не удаляются: при чтении они фильтруются из ответа и пишутся в журнал.
 - `applog`: маскирование применяется и к тексту трейсбека; query-параметры URL googlevideo в журнал не пишутся.
+- **HLS-прокси (S8, сделано):** фронтенд не передаёт адресов источника — только токен сеанса, выданный для трека, который проверило само приложение; ресурсы адресуются номерами. Каждый запрос к источнику и каждый редирект проходят `streaming/netguard.py`: только https, без логина в адресе, все IP имени публичные (запрещены loopback, частные, link-local включая метаданные облака, CGNAT, multicast/reserved и встроенные в IPv6 IPv4). В журнал — только хосты. Остаточный риск — DNS rebinding между проверкой и соединением; progressive-прокси по-прежнему ходит по адресам yt-dlp без netguard.
 
 ## 11. Фронтенд
 
@@ -382,3 +394,4 @@ frontend/js/
 | ADR-9 | Названия подборок описательные; утверждение о персонализации — только при реально работающем алгоритме | **принято** 2026-10-12 |
 | ADR-10 | Прежнее поведение Wave: скачивается трек YouTube Music или SoundCloud, поток которого штатно получен для воспроизведения, в исходном формате; без проверки лицензии и `downloadable`; отказ на backend с понятной причиной, если поток недоступен или это лишь фрагмент (Go+); без входа в аккаунты и обхода DRM, платного доступа и антибот-защиты; существующие загрузки не затрагиваются. Не является разрешением платформ (§6) | **принято**: реализовано на S5 (ветка `claude/s5-downloads`, не слита), **S5 принят владельцем 2026-10-13**. Промежуточный вариант S5 (только Creative Commons / `downloadable`) отменён владельцем 2026-10-13 |
 | ADR-11 | SoundCloud остаётся на неофициальном API v2 через внутренние методы yt-dlp, изолированном в `providers/soundcloud.py` (свой пул, таймауты, cooldown 300 с), пока владелец не выберет одно из: (а) так и оставить, принимая риск поломки и несоответствия условиям; (б) официальный API: подписка Artist Pro, собственный сервер-посредник для секрета, отказ от загрузок SoundCloud и от смешанной с YouTube очереди; (в) отключить SoundCloud в распространяемой сборке | **предложено** в S7 (2026-10-13), ждёт решения владельца. До решения поведение не меняется |
+| ADR-12 | HLS (S8): воспроизведение через backend-прокси (токены сеанса, защита от SSRF, адреса источника не попадают во фронтенд) и закреплённый локальный hls.js 1.7.3 (light, Apache-2.0) в том же `<audio>`, без CDN; загрузка HLS-only — проверенные сегменты в `.mp3` / `.m4a`; зашифрованный HLS (METHOD ≠ NONE) и сохранение MPEG-TS не поддерживаются — честные ошибки | **реализовано в S8** по заданию владельца (hls.js и backend-прокси); отказ от зашифрованного HLS и от сохранения TS — решение исполнителя, ждёт подтверждения владельца при приёмке S8 |

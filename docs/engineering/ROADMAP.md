@@ -198,14 +198,16 @@ graph TD
 
 Закрывает L2 и структуру M1. Зависит от S7.
 
+**Статус: выполнено 2026-10-14, ветка `claude/s8-hls-playback` (от принятого S7, `b1ba727`); отчёт — [reports/S8.md](reports/S8.md). Ожидает решения владельца (READY FOR OWNER ACCEPTANCE); ручные проверки на Windows 11 / WebView2 — NOT RUN ([checklists/S8_WINDOWS_CHECK.md](checklists/S8_WINDOWS_CHECK.md)).** Итог: `backend/streaming/` (ranges, resolver, proxy, local, router + config, errors, netguard, hls, hls_proxy, hls_download, containers), `stream.py` — фасад совместимости. L2: битый и пустой Range → 200, `HEAD` → 200 (сняты 3 xfail). N2: байты не теряются, обрыв прерывает ответ. N4: SoundCloud без прогрессивного потока играет по HLS — `/api/stream/{source}/{id}/playback`, HLS-прокси с токенами сеанса и защитой от SSRF, hls.js 1.7.3 (light) в `frontend/vendor/`; HLS-only треки скачиваются как проверенные `.mp3` / `.m4a`. pytest 1209 + 9 skipped + 1 xfail, e2e 144 + 27, `run_checks.py` 7/7; LIVE-3, LIVE-5, LIVE-S8, LIVE-8a/8b — PASS; LIVE-1 треки/альбомы — BLOCKED (как в S7). Отклонения: повторного резолва «за прогрессивным форматом» нет (HLS играет сразу); зашифрованный HLS и сохранение MPEG-TS не поддерживаются (честные ошибки); AAC-HLS в браузере автоматически не проверен (Chromium из Playwright без AAC).
+
 - **Изменения.** `streaming/ranges.py` (чистые функции), `resolver.py`, `proxy.py`, `local.py`, `router.py`. Поддержка `HEAD`; битый Range → 200.
 - **Наблюдение S7 (N4).** SoundCloud отдаёт прогрессивный mp3 лишь в части ответов (живая проверка 2026-10-13: 4 из 9 резолвов), в остальных — только HLS. Плеер требует прогрессивный поток (`progressive_only`), поэтому резолв падает с `Requested format is not available`, а пользователь видит неверный текст «изменил формат ответа / yt-dlp устарел» (`extractor`). Решить: повторный резолв при отсутствии прогрессивного формата, честный тип ошибки, оценить поддержку HLS. Затрагивает и загрузки SoundCloud (S5).
 - **Тесты.** Все тесты стрима; снимаются xfail L2: `test_stream_proxy.py::test_empty_range_is_not_forwarded`, `test_stream_local.py::test_malformed_range_is_ignored`, `test_stream_local.py::test_head_request_supported`; LIVE-3. **N2** (наблюдение S1): `test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` переводится с «как есть» на ожидаемое поведение.
 - **Критерии приёмки.**
-  1. Поведение 200/206/416 и перерезолва идентично зафиксированному в S1; тексты и типы ошибок (`X-Wave-Error`) — как в S2d.
-  2. `HEAD` → 200 с заголовками.
-  3. e2e: seek, pause/resume, переключение, локальные файлы — PASS.
-  4. **N2:** при обрыве CDN посередине ответа уже полученные байты отдаются клиенту полностью (нет потери до 64 КБ), ответ завершается так, что плеер корректно запрашивает продолжение.
+  1. Поведение 200/206/416 и перерезолва идентично зафиксированному в S1; тексты и типы ошибок (`X-Wave-Error`) — как в S2d. — **PASS** (прежние тесты без изменений; новые типы ошибок только добавлены)
+  2. `HEAD` → 200 с заголовками. — **PASS**
+  3. e2e: seek, pause/resume, переключение, локальные файлы — PASS. — **PASS** (144 + 27; плюс браузерные тесты HLS с настоящим backend)
+  4. **N2:** при обрыве CDN посередине ответа уже полученные байты отдаются клиенту полностью (нет потери до 64 КБ), ответ завершается так, что плеер корректно запрашивает продолжение. — **PASS** (проверено на настоящем uvicorn, с длиной и chunked)
 
 ### S9. Декомпозиция `frontend/app.js`
 
@@ -306,7 +308,7 @@ graph TD
 | S4 | WIN-1…4, 8, 9, 13, 15 — **обязательно** | — |
 | S5 | WIN-14 (загрузка и воспроизведение с диска в собранном приложении) — по возможности | LIVE-8a (загрузка YouTube Music), LIVE-8b (загрузка SoundCloud) |
 | S7 | WIN-10 | LIVE-1, LIVE-5 |
-| S8 | — | LIVE-3 |
+| S8 | ручной чек-лист WebView2 ([checklists/S8_WINDOWS_CHECK.md](checklists/S8_WINDOWS_CHECK.md)) | LIVE-3, LIVE-S8 |
 | S10 | WIN-11 | — |
 | S11 | WIN-14 | — |
 | S14 | — | LIVE-7 |
@@ -328,4 +330,5 @@ graph TD
 | S5 | **выполнено и принято владельцем 2026-10-13** | `claude/s5-downloads` (не слита) | [reports/S5.md](reports/S5.md); прежнее поведение: скачивается поток, который играет плеер; pytest 712 + 10 xfail, e2e 136 + 27 (Chromium); LIVE-8a/8b PASS; загрузки YouTube Music и SoundCloud проверены владельцем; `main` не менялся |
 | S6 | **выполнено и принято владельцем 2026-10-13** | `claude/s6-sqlite` (не слита, `34bb073`) | [reports/S6.md](reports/S6.md); pytest 765 + 7 xfail, e2e 137 + 27; CI 38431447697 PASS; обновление установленного приложения на Windows 11 проверено владельцем; `main` не менялся |
 | S7 | **выполнено и принято владельцем 2026-10-14 с ограничениями** | `claude/s7-provider-adapters` (от `34bb073`, не слита; проверен `2f731f8`) | [reports/S7.md](reports/S7.md) §10; pytest 888 + 9 skipped + 6 xfail, e2e 137 + 27, `run_checks.py` 7/7; CI 38500085142 SUCCESS на `2f731f8` (Linux, Windows, сборка и установщик; ранее 38445324705 на `8ef3469`); M2, M3, M9 закрыты, M10 изолирован, не устранён (ADR-11 за владельцем); LIVE-1 частично (треки/альбомы BLOCKED), LIVE-5 поиск/отказ PASS, поток FAIL нестабильно 7 из 18 (N4); WIN-10 NOT RUN; `main` не менялся |
-| S8–S19 | не начато | — | S8 начинается только по отдельной команде владельца |
+| S8 | **выполнено 2026-10-14, ожидает решения владельца** (READY FOR OWNER ACCEPTANCE) | `claude/s8-hls-playback` (от `b1ba727`, не слита) | [reports/S8.md](reports/S8.md); HLS SoundCloud (воспроизведение и загрузка), L2, N2, N4; pytest 1209 + 9 skipped + 1 xfail, e2e 144 + 27, `run_checks.py` 7/7; CI SUCCESS (Linux, Windows, сборка, установщик; e2e против установленного `Wave.exe` — 144); LIVE-3, LIVE-5, LIVE-S8, LIVE-8a/8b — PASS, LIVE-1 треки/альбомы — BLOCKED; ручные проверки Windows 11 / WebView2 — NOT RUN; M10/ADR-11 без изменений; `main` не менялся |
+| S9–S19 | не начато | — | S9 начинается только по отдельной команде владельца |
