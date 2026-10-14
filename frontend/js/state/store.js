@@ -1,0 +1,64 @@
+// Единое состояние интерфейса и навигация «Назад». Без DOM.
+// Кто чем владеет: экраны пишут в state поля своего экрана (list, cards, view...), плеер — поля воспроизведения.
+
+export const PAGE = 20;                                   // размер страницы ленты, поиска, истории
+
+export const state = {
+  list: [],          // то, что показано на экране (список треков текущей страницы)
+  queue: [],         // то, что играет (одна очередь на всё приложение)
+  queueOwned: false, // true после первой правки очереди: тогда это уже собственная копия
+  index: -1,         // позиция в queue
+  queueLabel: "",    // откуда играет очередь («Подобрано по вашей истории», название альбома...)
+  lastQuery: "",
+  source: "yt",      // активный источник поиска: yt | sc
+  view: "home",
+  nav: "home",       // какой пункт меню подсвечен
+  tab: "tracks",     // вкладка поиска: tracks | artists | albums
+  sort: "default",
+  cards: [], albums: [], related: [], colPl: [], colAr: [],
+  ctx: null, reopen: null,
+  fav: new Set(),    // ключи избранных треков (единственный источник правды)
+  favItems: [],      // сами избранные треки (для рекомендаций и коллекции)
+  // Настройки из /api/settings (SQLite). Интерфейсные (громкость, тексты, имя, обложки миксов) раньше жили в
+  // localStorage, но он привязан к порту окна, а порт меняется при каждом запуске (H3).
+  settings: { autoplay: true, theme: "auto", volume: 1, last_volume: 1, lyrics_visible: true, profile_name: "", mix_covers: {} },
+  dl: new Map(),     // скачанные треки: "source:id" -> трек
+  jobs: {},          // активные загрузки с сервера
+  dlDenied: new Map(),   // "source:id" -> причина окончательного отказа источника (на время сессии)
+  dlTitles: new Map(),   // "source:id" -> название (для сообщений о готовности и ошибке)
+  query: "", offset: 0, more: false, loadingMore: false,
+  shuffle: false, repeat: false, seeking: false, errors: 0,
+  searchCtl: null, baseStatus: "",
+  // главная
+  feed: [], feedPage: 1, salt: 0, featured: null, personalized: false, feedRadio: false,
+  hist: [], mixes: [], mixId: null, artists: [], artistsShown: 4,
+  lyricsOn: true,
+  lastVol: 1,        // последняя слышимая громкость (для возврата из mute и из нуля)
+  fs: { open: false, mode: "default", opener: null },   // полноэкранный плеер
+};
+
+/** Текущий трек очереди или null. */
+export const current = () => state.queue[state.index] || null;
+
+let seq = 0;
+/** Порядковый номер прихода трека в список (по нему сортировка «по умолчанию»). */
+export const nextSeq = () => seq++;
+
+/** История для кнопки «Назад»: каждый экран кладёт в state.reopen функцию, которая его откроет снова. */
+export const nav = {
+  stack: [],
+  /** Что делает «Назад», когда возвращаться некуда (задаёт запуск приложения: главная). */
+  fallback: () => {},
+  /** Переход «вглубь»: текущая страница запоминается для кнопки «Назад». */
+  to(fn) {
+    if (state.reopen) this.stack.push(state.reopen);
+    if (this.stack.length > 40) this.stack.shift();
+    fn();
+  },
+  back() {
+    const back = this.stack.pop();
+    if (back) back(); else this.fallback();
+  },
+  /** Переход из меню и боковой панели: «Назад» начинается заново. */
+  reset() { this.stack.length = 0; },
+};

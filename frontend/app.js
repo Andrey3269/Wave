@@ -11,6 +11,9 @@ import { $, $$, mk, icon, button, setCover, coverEl, initImageFallback } from ".
 import { SOURCES, clamp, rand, fmtTime, plural, thumb } from "./js/core/format.js";
 import { enc, api, getJSON, jsonOpts, recsResult, trackKey, trackPayload } from "./js/core/api.js";
 import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
+import { state, current, PAGE, nextSeq, nav } from "./js/state/store.js";
+import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags, applySettings, fetchSettings,
+  migrateLocalUi, initThemeFollowSystem } from "./js/state/settings.js";
 
 (() => {
   /** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
@@ -25,87 +28,9 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
 
   initImageFallback();
 
-  // ---------- Состояние ----------
-  const state = {
-    list: [],          // то, что показано на экране (список треков текущей страницы)
-    queue: [],         // то, что играет (одна очередь на всё приложение)
-    queueOwned: false, // true после первой правки очереди: тогда это уже собственная копия
-    index: -1,         // позиция в queue
-    queueLabel: "",    // откуда играет очередь («Подобрано по вашей истории», название альбома...)
-    lastQuery: "",
-    source: "yt",      // активный источник поиска: yt | sc
-    view: "home",
-    nav: "home",       // какой пункт меню подсвечен
-    tab: "tracks",     // вкладка поиска: tracks | artists | albums
-    sort: "default",
-    cards: [], albums: [], related: [], colPl: [], colAr: [],
-    ctx: null, reopen: null,
-    fav: new Set(),    // ключи избранных треков (единственный источник правды)
-    favItems: [],      // сами избранные треки (для рекомендаций и коллекции)
-    // Настройки из /api/settings (SQLite). Интерфейсные (громкость, тексты, имя, обложки миксов) раньше жили в
-    // localStorage, но он привязан к порту окна, а порт меняется при каждом запуске (H3).
-    settings: { autoplay: true, theme: "auto", volume: 1, last_volume: 1, lyrics_visible: true, profile_name: "", mix_covers: {} },
-    dl: new Map(),     // скачанные треки: "source:id" -> трек
-    jobs: {},          // активные загрузки с сервера
-    dlDenied: new Map(),   // "source:id" -> причина окончательного отказа источника (на время сессии)
-    dlTitles: new Map(),   // "source:id" -> название (для сообщений о готовности и ошибке)
-    query: "", offset: 0, more: false, loadingMore: false,
-    shuffle: false, repeat: false, seeking: false, errors: 0,
-    searchCtl: null, baseStatus: "",
-    // главная
-    feed: [], feedPage: 1, salt: 0, featured: null, personalized: false, feedRadio: false,
-    hist: [], mixes: [], mixId: null, artists: [], artistsShown: 4,
-    lyricsOn: true,
-    lastVol: 1,        // последняя слышимая громкость (для возврата из mute и из нуля)
-    fs: { open: false, mode: "default", opener: null },   // полноэкранный плеер
-  };
-  const current = () => state.queue[state.index] || null;
   const heroTrack = () => current() || state.featured;
-  const PAGE = 20;
-  let seq = 0;                                         // порядок прихода треков (сортировка «по умолчанию»)
-  const navStack = [];                                 // история для кнопки «Назад»
-  const LS = {
-    get(k, d = null) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch { return d; } },
-    set(k, v) { try { localStorage.setItem(k, v); } catch { /* приватный режим */ } },
-  };
-  // localStorage теперь только для темы до первой отрисовки (запасной путь к /api/boot.js) и для одноразового
-  // переноса старых значений в backend (migrateLocalUi). Старые ключи не удаляются: откат на прежнюю версию их найдёт.
+  initSettingsSync();
 
-  // ---------- Сохранение настроек интерфейса в backend ----------
-  // Изменения копятся и уходят одним PUT /api/settings через короткую паузу (перетаскивание громкости —
-  // одна запись, а не сотня). При закрытии окна несохранённое отправляется с keepalive.
-  const round3 = (v) => Math.round(v * 1000) / 1000;
-  // Ответы /api/settings могут прийти позже, чем пользователь что-то поменял (экран настроек открыт, его GET
-  // ещё в пути; два PUT подряд вернулись не по порядку). Каждая локальная правка получает номер; значение
-  // из ответа применяется, только если ключ не меняли после отправки этого запроса. Иначе запоздавший ответ
-  // возвращал бы старые значения в интерфейс и в поля формы (сбой CI 38348939401, см. reports/S2.md).
-  let settingsGen = 0;
-  const localAt = {};                                      // ключ настройки -> номер последней локальной правки
-  function markLocal(keys) { settingsGen++; for (const k of keys) localAt[k] = settingsGen; }
-  let uiReady = false;                                     // настройки из backend уже применены
-  let volTouched = false;                                  // громкость меняли до ответа backend: не перетираем
-  const uiSave = (() => {
-    let pending = {}, timer = 0;
-    function flush(keepalive = false) {
-      clearTimeout(timer);
-      const body = pending;
-      pending = {};
-      const changed = Object.keys(body).filter((k) => JSON.stringify(body[k]) !== JSON.stringify(state.settings[k]));
-      if (!changed.length) return;
-      const send = Object.fromEntries(changed.map((k) => [k, body[k]]));
-      Object.assign(state.settings, send);
-      fetch("/api/settings", { ...jsonOpts("PUT", send), keepalive }).then((r) => {
-        if (!r.ok) throw new Error(String(r.status));
-      }).catch(() => {                                     // не записалось: вернём в очередь, уйдёт со следующим изменением
-        for (const k of changed) { if (!(k in pending)) { pending[k] = send[k]; state.settings[k] = undefined; } }
-      });
-    }
-    return {
-      put(obj, delay = 400) { markLocal(Object.keys(obj)); Object.assign(pending, obj); clearTimeout(timer); timer = setTimeout(flush, delay); },
-      flush,
-    };
-  })();
-  window.addEventListener("pagehide", () => uiSave.flush(true));
   // ---------- Статус, уведомления, пустые состояния ----------
   function setStatus(text) { state.baseStatus = text; el.status.textContent = text; }
   let toastTimer = 0;
@@ -180,16 +105,9 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
     updateSort();
   }
 
-  /** Переход «вглубь»: текущая страница запоминается для кнопки «Назад». */
-  function navTo(fn) {
-    if (state.reopen) navStack.push(state.reopen);
-    if (navStack.length > 40) navStack.shift();
-    fn();
-  }
-  function goBack() {
-    const back = navStack.pop();
-    if (back) back(); else goHome(false);
-  }
+  const navTo = (fn) => nav.to(fn);
+  const goBack = () => nav.back();
+  nav.fallback = () => goHome(false);
 
   function syncTabs() {
     $$(".tab", el.tabs).forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
@@ -262,7 +180,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   }
   /** Новый список треков: первая страница поиска, страница артиста/альбома, загрузки. */
   function setTracks(tracks) {
-    tracks.forEach((t) => { t._i = seq++; });
+    tracks.forEach((t) => { t._i = nextSeq(); });
     state.list = tracks;
     if (state.sort !== "default") sortList();
     renderList();
@@ -272,7 +190,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   function appendTracks(raw) {
     const have = new Set(state.list.map(trackKey));
     const fresh = raw.filter((t) => !have.has(trackKey(t)));
-    fresh.forEach((t) => { t._i = seq++; });
+    fresh.forEach((t) => { t._i = nextSeq(); });
     const from = state.list.length;
     state.list.push(...fresh);
     if (state.sort !== "default") { sortList(); renderList(); }
@@ -709,12 +627,12 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   el.mixes.addEventListener("click", (e) => {
     const b = e.target.closest("[data-mix]");
     const m = b && themeMixes.find((x) => x.id === b.dataset.mix);
-    if (m) { navStack.length = 0; openMix(m); }
+    if (m) { nav.reset(); openMix(m); }
   });
   el.artistMixes.addEventListener("click", (e) => {
     const b = e.target.closest("[data-artist]");
     const a = b && state.artists[Number(b.dataset.artist)];
-    if (a) { navStack.length = 0; openArtistByName(a); }
+    if (a) { nav.reset(); openArtistByName(a); }
   });
   el.artistMore.addEventListener("click", () => {
     state.artistsShown = state.artistsShown > 4 ? 4 : 10;
@@ -1396,7 +1314,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   /** commit=false: промежуточные значения при перетаскивании. «Последней слышимой» громкостью они не считаются,
    *  поэтому, если ушли ползунком в ноль, mute вернёт то значение, что было до перетаскивания. */
   function setVolume(v, commit = true) {
-    if (!uiReady) volTouched = true;
+    if (!flags.uiReady) flags.volTouched = true;
     v = clamp(v, 0, 1);
     audio.volume = v;
     if (v > 0) audio.muted = false;
@@ -1404,7 +1322,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
     paintVolume();
   }
   function toggleMute() {
-    if (!uiReady) volTouched = true;
+    if (!flags.uiReady) flags.volTouched = true;
     if (audio.muted || audio.volume === 0) {
       audio.muted = false;
       if (audio.volume === 0) audio.volume = state.lastVol || 0.6;   // ушли ползунком в ноль: возвращаем последнюю слышимую громкость
@@ -1415,7 +1333,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   }
   audio.addEventListener("volumechange", () => {
     paintVolume();
-    if (uiReady) uiSave.put({ volume: round3(audio.volume) });   // перетаскивание: одна запись в конце (см. uiSave)
+    if (flags.uiReady) uiSave.put({ volume: round3(audio.volume) });   // перетаскивание: одна запись в конце (см. uiSave)
   });
   for (const node of volBars) {
     makeSlider(node, { preview: (v) => setVolume(v, false), commit: (v) => setVolume(v, true), nudge: (dir) => setVolume((audio.muted ? 0 : audio.volume) + dir * 0.05) });
@@ -2354,7 +2272,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   });
   el.dDelete.addEventListener("click", async () => {
     if (!await askConfirm({ title: "Удалить плейлист?", text: `«${state.plName}» будет удалён. Сами треки не удаляются.`, ok: "Удалить" })) return;
-    try { await api(`/api/playlists/${state.ctx.id}`, { method: "DELETE" }); navStack.length = 0; toast("Плейлист удалён"); showPlaylists(); }
+    try { await api(`/api/playlists/${state.ctx.id}`, { method: "DELETE" }); nav.reset(); toast("Плейлист удалён"); showPlaylists(); }
     catch (e) { toast(e.message); }
   });
 
@@ -2428,63 +2346,22 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   // ==========================================================================
   // Настройки
   // ==========================================================================
-  // Тема: «Авто» следует за системой (в том числе при её смене во время работы)
-  const systemLight = window.matchMedia ? window.matchMedia("(prefers-color-scheme: light)") : null;
-  let themeMode = "auto";
-  function applyTheme(mode) {
-    themeMode = mode || "auto";
-    const real = themeMode === "auto" ? (systemLight && systemLight.matches ? "light" : "dark") : themeMode;
-    document.documentElement.dataset.theme = real;
-    LS.set("wave-theme", themeMode);
-  }
-  if (systemLight && systemLight.addEventListener) systemLight.addEventListener("change", () => { if (themeMode === "auto") applyTheme("auto"); });
+  initThemeFollowSystem();
 
-  /** Значения из ответа backend. since — номер правки на момент отправки запроса: ключи, изменённые
-   *  локально позже, не трогаем (ответ про них устарел). */
-  function applySettings(v, since = settingsGen) {
-    const fresh = Object.fromEntries(Object.entries(v).filter(([k]) => !((localAt[k] || 0) > since)));
-    state.settings = { ...state.settings, ...fresh };
-    applyTheme(state.settings.theme);
-  }
-  async function fetchSettings() {
-    const since = settingsGen;
-    const d = await api("/api/settings");
-    applySettings(d.values, since);
-    state.settingsPaths = d.paths;
-    return d;
-  }
   /** Поле формы настроек: не перезаписываем то, что пользователь сейчас редактирует. */
   function setField(sel, prop, value) {
     const node = $(sel);
     if (node !== document.activeElement) node[prop] = value;
   }
-  /** Однократный перенос старых значений из localStorage этого окна в backend (до S2a они жили только там).
-   *  Backend сам следит, чтобы перенос был один раз на профиль и не затирал уже сохранённое. */
-  function migrateLocalUi() {
-    const body = {};
-    const num = (k) => { const v = parseFloat(LS.get(k)); return Number.isFinite(v) ? v : undefined; };
-    const vol = num("volume"), last = num("wave-last-volume");
-    if (vol !== undefined) body.volume = clamp(vol, 0, 1);
-    if (last !== undefined && last >= 0.05) body.last_volume = clamp(last, 0, 1);
-    const lyr = LS.get("wave-lyrics");
-    if (lyr === "0" || lyr === "1") body.lyrics_visible = lyr === "1";
-    const name = LS.get("wave-profile-name");
-    if (name != null) body.profile_name = [...name.trim()].slice(0, 24).join("");
-    try {
-      const c = JSON.parse(LS.get("wave-mix-covers", "null"));
-      if (c && typeof c === "object" && !Array.isArray(c)) body.mix_covers = c;
-    } catch { /* испорченное значение не переносим */ }
-    return api("/api/settings/migrate-local", jsonOpts("POST", body));
-  }
   /** Применяет настройки интерфейса один раз, при старте (ответы на последующие PUT их не трогают). */
   function applyUiSettings(v) {
-    if (!volTouched && Number.isFinite(v.volume)) audio.volume = clamp(v.volume, 0, 1);
+    if (!flags.volTouched && Number.isFinite(v.volume)) audio.volume = clamp(v.volume, 0, 1);
     if (Number.isFinite(v.last_volume) && v.last_volume >= 0.05) state.lastVol = v.last_volume;
     state.lyricsOn = v.lyrics_visible !== false;
     Object.assign(covers, v.mix_covers || {});
     for (const m of themeMixes) if (covers[m.themeId]) m.cover = covers[m.themeId];
-    uiReady = true;
-    if (volTouched) uiSave.put({ volume: round3(audio.volume) });   // пока ждали backend, громкость уже поменяли
+    flags.uiReady = true;
+    if (flags.volTouched) uiSave.put({ volume: round3(audio.volume) });   // пока ждали backend, громкость уже поменяли
     paintVolume();
     renderThemeMixes();
     renderProfile();
@@ -2494,13 +2371,13 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
     try {
       let d = await fetchSettings();
       if (d.meta && d.meta.local_ui_migrated === false) {
-        const since = settingsGen;
+        const since = settingsGeneration();
         try { d = await migrateLocalUi(); applySettings(d.values, since); state.settingsPaths = d.paths; } catch { /* попробуем при следующем запуске */ }
       }
       state.source = d.values.default_source;              // источник по умолчанию
       syncTabs();
       applyUiSettings(d.values);
-    } catch { uiReady = true; document.body.dataset.settings = "default"; /* остаются значения по умолчанию */ }
+    } catch { flags.uiReady = true; document.body.dataset.settings = "default"; /* остаются значения по умолчанию */ }
   }
   const setMsg = (t) => { $("#set-msg").textContent = t; };
   async function showSettings() {
@@ -2521,7 +2398,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
   }
   async function saveSetting(body, okText) {
     markLocal(Object.keys(body));
-    const since = settingsGen;
+    const since = settingsGeneration();
     try {
       const d = await api("/api/settings", jsonOpts("PUT", body));
       applySettings(d.values, since);                      // свои ключи применяются, более поздние правки — нет
@@ -2590,7 +2467,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
 
   el.form.addEventListener("submit", (e) => {
     e.preventDefault();
-    navStack.length = 0;
+    nav.reset();
     search(el.input.value);
   });
 
@@ -2599,7 +2476,7 @@ import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
     const item = e.target.closest("button[data-view]");      // не просто [data-view]: этот атрибут есть и у <body>
     if (!item) return;
     const view = item.dataset.view;
-    navStack.length = 0;
+    nav.reset();
     el.main.scrollTo({ top: 0 });
     const go = { home: () => goHome(true), search: showSearch, playlists: showPlaylists, collection: showCollection,
       liked: showLiked, downloads: showDownloads, history: showHistory, settings: showSettings }[view];
