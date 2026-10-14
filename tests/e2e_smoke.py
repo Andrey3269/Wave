@@ -840,7 +840,7 @@ def main() -> int:
         hls_page.fill("#search-input", "hls")
         hls_page.keyboard.press("Enter")
         hls_page.wait_for_selector("#tracks .row:not(.row--skel)")
-        hls_page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        hls_page.locator("#tracks .row .track__num").first.click()
         started = True
         try:
             hls_page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 1 })()", timeout=20000)

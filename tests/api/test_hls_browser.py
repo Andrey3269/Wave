@@ -40,7 +40,19 @@ def _audio(page) -> dict:
 
 
 def _row(page, title: str):
-    return page.locator("#tracks .row", has_text=title).first
+    """Ячейка номера/значка Play в строке трека: клик по ней всегда запускает трек (имя автора — ссылка)."""
+    return page.locator("#tracks .row", has_text=title).first.locator(".track__num")
+
+
+def _toggle_play(page) -> None:
+    """Кнопка Play/Pause, которую сейчас видит пользователь (мини-плеер или полноэкранный плеер)."""
+    btn = page.locator("[data-do=play]:visible").first
+    try:
+        btn.wait_for(state="visible", timeout=5000)
+    except Exception:
+        state = page.evaluate("JSON.stringify({...document.body.dataset})")
+        raise AssertionError(f"нет видимой кнопки Play/Pause; состояние интерфейса: {state}") from None
+    btn.click()
 
 
 def test_hls_track_plays_seeks_switches_and_releases(harness):
@@ -76,7 +88,7 @@ def test_hls_track_plays_seeks_switches_and_releases(harness):
             page.wait_for_selector("#tracks .row:not(.row--skel)", timeout=15000)
 
             # 1. HLS-only трек играет через hls.js в тот же <audio>
-            _row(page, "Only HLS").click(position={"x": 260, "y": 20})
+            _row(page, "Only HLS").click()
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 1 })()",
                                    timeout=20000)
             st = _audio(page)
@@ -99,18 +111,18 @@ def test_hls_track_plays_seeks_switches_and_releases(harness):
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 2.3 && a.currentTime < 8 })()",
                                    timeout=15000)
 
-            # 3. пауза и продолжение кнопкой мини-плеера
-            page.click("#btn-play")
+            # 3. пауза и продолжение кнопкой плеера
+            _toggle_play(page)
             page.wait_for_function("document.querySelector('#audio').paused", timeout=5000)
             t_paused = _audio(page)["t"]
             page.wait_for_timeout(500)
             assert abs(_audio(page)["t"] - t_paused) < 0.05                  # на паузе позиция стоит
-            page.click("#btn-play")
+            _toggle_play(page)
             page.wait_for_function(f"document.querySelector('#audio').currentTime > {t_paused + 0.5}", timeout=10000)
 
             # 4. переключение на прогрессивный трек: HLS освобождается (hls.js уничтожен, сеанс удалён)
             assert hls_proxy.stats()["sessions"] == 1
-            _row(page, "Progressive").click(position={"x": 260, "y": 20})
+            _row(page, "Progressive").click()
             page.wait_for_function(f"document.querySelector('#audio').src.endsWith('/api/stream/sc/{PROG_ID}')", timeout=15000)
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 0.5 })()",
                                    timeout=15000)
@@ -121,7 +133,7 @@ def test_hls_track_plays_seeks_switches_and_releases(harness):
             assert not [u for u in after if "/main/s" in u], after           # старый поток больше ничего не грузит
 
             # 5. обратно на HLS-трек — новый сеанс, снова играет
-            _row(page, "Only HLS").click(position={"x": 260, "y": 20})
+            _row(page, "Only HLS").click()
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.startsWith('blob:') && !a.paused && a.currentTime > 0.5 })()",
                                    timeout=20000)
             assert hls_proxy.stats()["sessions"] == 1
@@ -166,7 +178,7 @@ def test_hls_session_loss_recovers_from_same_position(harness):
             page.fill("#search-input", "test")
             page.keyboard.press("Enter")
             page.wait_for_selector("#tracks .row:not(.row--skel)", timeout=15000)
-            _row(page, "Only HLS").click(position={"x": 260, "y": 20})
+            _row(page, "Only HLS").click()
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 1 })()",
                                    timeout=20000)
             hls_proxy.clear()                                                # сеанс исчез
@@ -209,7 +221,7 @@ def test_unrecoverable_hls_stream_stops_after_bounded_retries(harness):
         playbacks: list[str] = []
         page.on("request", lambda r: playbacks.append(r.url) if r.url.endswith("/playback") else None)
         try:
-            _row(page, "Only HLS").click(position={"x": 260, "y": 20})
+            _row(page, "Only HLS").click()
             page.wait_for_function("(document.querySelector('#toast')?.innerText || '').includes('Не удалось воспроизвести')",
                                    timeout=60000)
             page.wait_for_timeout(3000)                                       # и дальше ничего не перезапускается
@@ -229,7 +241,7 @@ def test_undecodable_hls_stream_gives_decoder_message(harness):
     with harness.serve() as c, sync_api.sync_playwright() as p:
         browser, page = _open_single_hls_track(harness, c, p, [junk, junk])
         try:
-            _row(page, "Only HLS").click(position={"x": 260, "y": 20})
+            _row(page, "Only HLS").click()
             page.wait_for_function("(document.querySelector('#toast')?.innerText || '').includes('Не удалось воспроизвести')",
                                    timeout=60000)
             toast = page.inner_text("#toast")
