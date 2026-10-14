@@ -95,18 +95,19 @@ def _sweep() -> None:
 
 
 def open_session(source: str, track_id: str) -> Session:
-    """Сеанс для трека, разрешённого приложением (источник и id уже проверены маршрутом). Повторный вызов
-    для того же трека возвращает живой сеанс, а не плодит новые."""
+    """
+    Новый сеанс для трека, разрешённого приложением (источник и id уже проверены маршрутом). Прежний сеанс
+    того же трека закрывается: на трек всегда не больше одного живого токена, а запоздавший DELETE старого
+    токена (плеер освобождает его при перезапуске трека) не может задеть только что выданный.
+    """
     _sweep()
-    token = _by_key.get(f"{source}:{track_id}")
-    s = _sessions.get(token) if token else None
-    if s is None:
-        s = Session(token=secrets.token_urlsafe(18), source=source, track_id=track_id)
-        _sessions[s.token] = s
-        _by_key[s.key] = s.token
-        _sweep()
-    s.last_used = time.monotonic()
-    _sessions.move_to_end(s.token)
+    old = _by_key.get(f"{source}:{track_id}")
+    if old:
+        _drop(old)
+    s = Session(token=secrets.token_urlsafe(18), source=source, track_id=track_id)
+    _sessions[s.token] = s
+    _by_key[s.key] = s.token
+    _sweep()
     return s
 
 

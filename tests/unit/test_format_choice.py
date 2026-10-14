@@ -119,3 +119,12 @@ def test_unplayable_formats_give_honest_errors(monkeypatch, formats, status, kin
         asyncio.run(go())
     assert e.value.status_code == status and e.value.headers["X-Wave-Error"] == kind
     assert phrase in e.value.detail and "yt-dlp" not in e.value.detail
+def test_sources_hls_flag_matches_frontend():
+    """PROGRESSIVE_ONLY во frontend/app.js — ровно источники без HLS (иначе плеер не спросит /playback)."""
+    import re
+    from pathlib import Path
+    app = (Path(__file__).resolve().parents[2] / "frontend" / "app.js").read_text(encoding="utf-8")
+    m = re.search(r"const PROGRESSIVE_ONLY = new Set\(\[([^\]]*)\]\)", app)
+    assert m, "в app.js нет PROGRESSIVE_ONLY"
+    front = set(re.findall(r'"(\w+)"', m.group(1)))
+    assert front == {name for name, cfg in resolver.SOURCES.items() if not cfg.hls}

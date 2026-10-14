@@ -116,10 +116,15 @@ def test_mp3_hls_end_to_end(api):
     assert all(s.closed for s in api.net.streams)
 
 
-def test_playback_reuses_session_for_same_track(api):
+def test_playback_replaces_session_for_same_track(api):
+    """Повторный /playback того же трека: новый токен, старый сразу недействителен — на трек один сеанс, и
+    запоздавший DELETE старого токена (плеер освобождает его при перезапуске) не задевает новый."""
     mp3_hls(api)
-    assert play(api)["url"] == play(api)["url"]
-    assert hls_proxy.stats()["sessions"] == 1
+    first, second = play(api)["url"], play(api)["url"]
+    assert first != second and hls_proxy.stats()["sessions"] == 1
+    assert api.get(first).status_code == 404
+    api.delete(first.rsplit("/", 1)[0])
+    assert api.get(second).status_code == 200
 
 
 # ---------------------------------------------------------------------------

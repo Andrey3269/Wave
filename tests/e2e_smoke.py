@@ -29,6 +29,9 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Route, sync_playwright
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from wavetest.hlsfix import MP3_FRAME_SEC, media_playlist, mp3_frames  # noqa: E402  (тот же каталог tests/)
+
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
 SHOTS = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(tempfile.mkdtemp(prefix="wave-e2e-shots-"))
 SHOTS.mkdir(parents=True, exist_ok=True)
@@ -144,6 +147,22 @@ DL_OUTCOME = {"trk00000041": ("error", "unavailable", "Трек недоступ
               "trk00000042": ("error", "network", "Нет связи с YouTube Music. Проверьте подключение к интернету.")}
 
 
+# HLS SoundCloud (S8). Сеть подменена: /playback отвечает kind=hls, плейлист и сегменты — настоящие mp3-кадры
+# (их воспроизводит hls.js в Chromium). Сам hls.js приходит с backend (frontend/vendor), как в приложении.
+HLS_TOKEN = "e2eHlsToken0123456789AB"
+HLS_SEG_FRAMES = 383                                                  # ≈10 с
+HLS_SEG = mp3_frames(HLS_SEG_FRAMES)
+HLS_PLAYLIST = media_playlist([f"/api/stream/hls/{HLS_TOKEN}/main/s{i}" for i in range(3)],
+                              [round(HLS_SEG_FRAMES * MP3_FRAME_SEC, 6)] * 3)
+HLS = {"released": [], "segments": 0}
+
+
+def sc_track(n: int) -> dict:
+    return {"id": str(3000000000 + n), "source": "sc", "title": f"SoundCloud {n}", "artist": "Uploader", "artists": ["Uploader"],
+            "album": None, "duration": 30, "cover": None, "explicit": False, "stream_url": f"/api/stream/sc/{3000000000 + n}",
+            "artist_id": None, "artist_ids": [], "plays": None, "released": None, "url": None}
+
+
 def dl_job(tid: str) -> dict:
     stage = DL["stage"][tid]
     if isinstance(stage, tuple):                                       # готовый исход: ошибка с кодом
@@ -202,6 +221,22 @@ def handle(route: Route) -> None:
     if DL["mock"] and path.startswith("/api/downloads") and dl_mock(route, path):
         return None
 
+    if path.startswith("/api/stream/hls/"):
+        if req.method == "DELETE":
+            HLS["released"].append(path.rsplit("/", 1)[-1])
+            return route.fulfill(status=204)
+        if path.endswith("/main.m3u8"):
+            return route.fulfill(status=200, body=HLS_PLAYLIST, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+        if re.search(r"/main/s\d+$", path):
+            HLS["segments"] += 1
+            return route.fulfill(status=200, body=HLS_SEG, headers={"Content-Type": "audio/mpeg"})
+        return route.fulfill(status=404)
+    m = re.match(r"^/api/stream/sc/(\d+)/playback$", path)
+    if m:
+        if m.group(1) == str(3000000000):                              # первый трек — только HLS
+            return js(route, {"kind": "hls", "url": f"/api/stream/hls/{HLS_TOKEN}/main.m3u8", "preview": False, "codec": "mp3"})
+        return js(route, {"kind": "progressive", "url": f"/api/stream/sc/{m.group(1)}", "preview": False})
+
     if path.startswith("/api/stream/"):
         if q.get("warm"):
             return route.fulfill(status=204)
@@ -235,6 +270,9 @@ def handle(route: Route) -> None:
                           "personalized": bool(page) or mode == "personal", "radio": False, "page": page,
                           "failed_sources": bad, "source_status": {"yt": "partial" if bad else "ok"}})
 
+    if path == "/api/search" and q.get("sources") == "sc":
+        return js(route, {"query": q.get("q"), "count": 3, "tracks": [sc_track(i) for i in range(3)], "failed_sources": [],
+                          "has_more": False, "source_status": {"sc": "ok"}})
     if path == "/api/search":
         return js(route, {"query": q.get("q"), "count": 20, "tracks": [track(40 + i) for i in range(20)], "failed_sources": [], "has_more": False})
 
@@ -789,6 +827,62 @@ def main() -> int:
               "«Подобрано по вашей истории» — только когда backend сообщил personalized=true")
         check(foreign_names(home_page) == [], "после всех сценариев фирменных названий других сервисов нет")
         RECS["mode"] = "normal"
+
+        print("SoundCloud: трек только по HLS (S8)")
+        hls_page = ctx.new_page()
+        hls_page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        hls_page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        hls_requests: list[str] = []
+        hls_page.on("request", lambda r: hls_requests.append(r.url))
+        hls_page.goto(BASE)
+        hls_page.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+        hls_page.click("[data-source=sc]")
+        hls_page.fill("#search-input", "hls")
+        hls_page.keyboard.press("Enter")
+        hls_page.wait_for_selector("#tracks .row:not(.row--skel)")
+        hls_page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        started = True
+        try:
+            hls_page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 1 })()", timeout=20000)
+        except Exception:
+            started = False
+        st = audio_state(hls_page)
+        check(started and st["src"].startswith("blob:"), "HLS-трек SoundCloud играет через hls.js в том же <audio> (MSE)")
+        check(any(u.endswith("/vendor/hls.light.min.js") for u in hls_requests)
+              and not [u for u in hls_requests if not u.startswith(BASE) and not u.startswith("blob:") and "googleusercontent" not in u],
+              "hls.js загружен с backend приложения, без CDN и внешних адресов")
+        dur = hls_page.evaluate("document.querySelector('#audio').duration")
+        check(abs(dur - 3 * HLS_SEG_FRAMES * MP3_FRAME_SEC) < 1.0, "длительность HLS-трека — из плейлиста")
+        hls_page.evaluate("document.querySelector('#audio').currentTime = 21")
+        try:
+            hls_page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 21.5 })()", timeout=15000)
+            seek_ok = True
+        except Exception:
+            seek_ok = False
+        check(seek_ok and HLS["segments"] >= 3, "перемотка HLS-трека вперёд загружает нужный сегмент и продолжает играть")
+        hls_page.click("#btn-play")
+        hls_page.wait_for_function("document.querySelector('#audio').paused && document.body.dataset.audio === 'paused'")
+        t_paused = audio_state(hls_page)["t"]
+        hls_page.click("#btn-play")
+        try:
+            hls_page.wait_for_function(f"document.body.dataset.audio === 'playing' && document.querySelector('#audio').currentTime > {t_paused + 0.3}",
+                                       timeout=10000)
+            resumed = True
+        except Exception:
+            resumed = False
+        check(resumed, "пауза и продолжение HLS-трека с той же позиции")
+        hls_page.screenshot(path=str(SHOTS / "23-hls-playing.png"))
+        hls_page.click("#player [data-do=next]")
+        try:
+            hls_page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/api/stream/sc/3000000001') && !a.paused })()", timeout=15000)
+            switched = True
+        except Exception:
+            switched = False
+        check(switched and HLS["released"] == [HLS_TOKEN], "следующий трек (обычный поток) играет, HLS-сеанс прошлого трека освобождён")
+        segs_after = HLS["segments"]
+        hls_page.wait_for_timeout(1500)
+        check(HLS["segments"] == segs_after, "после переключения прошлый HLS-поток больше ничего не загружает")
+        hls_page.close()
 
         print("Компонент воспроизведения YouTube недоступен (S3)")
         STREAM["mode"] = "js_runtime"

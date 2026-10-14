@@ -1,0 +1,15 @@
+{
+  "_comment": "Сторонний JavaScript интерфейса Wave (S8). Файл в frontend/vendor/ — без изменений из npm-пакета; SHA-256 проверяет tests/unit/test_frontend_vendor.py. Обновление: npm pack hls.js@<версия>, сверить integrity с реестром, заменить файл, обновить этот lock, licenses/hls.js/LICENSE и THIRD_PARTY_NOTICES.txt, прогнать e2e (HLS).",
+  "hls.js": {
+    "version": "1.7.3",
+    "file": "hls.light.min.js",
+    "sha256": "0251332c00a216a35d7d6919044d60da82b78beb3bd50ac6c662ae74a2f5474b",
+    "source": "https://registry.npmjs.org/hls.js/-/hls.js-1.7.3.tgz (package/dist/hls.light.min.js)",
+    "npm_integrity": "sha512-MsPlx6yVW4Qv4C7mEVou4/gk/5cN2dVxOTnrNjPSmyH2f0Ln+/UkG10Ax1PE6OvrmTVPKgQYozTtBaPOuCzq7A==",
+    "npm_shasum": "79a3338dd2e78fe63fc2ba6cfebdf5e34495537a",
+    "published": "2026-09-11",
+    "license": "Apache-2.0",
+    "license_file": "licenses/hls.js/LICENSE",
+    "why_light": "light-сборка без EME (DRM), субтитров, альтернативных дорожек, CMCD и подстановки переменных: Wave нужен только аудиопоток HLS (mp3, AAC в fMP4/TS)"
+  }
+}

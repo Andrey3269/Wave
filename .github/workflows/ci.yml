@@ -181,6 +181,14 @@ jobs:
                          "licenses\yt-dlp\LICENSE", "licenses\yt-dlp-ejs\LICENSE", "yt_dlp_ejs\yt\solver\core.min.js", "yt_dlp_ejs\yt\solver\lib.min.js") {
             if (-not (Test-Path "dist\Wave\_internal\$f")) { throw "$f is not bundled" }
           }
+          # S8: hls.js — локальный файл интерфейса (без CDN), ровно тот, что закреплён в vendor.lock.json, и его лицензия
+          $vlock = Get-Content "frontend\vendor\vendor.lock.json" -Raw -Encoding utf8 | ConvertFrom-Json
+          $hlsjs = "dist\Wave\_internal\frontend\vendor\$($vlock.'hls.js'.file)"
+          if (-not (Test-Path $hlsjs)) { throw "$hlsjs is not bundled" }
+          $hh = (Get-FileHash $hlsjs -Algorithm SHA256).Hash.ToLower()
+          if ($hh -ne $vlock.'hls.js'.sha256) { throw "bundled hls.js SHA-256 $hh does not match vendor.lock.json" }
+          if (-not (Test-Path "dist\Wave\_internal\licenses\hls.js\LICENSE")) { throw "licenses\hls.js\LICENSE is not bundled" }
+          "::notice title=hls.js::bundled $($vlock.'hls.js'.version) ($([math]::Round((Get-Item $hlsjs).Length / 1KB)) KB), SHA-256 matches vendor.lock.json"
           # S4: version-resource Wave.exe совпадает с backend/version.py (единственный источник версии)
           $ver = (python backend/version.py).Trim()
           $vi = (Get-Item "dist\Wave\Wave.exe").VersionInfo

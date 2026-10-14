@@ -1117,9 +1117,175 @@
 
     showNowPlaying(track);
     setLoading("Загрузка…");
-    audio.src = track.stream_url;
+    player.recover = 0;
+    startTrack(track, 0);
+  }
+
+  // ==========================================================================
+  // Источник звука трека (S8): обычный файл через <audio src> или HLS через hls.js — в тот же <audio>.
+  // ==========================================================================
+  // Источники, у которых backend отдаёт только прогрессивный файл (streaming/resolver.py: SOURCES[...].hls=False).
+  // Для остальных плеер сначала спрашивает /api/stream/{source}/{id}/playback, как играть трек: SoundCloud
+  // часть треков отдаёт только по HLS (N4). Совпадение с backend проверяет tests/unit/test_format_choice.py.
+  const PROGRESSIVE_ONLY = new Set(["yt"]);
+  const HLS_MAX_RECOVER = 2;                // перезапусков трека после сбоя потока (с того же места), не больше
+  const player = { gen: 0, kind: null, hls: null, token: null, pending: false, recover: 0, mediaRecovered: false, ctl: null };
+  let hlsLib = null;
+
+  /** hls.js грузится с локального диска при первом HLS-треке (не замедляет старт; без CDN и интернета). */
+  function loadHls() {
+    if (window.Hls) return Promise.resolve(window.Hls);
+    if (!hlsLib) {
+      hlsLib = new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "vendor/hls.light.min.js";
+        s.async = true;
+        s.onload = () => (window.Hls ? resolve(window.Hls) : reject(new Error("Компонент воспроизведения HLS не загрузился.")));
+        s.onerror = () => { hlsLib = null; reject(new Error("Компонент воспроизведения HLS не загрузился.")); };
+        document.head.appendChild(s);
+      });
+    }
+    return hlsLib;
+  }
+
+  /** Освобождает прошлый HLS-поток: экземпляр hls.js (MSE, таймеры, загрузки) и сеанс на backend. */
+  function detachHls() {
+    const h = player.hls, token = player.token;
+    player.hls = null; player.token = null;
+    if (h) { try { h.destroy(); } catch { /* уже уничтожен */ } }
+    if (token) fetch(`/api/stream/hls/${token}`, { method: "DELETE", keepalive: true }).catch(() => {});
+  }
+
+  /** Запуск трека с позиции at (с): новый «поколение» отменяет всё, что относилось к прошлому треку. */
+  function startTrack(track, at) {
+    const gen = ++player.gen;
+    if (player.ctl) player.ctl.abort();
+    player.ctl = null;
+    detachHls();
+    player.kind = null;
+    player.mediaRecovered = false;
+    if (PROGRESSIVE_ONLY.has(track.source)) { playDirect(track.stream_url, at, "progressive"); return; }
+    player.pending = true;                  // пока ждём ответа, Play не должен запускать что-то другое
+    const ctl = new AbortController();
+    player.ctl = ctl;
+    fetch(`${track.stream_url}/playback`, { signal: ctl.signal, cache: "no-store" })
+      .then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw Object.assign(new Error(body.detail || `Ошибка ${r.status}`), { code: r.headers.get("X-Wave-Error") });
+        return body;
+      })
+      .then((info) => {
+        if (gen !== player.gen) return undefined;
+        player.ctl = null;
+        if (info.kind === "hls") return playHls(track, info, at, gen);
+        playDirect(info.url || track.stream_url, at, info.kind || "progressive");
+        return undefined;
+      })
+      .catch((err) => {
+        if (gen !== player.gen || err.name === "AbortError") return;
+        player.pending = false;
+        failTrack(track, err.message);
+      });
+  }
+
+  function playDirect(url, at, kind) {
+    player.pending = false;
+    player.kind = kind;
+    audio.src = url;
     audio.loop = state.repeat;
+    if (at > 0) audio.addEventListener("loadedmetadata", () => { audio.currentTime = at; }, { once: true });
     audio.play().catch(onPlayRejected);
+  }
+
+  async function playHls(track, info, at, gen) {
+    let Hls;
+    try {
+      Hls = await loadHls();
+    } catch (err) {
+      if (gen === player.gen) { player.pending = false; failTrack(track, err.message); }
+      return;
+    }
+    if (gen !== player.gen) return;
+    if (!Hls.isSupported()) { player.pending = false; failTrack(track, "Встроенный браузер не поддерживает воспроизведение HLS (Media Source Extensions)."); return; }
+    const retry = { maxNumRetry: 2, retryDelayMs: 800, maxRetryDelayMs: 4000 };
+    const policy = (ttfb, total) => ({ default: { maxTimeToFirstByteMs: ttfb, maxLoadTimeMs: total, timeoutRetry: retry, errorRetry: retry } });
+    const h = new Hls({
+      enableWorker: false,                 // без blob-воркера: всё в одном потоке, предсказуемо в WebView2
+      lowLatencyMode: false,
+      startPosition: at > 0 ? at : -1,
+      maxBufferLength: 30,
+      backBufferLength: 30,
+      manifestLoadPolicy: policy(15000, 30000),
+      playlistLoadPolicy: policy(15000, 30000),
+      fragLoadPolicy: policy(15000, 60000),
+    });
+    player.hls = h;
+    player.token = (info.url.match(/^\/api\/stream\/hls\/([\w-]+)\//) || [])[1] || null;
+    player.kind = "hls";
+    player.pending = false;
+    h.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (gen !== player.gen) return;
+      audio.loop = state.repeat;
+      audio.play().catch(onPlayRejected);
+    });
+    h.on(Hls.Events.ERROR, (_e, data) => {
+      if (gen !== player.gen || !data || !data.fatal) return;   // нефатальные сбои hls.js повторяет сам
+      onHlsFatal(track, h, data, Hls);
+    });
+    h.attachMedia(audio);
+    h.loadSource(info.url);
+  }
+
+  /** Текст ошибки backend (detail) из ответа, который вернулся hls.js. */
+  function hlsDetail(data) {
+    try {
+      const x = data.networkDetails;
+      const text = x && typeof x.responseText === "string" ? x.responseText : "";
+      return text ? JSON.parse(text).detail || null : null;
+    } catch { return null; }
+  }
+
+  function onHlsFatal(track, h, data, Hls) {
+    // Ошибка декодера: одна штатная попытка восстановления hls.js, потом — честная ошибка
+    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !player.mediaRecovered) {
+      player.mediaRecovered = true;
+      h.recoverMediaError();
+      return;
+    }
+    const at = audio.currentTime || 0;
+    const code = data.response && data.response.code;
+    // Сеть, устаревший сеанс (404) или сменившийся поток (409): перезапуск трека с того же места через
+    // /playback (новая ссылка и новый сеанс), не больше HLS_MAX_RECOVER раз подряд
+    // Экземпляр hls.js не уничтожается внутри его же обработчика события: перезапуск и ошибка — следующей задачей
+    const gen = player.gen;
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && player.recover < HLS_MAX_RECOVER && navigator.onLine) {
+      player.recover++;
+      setLoading("Восстановление потока…");
+      setTimeout(() => { if (gen === player.gen) startTrack(track, at); }, 0);
+      return;
+    }
+    const fallback = data.type === Hls.ErrorTypes.MEDIA_ERROR ? "Плеер не смог декодировать HLS-поток этого трека."
+      : code ? `Сервер потока ответил ошибкой HTTP ${code}.` : "Не удалось загрузить HLS-поток. Проверьте подключение к интернету.";
+    const detail = hlsDetail(data);
+    const url = data.url || (data.frag && data.frag.url) || (data.context && data.context.url);
+    if (detail || !code || !url) { setTimeout(() => { if (gen === player.gen) failTrack(track, detail || fallback); }, 0); return; }
+    // Причину (detail) отдаёт backend — тот же адрес отвечает JSON, а hls.js читал тело как бинарные данные
+    fetch(url, { cache: "no-store" })
+      .then((r) => (r.ok ? null : r.json()))
+      .catch(() => null)
+      .then((b) => { if (gen === player.gen) failTrack(track, (b && b.detail) || fallback); });
+  }
+
+  /** Трек не играет: сообщение с настоящей причиной и переход к следующему (не больше 3 сбоев подряд). */
+  function failTrack(track, detail) {
+    if (current() !== track) return;        // пользователь уже переключил трек: старая ошибка не мешает новому
+    detachHls();
+    // Одно сообщение с трек-названием и настоящей причиной (тост показывает одно сообщение: второе затирало первое)
+    toast(detail ? `Не удалось воспроизвести «${track.title}»: ${detail}` : `Не удалось воспроизвести: ${track.title}`,
+      detail ? 6000 : 3600);
+    clearLoading();
+    setPlayingUI(false);
+    if (state.errors++ < 3 && nextIndex() >= 0) setTimeout(playNext, 800);
   }
 
   function onPlayRejected(err) {
@@ -1130,6 +1296,7 @@
   }
 
   function togglePlay() {
+    if (player.pending) return undefined;   // трек ещё готовится (/playback): Play не запускает ничего другого
     if (!audio.getAttribute("src")) {
       if (state.view === "home") return startWave();
       if (state.queue.length) return playIndex(Math.max(0, state.index));
@@ -1233,15 +1400,32 @@
   audio.addEventListener("error", onAudioError);
 
   function onAudioError() {
-    if (!audio.getAttribute("src")) return;
+    if (!audio.getAttribute("src") || player.pending) return;
     const t = current();
-    toast(`Не удалось воспроизвести: ${t ? t.title : "трек"}`);
+    if (player.kind === "hls") return;     // ошибки HLS-потока обрабатывает onHlsFatal (у hls.js точнее причина)
+    const at = audio.currentTime || 0;
+    const kind = player.kind;
     clearLoading();
     setPlayingUI(false);
-    if (t) fetch(t.stream_url, { headers: { Range: "bytes=0-0" } }).then((r) => (r.ok ? null : r.json())).then((b) => { if (b && b.detail) toast(b.detail); }).catch(() => {});
-    // Пробуем следующий трек, но не больше 3 ошибок подряд, чтобы не уйти в цикл
-    if (state.errors++ < 3 && nextIndex() >= 0) setTimeout(playNext, 800);
+    if (!t) return;
+    if (kind === "local") { failTrack(t, "Не удалось прочитать скачанный файл."); return; }
+    // Причина — с backend (тот же адрес отвечает JSON с detail и X-Wave-Error)
+    fetch(t.stream_url, { headers: { Range: "bytes=0-0" } })
+      .then(async (r) => (r.ok ? null : { code: r.headers.get("X-Wave-Error"), detail: (await r.json().catch(() => ({}))).detail }))
+      .catch(() => null)
+      .then((e) => {
+        if (current() !== t) return;
+        // Прогрессивная ссылка сменилась на HLS (S8): перезапуск через /playback с того же места
+        if (e && e.code === "hls_required" && player.recover < HLS_MAX_RECOVER) {
+          player.recover++;
+          startTrack(t, at);
+          return;
+        }
+        failTrack(t, e && e.detail);
+      });
   }
+  // Окно закрывают: HLS-сеанс на backend освобождается сразу, не дожидаясь срока жизни
+  window.addEventListener("pagehide", detachHls);
   function stopAtEnd() { audio.currentTime = 0; setPlayingUI(false); updateProgress(); }
 
   // ==========================================================================

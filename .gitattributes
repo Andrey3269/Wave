@@ -12,3 +12,6 @@
 *.jpg binary
 *.exe binary
 *.zip binary
+
+# Сторонний JavaScript интерфейса (S8): байт в байт как в npm-пакете (SHA-256 в frontend/vendor/vendor.lock.json)
+frontend/vendor/*.js -text -diff linguist-vendored

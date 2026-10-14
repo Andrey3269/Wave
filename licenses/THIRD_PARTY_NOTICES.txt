@@ -69,7 +69,21 @@ Apache-2.0), текст — licenses\python\pyinstaller-<версия>\COPYING.t
 и другие инструменты сборки (Pillow, setuptools, pefile, altgraph) в приложение не входят.
 
 
-5. Microsoft WebView2 SDK 1.0.3856.49 (в составе pywebview)
+5. hls.js 1.7.3 — воспроизведение HLS в интерфейсе
+---------------------------------------------------
+Назначение: воспроизведение аудиопотоков HLS (SoundCloud отдаёт часть треков только так) через тот же
+тег <audio> (Media Source Extensions). В сборке: _internal\frontend\vendor\hls.light.min.js — файл
+dist/hls.light.min.js из npm-пакета hls.js 1.7.3 без изменений (light-сборка: без EME/DRM, субтитров
+и альтернативных дорожек). Источник: https://registry.npmjs.org/hls.js/-/hls.js-1.7.3.tgz, integrity
+sha512-MsPlx6yVW4Qv4C7mEVou4/gk/5cN2dVxOTnrNjPSmyH2f0Ln+/UkG10Ax1PE6OvrmTVPKgQYozTtBaPOuCzq7A==,
+SHA-256 файла 0251332c00a216a35d7d6919044d60da82b78beb3bd50ac6c662ae74a2f5474b
+(frontend\vendor\vendor.lock.json). Загружается с локального диска, из интернета не скачивается.
+Лицензия: Apache License 2.0, Copyright (c) 2017 Dailymotion; части remux/mp4-generator и exp-golomb —
+Copyright (c) 2013-2015 Brightcove (Apache 2.0). Текст: licenses\hls.js\LICENSE.
+Исходный код: https://github.com/video-dev/hls.js/tree/v1.7.3
+
+
+6. Microsoft WebView2 SDK 1.0.3856.49 (в составе pywebview)
 ------------------------------------------------------------
 Библиотеки Microsoft.Web.WebView2.Core.dll, Microsoft.Web.WebView2.WinForms.dll и WebView2Loader.dll
 поставляются внутри пакета pywebview (_internal\webview\lib\). Лицензия Microsoft (BSD-подобная):
@@ -77,7 +91,7 @@ licenses\webview2-sdk\LICENSE.txt — текст из официального �
 той же версии (https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3856.49).
 
 
-6. Microsoft Edge WebView2 Runtime
+7. Microsoft Edge WebView2 Runtime
 ----------------------------------
 В приложение не входит: окно ВОЛНЫ использует WebView2 Runtime, установленный в Windows. Если его нет,
 установщик ВОЛНЫ запускает официальный загрузчик Microsoft (MicrosoftEdgeWebview2Setup.exe), который
@@ -85,7 +99,7 @@ licenses\webview2-sdk\LICENSE.txt — текст из официального �
 https://developer.microsoft.com/microsoft-edge/webview2/
 
 
-7. Установщик
+8. Установщик
 -------------
 Установщик Wave-Setup-<версия>.exe создан с помощью Inno Setup (Copyright (C) 1997-2026 Jordan Russell,
 Copyright (C) 2000-2026 Martijn Laan; https://jrsoftware.org/).
