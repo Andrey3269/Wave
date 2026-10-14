@@ -17,6 +17,10 @@ import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags,
 import { toast, hideToast } from "./js/components/toast.js";
 import { setBlock, initEmptyRetry, skelRows, skelCards } from "./js/components/skeleton.js";
 import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/components/dialogs.js";
+import { loadLyrics, syncLyrics, initLyrics } from "./js/components/lyrics.js";
+import { updateProgress, paintVolume, toggleMute, initSliders } from "./js/player/sliders.js";
+import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, playPrev, setShuffle, setRepeat,
+  warmTrack, scheduleWarm, initPlayer } from "./js/player/controller.js";
 
 (() => {
   /** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
@@ -809,15 +813,8 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   // ==========================================================================
   // Воспроизведение
   // ==========================================================================
-  /** Играть треки как очередь. Очередь копирует массив (M11); если источник потом дополнится (лента главной,
-   *  следующая страница списка), очередь продолжится через continuation — пока пользователь её не правил. */
-  function playTracks(tracks, i, label = "") {
-    if (!tracks[i]) return;
-    const prev = current();                                // играющий трек — до замены очереди
-    queue.load(tracks, { label, source: tracks, continuation: async () => tracks });
-    state.mixId = null; markMix();
-    playIndex(i, prev);
-  }
+  /** Играть треки как очередь (player/controller.js: очередь копирует массив, источник продолжает её). */
+  const playTracks = (tracks, i, label = "") => play(tracks, i, { label });
   /** Подпись очереди: откуда играет («Альбом 1», «Поиск: gspd», «Нравится»...). */
   function listLabel() {
     if (DETAIL_VIEWS.includes(state.view)) return el.dTitle.textContent;
@@ -825,328 +822,17 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     return el.resultsTitle.textContent;
   }
   function playFromList(i) {
-    const list = state.list;
-    if (!list[i]) return;
-    const prev = current();
-    queue.load(list, { label: listLabel(), source: list, continuation: async () => list });
-    state.mixId = state.view === "mix" ? state.ctx?.mix : null; markMix();
-    playIndex(i, prev);
+    play(state.list, i, { label: listLabel(), mixId: state.view === "mix" ? state.ctx?.mix : null });
   }
 
-  /** prev — трек, который играл до этого. Если очередь только что заменили, current() уже указывает в новую
-   *  очередь по старому номеру, поэтому вызывающий передаёт прерванный трек сам. */
-  function playIndex(i, prev = current()) {
-    const track = queue.at(i);
-    if (!track) return;
-    if (prev && audio.currentTime > 0 && !audio.ended && audio.currentTime < Math.min(30, (getDuration() || 999) * 0.4)) reportSkip(prev);   // переключили почти сразу = пропуск
-    queue.select(i);
-    recordPlay(track);
-
-    showNowPlaying(track);
-    setLoading("Загрузка…");
-    player.recover = 0;
-    startTrack(track, 0);
-  }
-
-  // ==========================================================================
-  // Источник звука трека (S8): обычный файл через <audio src> или HLS через hls.js — в тот же <audio>.
-  // ==========================================================================
-  // Источники, у которых backend отдаёт только прогрессивный файл (streaming/resolver.py: SOURCES[...].hls=False).
-  // Для остальных плеер сначала спрашивает /api/stream/{source}/{id}/playback, как играть трек: SoundCloud
-  // часть треков отдаёт только по HLS (N4). Совпадение с backend проверяет tests/unit/test_format_choice.py.
-  const PROGRESSIVE_ONLY = new Set(["yt"]);
-  const HLS_MAX_RECOVER = 2;                // перезапусков трека после сбоя потока (с того же места), не больше
-  const player = { gen: 0, kind: null, hls: null, token: null, pending: false, recover: 0, mediaRecovered: false, ctl: null };
-  let hlsLib = null;
-
-  /** hls.js грузится с локального диска при первом HLS-треке (не замедляет старт; без CDN и интернета). */
-  function loadHls() {
-    if (window.Hls) return Promise.resolve(window.Hls);
-    if (!hlsLib) {
-      hlsLib = new Promise((resolve, reject) => {
-        const s = document.createElement("script");
-        s.src = "vendor/hls.light.min.js";
-        s.async = true;
-        s.onload = () => (window.Hls ? resolve(window.Hls) : reject(new Error("Компонент воспроизведения HLS не загрузился.")));
-        s.onerror = () => { hlsLib = null; reject(new Error("Компонент воспроизведения HLS не загрузился.")); };
-        document.head.appendChild(s);
-      });
-    }
-    return hlsLib;
-  }
-
-  /** Освобождает прошлый HLS-поток: экземпляр hls.js (MSE, таймеры, загрузки) и сеанс на backend. */
-  function detachHls() {
-    const h = player.hls, token = player.token;
-    player.hls = null; player.token = null;
-    if (h) { try { h.destroy(); } catch { /* уже уничтожен */ } }
-    if (token) fetch(`/api/stream/hls/${token}`, { method: "DELETE", keepalive: true }).catch(() => {});
-  }
-
-  /** Запуск трека с позиции at (с): новый «поколение» отменяет всё, что относилось к прошлому треку. */
-  function startTrack(track, at) {
-    const gen = ++player.gen;
-    if (player.ctl) player.ctl.abort();
-    player.ctl = null;
-    detachHls();
-    player.kind = null;
-    player.mediaRecovered = false;
-    if (PROGRESSIVE_ONLY.has(track.source)) { playDirect(track.stream_url, at, "progressive"); return; }
-    player.pending = true;                  // пока ждём ответа, Play не должен запускать что-то другое
-    const ctl = new AbortController();
-    player.ctl = ctl;
-    fetch(`${track.stream_url}/playback`, { signal: ctl.signal, cache: "no-store" })
-      .then(async (r) => {
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw Object.assign(new Error(body.detail || `Ошибка ${r.status}`), { code: r.headers.get("X-Wave-Error") });
-        return body;
-      })
-      .then((info) => {
-        if (gen !== player.gen) return undefined;
-        player.ctl = null;
-        if (info.kind === "hls") return playHls(track, info, at, gen);
-        playDirect(info.url || track.stream_url, at, info.kind || "progressive");
-        return undefined;
-      })
-      .catch((err) => {
-        if (gen !== player.gen || err.name === "AbortError") return;
-        player.pending = false;
-        failTrack(track, err.message);
-      });
-  }
-
-  function playDirect(url, at, kind) {
-    player.pending = false;
-    player.kind = kind;
-    audio.src = url;
-    audio.loop = state.repeat;
-    if (at > 0) audio.addEventListener("loadedmetadata", () => { audio.currentTime = at; }, { once: true });
-    audio.play().catch(onPlayRejected);
-  }
-
-  async function playHls(track, info, at, gen) {
-    let Hls;
-    try {
-      Hls = await loadHls();
-    } catch (err) {
-      if (gen === player.gen) { player.pending = false; failTrack(track, err.message); }
-      return;
-    }
-    if (gen !== player.gen) return;
-    if (!Hls.isSupported()) { player.pending = false; failTrack(track, "Встроенный браузер не поддерживает воспроизведение HLS (Media Source Extensions)."); return; }
-    const retry = { maxNumRetry: 2, retryDelayMs: 800, maxRetryDelayMs: 4000 };
-    const policy = (ttfb, total) => ({ default: { maxTimeToFirstByteMs: ttfb, maxLoadTimeMs: total, timeoutRetry: retry, errorRetry: retry } });
-    const h = new Hls({
-      enableWorker: false,                 // без blob-воркера: всё в одном потоке, предсказуемо в WebView2
-      lowLatencyMode: false,
-      startPosition: at > 0 ? at : -1,
-      maxBufferLength: 30,
-      backBufferLength: 30,
-      manifestLoadPolicy: policy(15000, 30000),
-      playlistLoadPolicy: policy(15000, 30000),
-      fragLoadPolicy: policy(15000, 60000),
-    });
-    player.hls = h;
-    player.token = (info.url.match(/^\/api\/stream\/hls\/([\w-]+)\//) || [])[1] || null;
-    player.kind = "hls";
-    player.pending = false;
-    h.on(Hls.Events.MANIFEST_PARSED, () => {
-      if (gen !== player.gen) return;
-      audio.loop = state.repeat;
-      audio.play().catch(onPlayRejected);
-    });
-    h.on(Hls.Events.ERROR, (_e, data) => {
-      if (gen !== player.gen || !data || !data.fatal) return;   // нефатальные сбои hls.js повторяет сам
-      onHlsFatal(track, h, data, Hls);
-    });
-    h.attachMedia(audio);
-    h.loadSource(info.url);
-  }
-
-  /** Текст ошибки backend (detail) из ответа, который вернулся hls.js. */
-  function hlsDetail(data) {
-    try {
-      const x = data.networkDetails;
-      const text = x && typeof x.responseText === "string" ? x.responseText : "";
-      return text ? JSON.parse(text).detail || null : null;
-    } catch { return null; }
-  }
-
-  function onHlsFatal(track, h, data, Hls) {
-    // Ошибка декодера: одна штатная попытка восстановления hls.js, потом — честная ошибка
-    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !player.mediaRecovered) {
-      player.mediaRecovered = true;
-      h.recoverMediaError();
-      return;
-    }
-    const at = audio.currentTime || 0;
-    const code = data.response && data.response.code;
-    // Сеть, устаревший сеанс (404) или сменившийся поток (409): перезапуск трека с того же места через
-    // /playback (новая ссылка и новый сеанс), не больше HLS_MAX_RECOVER раз подряд
-    // Экземпляр hls.js не уничтожается внутри его же обработчика события: перезапуск и ошибка — следующей задачей
-    const gen = player.gen;
-    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && player.recover < HLS_MAX_RECOVER && navigator.onLine) {
-      player.recover++;
-      setLoading("Восстановление потока…");
-      setTimeout(() => { if (gen === player.gen) startTrack(track, at); }, 0);
-      return;
-    }
-    const fallback = data.type === Hls.ErrorTypes.MEDIA_ERROR ? "Плеер не смог декодировать HLS-поток этого трека."
-      : code ? `Сервер потока ответил ошибкой HTTP ${code}.` : "Не удалось загрузить HLS-поток. Проверьте подключение к интернету.";
-    const detail = hlsDetail(data);
-    const url = data.url || (data.frag && data.frag.url) || (data.context && data.context.url);
-    if (detail || !code || !url) { setTimeout(() => { if (gen === player.gen) failTrack(track, detail || fallback); }, 0); return; }
-    // Причину (detail) отдаёт backend — тот же адрес отвечает JSON, а hls.js читал тело как бинарные данные
-    fetch(url, { cache: "no-store" })
-      .then((r) => (r.ok ? null : r.json()))
-      .catch(() => null)
-      .then((b) => { if (gen === player.gen) failTrack(track, (b && b.detail) || fallback); });
-  }
-
-  /** Трек не играет: сообщение с настоящей причиной и переход к следующему (не больше 3 сбоев подряд). */
-  function failTrack(track, detail) {
-    if (current() !== track) return;        // пользователь уже переключил трек: старая ошибка не мешает новому
-    detachHls();
-    // Одно сообщение с трек-названием и настоящей причиной (тост показывает одно сообщение: второе затирало первое)
-    toast(detail ? `Не удалось воспроизвести «${track.title}»: ${detail}` : `Не удалось воспроизвести: ${track.title}`,
-      detail ? 6000 : 3600);
-    clearLoading();
-    setPlayingUI(false);
-    if (state.errors++ < 3 && nextIndex() >= 0) setTimeout(playNext, 800);
-  }
-
-  function onPlayRejected(err) {
-    // AbortError: быстро переключили трек, пока шёл прошлый play(): это нормально
-    if (err.name === "AbortError") return;
-    if (err.name === "NotAllowedError") { toast("Нажми Play, чтобы начать воспроизведение"); return; }
-    onAudioError();
-  }
-
-  function togglePlay() {
-    if (player.pending) return undefined;   // трек ещё готовится (/playback): Play не запускает ничего другого
-    if (!audio.getAttribute("src")) {
-      if (state.view === "home") return startWave();
-      if (queue.length) return playIndex(Math.max(0, queue.index));
-      if (state.list.length) return playFromList(0);
-      el.input.focus();
-      return undefined;
-    }
-    if (audio.paused) audio.play().catch(onPlayRejected); else audio.pause();
+  // Play при пустом <audio>: на главной — подборка, иначе очередь или список на экране
+  setIdleAction(() => {
+    if (state.view === "home") return startWave();
+    if (queue.length) return playIndex(Math.max(0, queue.index));
+    if (state.list.length) return playFromList(0);
+    el.input.focus();
     return undefined;
-  }
-
-  function nextIndex() {
-    return queue.nextIndex({ shuffle: state.shuffle });
-  }
-  function playNext() {
-    const j = nextIndex();
-    if (j >= 0) playIndex(j);
-  }
-  function playPrev() {
-    // как в большинстве плееров: после 3 секунд «назад» перематывает в начало трека
-    if (audio.currentTime > 3 || queue.index <= 0) { audio.currentTime = 0; return; }
-    playIndex(queue.prevIndex());
-  }
-  function seekBy(delta) {
-    const dur = getDuration();
-    if (!dur) return;
-    audio.currentTime = clamp(audio.currentTime + delta, 0, dur);
-  }
-  function getDuration() {
-    if (Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
-    return current()?.duration || 0;
-  }
-  function setShuffle(on) {
-    state.shuffle = on;
-    ctl.shuffle.forEach((b) => b.setAttribute("aria-pressed", String(on)));
-    if (state.view === "home") renderHero();
-  }
-  function setRepeat(on) {
-    state.repeat = on;
-    audio.loop = on;
-    ctl.repeat.forEach((b) => b.setAttribute("aria-pressed", String(on)));
-  }
-
-  /**
-   * Прогрев: просим у сервера 1 байт трека, чтобы он заранее получил прямую ссылку
-   * через yt-dlp (это занимает секунды). К моменту клика трек стартует почти сразу.
-   */
-  const warmed = new Map();                  // id -> время прогрева
-  function warmTrack(t) {
-    if (!t) return;
-    const last = warmed.get(t.id);
-    if (last && Date.now() - last < 20 * 60 * 1000) return;   // ссылка на сервере живёт часами
-    warmed.set(t.id, Date.now());
-    // Сервер сразу отвечает 202/204 и в фоне получает ссылку + первую порцию трека
-    fetch(`${t.stream_url}?warm=1`, { cache: "no-store" })
-      .then((r) => { if (r.status !== 202 && r.status !== 204) warmed.delete(t.id); })  // 503: занят, позже
-      .catch(() => warmed.delete(t.id));
-  }
-  // После поиска готовим первые треки заранее, с паузой, чтобы не нагружать сервер разом
-  let warmTimers = [];
-  function scheduleWarm(list) {
-    warmTimers.forEach(clearTimeout);
-    warmTimers = list.map((t, i) => setTimeout(() => warmTrack(t), i * 1500));
-  }
-  /** Прогреваем следующий трек очереди (при shuffle он заранее неизвестен). */
-  function warmNext() {
-    if (!state.shuffle) warmTrack(queue.peekNext());
-  }
-
-  // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
-  function setLoading(text) { el.artist.textContent = text; }
-  function clearLoading() { const t = current(); if (t) renderArtists(el.artist, t); }
-
-  // ---------- События <audio> ----------
-  audio.addEventListener("play", () => setPlayingUI(true));
-  audio.addEventListener("pause", () => setPlayingUI(false));
-  audio.addEventListener("waiting", () => setLoading("Буферизация…"));
-  audio.addEventListener("playing", () => {
-    state.errors = 0;
-    clearLoading();
-    warmNext();
   });
-  audio.addEventListener("loadedmetadata", () => { updateProgress(); updatePositionState(); });
-  audio.addEventListener("durationchange", updateProgress);
-  audio.addEventListener("timeupdate", () => { if (!state.seeking) updateProgress(); });
-  audio.addEventListener("seeked", updatePositionState);
-  audio.addEventListener("ratechange", updatePositionState);
-  audio.addEventListener("ended", () => {
-    const j = nextIndex();
-    if (j >= 0) playIndex(j);
-    else if (state.settings.autoplay && navigator.onLine) continueWithRecs();
-    else stopAtEnd();
-  });
-  audio.addEventListener("error", onAudioError);
-
-  function onAudioError() {
-    if (!audio.getAttribute("src") || player.pending) return;
-    const t = current();
-    if (player.kind === "hls") return;     // ошибки HLS-потока обрабатывает onHlsFatal (у hls.js точнее причина)
-    const at = audio.currentTime || 0;
-    const kind = player.kind;
-    clearLoading();
-    setPlayingUI(false);
-    if (!t) return;
-    if (kind === "local") { failTrack(t, "Не удалось прочитать скачанный файл."); return; }
-    // Причина — с backend (тот же адрес отвечает JSON с detail и X-Wave-Error)
-    fetch(t.stream_url, { headers: { Range: "bytes=0-0" } })
-      .then(async (r) => (r.ok ? null : { code: r.headers.get("X-Wave-Error"), detail: (await r.json().catch(() => ({}))).detail }))
-      .catch(() => null)
-      .then((e) => {
-        if (current() !== t) return;
-        // Прогрессивная ссылка сменилась на HLS (S8): перезапуск через /playback с того же места
-        if (e && e.code === "hls_required" && player.recover < HLS_MAX_RECOVER) {
-          player.recover++;
-          startTrack(t, at);
-          return;
-        }
-        failTrack(t, e && e.detail);
-      });
-  }
-  // Окно закрывают: HLS-сеанс на backend освобождается сразу, не дожидаясь срока жизни
-  window.addEventListener("pagehide", detachHls);
-  function stopAtEnd() { audio.currentTime = 0; setPlayingUI(false); updateProgress(); }
 
   // ==========================================================================
   // UI плеера: мини-плеер, баннер и страница трека показывают одно состояние
@@ -1158,10 +844,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     setCover(el.cover, t.cover, 120);
     document.title = `${t.title} — ${t.artist}`;
     document.body.dataset.track = "1";
-    progressBars.forEach((p) => p.bar.style.setProperty("--p", "0%"));   // только полосы прогресса: громкость остаётся как есть
-    progressBars.forEach((p) => { if (p.cur) p.cur.textContent = "0:00"; if (p.tot) p.tot.textContent = fmtTime(t.duration); });
     markPlaying();
-    updateMediaMetadata(t);
     paintLike();
     renderHero();
     if (state.view === "now") renderNow();
@@ -1180,168 +863,28 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
       b.dataset.playing = String(playing);
       if (b !== hero.play) b.setAttribute("aria-label", playing ? "Пауза" : "Играть");
     });
-    if (mediaSession) mediaSession.playbackState = playing ? "playing" : "paused";
     renderHero();
-    updatePositionState();
   }
+  // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
+  function setLoading(text) {
+    if (text != null) { el.artist.textContent = text; return; }
+    const t = current();
+    if (t) renderArtists(el.artist, t);
+  }
+  /** Режимы перемешивания и повтора: кнопки на всех экранах. */
+  function paintModes(changed) {
+    ctl.shuffle.forEach((b) => b.setAttribute("aria-pressed", String(state.shuffle)));
+    ctl.repeat.forEach((b) => b.setAttribute("aria-pressed", String(state.repeat)));
+    if (changed === "shuffle" && state.view === "home") renderHero();
+  }
+  playerEvents.on("track", showNowPlaying);
+  playerEvents.on("loading", setLoading);
+  playerEvents.on("playing", setPlayingUI);
+  playerEvents.on("modes", paintModes);
+  playerEvents.on("mix", () => markMix());
+  initPlayer();
 
-  // Полосы прогресса: мини-плеер, баннер, страница трека
-  const progressBars = [
-    { bar: el.progress, cur: el.tCur, tot: el.tTotal },
-    { bar: hero.bar, cur: hero.cur, tot: hero.tot },
-    { bar: now.bar, cur: now.cur, tot: now.tot },
-    { bar: fs.bar, cur: fs.cur, tot: fs.tot },
-  ];
-  function updateProgress() {
-    const dur = getDuration();
-    const cur = audio.currentTime || 0;
-    const pct = dur ? clamp((cur / dur) * 100, 0, 100) : 0;
-    for (const p of progressBars) {
-      p.bar.style.setProperty("--p", `${pct}%`);
-      p.bar.setAttribute("aria-valuenow", String(Math.round(pct)));
-      p.bar.setAttribute("aria-valuetext", `${fmtTime(cur)} из ${fmtTime(dur)}`);
-      p.cur.textContent = fmtTime(cur);
-      p.tot.textContent = fmtTime(dur);
-    }
-    if (state.view === "home") {                          // у текущей карточки «Продолжить слушать» живой прогресс
-      const mc = el.continueRow.querySelector(".minicard.is-playing");
-      if (mc) {
-        mc.querySelector(".minibar").style.setProperty("--p", `${pct}%`);
-        mc.querySelector(".minicard__time").textContent = `${fmtTime(cur)} / ${fmtTime(dur)}`;
-      }
-    }
-    if (state.view === "now" || state.fs.open) tickLyrics(cur);
-  }
-
-  // ---------- Универсальный ползунок (прогресс и громкость) ----------
-  function makeSlider(node, { preview, commit, nudge, cancel = () => {} }) {
-    const fraction = (e) => {
-      const r = node.getBoundingClientRect();
-      return clamp((e.clientX - r.left) / r.width, 0, 1);
-    };
-    let dragging = false;
-    node.addEventListener("pointerdown", (e) => {
-      if (e.pointerType === "mouse" && e.button !== 0) return;
-      dragging = true;
-      node.setPointerCapture(e.pointerId);
-      preview(fraction(e));
-    });
-    node.addEventListener("pointermove", (e) => { if (dragging) preview(fraction(e)); });
-    node.addEventListener("pointerup", (e) => {
-      if (!dragging) return;
-      dragging = false;
-      commit(fraction(e));
-    });
-    node.addEventListener("pointercancel", () => { dragging = false; cancel(); });
-    node.addEventListener("keydown", (e) => {
-      const dir = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[e.key];
-      if (!dir) return;
-      e.preventDefault();
-      nudge(dir);
-    });
-  }
-  // Прогресс: во время перетаскивания обновляем только вид, а перемотку делаем при отпускании
-  for (const p of progressBars) {
-    makeSlider(p.bar, {
-      preview(f) {
-        state.seeking = true;
-        p.bar.style.setProperty("--p", `${f * 100}%`);
-        p.cur.textContent = fmtTime(f * getDuration());
-      },
-      commit(f) {
-        state.seeking = false;
-        const dur = getDuration();
-        if (dur) audio.currentTime = f * dur;            // сервер ответит 206 на Range-запрос
-        updateProgress();
-      },
-      cancel() { state.seeking = false; updateProgress(); },
-      nudge: (dir) => seekBy(dir * 5),
-    });
-  }
-
-  // Громкость: ползунки мини-плеера, страницы трека и полноэкранного плеера управляют одним audio.volume.
-  // Mute = audio.muted: сама громкость не обнуляется, поэтому после включения звука она возвращается как была.
-  // Вид всех ползунков и кнопок перерисовывается по событию volumechange самого <audio>.
-  const volBars = [el.volume, now.volume, fs.volume];
-  function paintVolume() {
-    const eff = audio.muted ? 0 : audio.volume;
-    for (const node of volBars) {
-      node.style.setProperty("--p", `${eff * 100}%`);
-      node.setAttribute("aria-valuenow", String(Math.round(eff * 100)));
-      node.setAttribute("aria-valuetext", audio.muted ? "Звук выключен" : `${Math.round(eff * 100)}%`);
-    }
-    const off = eff === 0;
-    ctl.mute.forEach((b) => {
-      const label = off ? "Включить звук" : "Выключить звук";
-      b.setAttribute("aria-pressed", String(off));
-      b.title = label;
-      b.setAttribute("aria-label", label);
-      b.querySelector("use").setAttribute("href", off ? "#i-volume-off" : "#i-volume");
-    });
-  }
-  /** commit=false: промежуточные значения при перетаскивании. «Последней слышимой» громкостью они не считаются,
-   *  поэтому, если ушли ползунком в ноль, mute вернёт то значение, что было до перетаскивания. */
-  function setVolume(v, commit = true) {
-    if (!flags.uiReady) flags.volTouched = true;
-    v = clamp(v, 0, 1);
-    audio.volume = v;
-    if (v > 0) audio.muted = false;
-    if (commit && v >= 0.05) { state.lastVol = v; uiSave.put({ last_volume: round3(v) }); }
-    paintVolume();
-  }
-  function toggleMute() {
-    if (!flags.uiReady) flags.volTouched = true;
-    if (audio.muted || audio.volume === 0) {
-      audio.muted = false;
-      if (audio.volume === 0) audio.volume = state.lastVol || 0.6;   // ушли ползунком в ноль: возвращаем последнюю слышимую громкость
-    } else {
-      audio.muted = true;
-    }
-    paintVolume();
-  }
-  audio.addEventListener("volumechange", () => {
-    paintVolume();
-    if (flags.uiReady) uiSave.put({ volume: round3(audio.volume) });   // перетаскивание: одна запись в конце (см. uiSave)
-  });
-  for (const node of volBars) {
-    makeSlider(node, { preview: (v) => setVolume(v, false), commit: (v) => setVolume(v, true), nudge: (dir) => setVolume((audio.muted ? 0 : audio.volume) + dir * 0.05) });
-  }
-  paintVolume();                                           // громкость из настроек придёт в applyUiSettings
-
-  // ==========================================================================
-  // Media Session (медиаклавиши, экран блокировки, часы/наушники)
-  // ==========================================================================
-  const mediaSession = "mediaSession" in navigator ? navigator.mediaSession : null;
-  function updateMediaMetadata(t) {
-    if (!mediaSession || typeof MediaMetadata === "undefined") return;
-    mediaSession.metadata = new MediaMetadata({
-      title: t.title, artist: t.artist, album: t.album || "",
-      artwork: t.cover ? [{ src: t.cover, sizes: "544x544" }] : [],
-    });
-  }
-  function updatePositionState() {
-    if (!mediaSession || !mediaSession.setPositionState) return;
-    const dur = getDuration();
-    if (!dur) return;
-    try {
-      mediaSession.setPositionState({ duration: dur, playbackRate: audio.playbackRate || 1, position: clamp(audio.currentTime || 0, 0, dur) });
-    } catch { /* некорректное состояние при смене трека: игнорируем */ }
-  }
-  if (mediaSession) {
-    const actions = {
-      play: () => audio.play().catch(onPlayRejected),
-      pause: () => audio.pause(),
-      previoustrack: playPrev,
-      nexttrack: playNext,
-      stop: () => { audio.pause(); audio.currentTime = 0; },
-      seekbackward: (d) => seekBy(-(d.seekOffset || 10)),
-      seekforward: (d) => seekBy(d.seekOffset || 10),
-      seekto: (d) => { if (Number.isFinite(d.seekTime)) audio.currentTime = d.seekTime; },
-    };
-    for (const [name, handler] of Object.entries(actions)) {
-      try { mediaSession.setActionHandler(name, handler); } catch { /* действие не поддерживается */ }
-    }
-  }
+  initSliders();
 
   // ==========================================================================
   // Страница текущего трека
@@ -1371,71 +914,20 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     paintDl(now.dl, t);
     now.stage.classList.toggle("no-lyrics", !state.lyricsOn);
     now.lyricsBtn.setAttribute("aria-pressed", String(state.lyricsOn));
-    if (state.lyricsOn) { loadLyrics(t); ly.idx = -2; tickLyrics(audio.currentTime || 0, true); }
+    if (state.lyricsOn) { loadLyrics(t); syncLyrics(); }
     loadSimilar(t);
     updateProgress();
   }
 
-  // ---------- тексты ----------
-  // Данные одни (LRCLIB через /api/lyrics), показываем их в двух местах: панель на странице трека и режим «Текст песни».
-  const LY_TEXT = { loading: "Ищем текст…", none: "Текст для этого трека не найден", error: "Текст сейчас недоступен" };
-  const ly = { lines: [], plain: "", status: "idle", idx: -1, key: "" };
-  const lyBoxes = [now.lyrics, fs.lyrics];
-  function paintLyrics() {
-    for (const box of lyBoxes) {
-      if (ly.status === "ok" && ly.lines.length) box.replaceChildren(...ly.lines.map((l, i) => { const p = mk("p", "ly", l.text); p.dataset.i = i; return p; }));
-      else if (ly.status === "ok") box.replaceChildren(mk("p", "ly ly--plain", ly.plain));   // текст без таймкодов: без ложной синхронизации
-      else box.replaceChildren(mk("p", "lyrics__empty", LY_TEXT[ly.status] || ""));
-    }
-    ly.idx = -2;                                           // заставляем tickLyrics заново выставить подсветку
-    tickLyrics(audio.currentTime || 0, true);
-  }
-  async function loadLyrics(t) {
-    const key = trackKey(t);
-    if (ly.key === key) return;
-    Object.assign(ly, { lines: [], plain: "", status: "loading", idx: -1, key });
-    paintLyrics();
-    try {
-      const artist = (t.artists && t.artists[0]) || t.artist;
-      const local = t.downloaded || state.dl.has(key) ? `&source=${t.source}&id=${enc(t.id)}` : "";
-      const d = await api(`/api/lyrics?artist=${enc(artist)}&title=${enc(t.title)}${t.duration ? `&duration=${t.duration}` : ""}${local}`);
-      if (ly.key !== key) return;                          // трек уже сменился
-      if (d.synced && d.synced.length) Object.assign(ly, { lines: d.synced, status: "ok" });
-      else if (d.plain) Object.assign(ly, { plain: d.plain, status: "ok" });
-      else ly.status = "none";
-    } catch {
-      if (ly.key !== key) return;
-      ly.key = ""; ly.status = "error";                    // в следующий раз попробуем снова
-    }
-    paintLyrics();
-  }
-  /** Подсветка текущей строки (только при реальных таймкодах). Прокручиваем сам блок текста, а не страницу. */
-  function tickLyrics(cur, instant = false) {
-    if (ly.status !== "ok" || !ly.lines.length) return;
-    let idx = -1;
-    for (let i = 0; i < ly.lines.length && ly.lines[i].t <= cur; i++) idx = i;
-    if (idx === ly.idx) return;
-    ly.idx = idx;
-    for (const box of lyBoxes) {
-      const kids = box.children;
-      for (let i = 0; i < kids.length; i++) { kids[i].classList.toggle("cur", i === idx); kids[i].classList.toggle("past", i < idx); }
-      const p = kids[idx];
-      if (p && box.offsetParent !== null) box.scrollTo({ top: p.offsetTop - box.clientHeight / 2 + p.clientHeight / 2, behavior: instant ? "auto" : "smooth" });
-    }
-  }
-  for (const box of lyBoxes) {
-    box.addEventListener("click", (e) => {                 // клик по строке = перемотка к ней
-      const p = e.target.closest(".ly[data-i]");
-      if (p && ly.lines[Number(p.dataset.i)]) audio.currentTime = ly.lines[Number(p.dataset.i)].t;
-    });
-  }
+  // ---------- тексты (components/lyrics.js) ----------
+  initLyrics();
   function toggleLyrics() {
     state.lyricsOn = !state.lyricsOn;
     uiSave.put({ lyrics_visible: state.lyricsOn }, 0);
     now.stage.classList.toggle("no-lyrics", !state.lyricsOn);
     now.lyricsBtn.setAttribute("aria-pressed", String(state.lyricsOn));
     const t = current();
-    if (state.lyricsOn && t) { loadLyrics(t); ly.idx = -2; tickLyrics(audio.currentTime || 0, true); }
+    if (state.lyricsOn && t) { loadLyrics(t); syncLyrics(); }
   }
 
   // ---------- похожие треки и исполнители (радио текущего трека) ----------
@@ -1554,7 +1046,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     fs.queueBtn.setAttribute("aria-pressed", String(mode === "queue"));
     closeMenu();
     const t = current();
-    if (mode === "lyrics" && t) { loadLyrics(t); ly.idx = -2; tickLyrics(audio.currentTime || 0, true); }
+    if (mode === "lyrics" && t) { loadLyrics(t); syncLyrics(); }
     if (mode === "queue") renderFsQueue();
     // кнопки верхней панели в режиме очереди скрыты: фокус не должен пропасть
     if (mode === "queue" && prev !== "queue") fs.queuePanel.querySelector('[data-fs="qclose"]')?.focus({ preventScroll: true });
@@ -1616,8 +1108,6 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
       toast(`Не удалось обновить избранное: ${e.message}`);
     }
   }
-  function recordPlay(t) { api("/api/history", jsonOpts("POST", trackPayload(t))).catch(() => {}); }
-  function reportSkip(t) { api("/api/history/skip", jsonOpts("POST", { source: t.source, id: t.id })).catch(() => {}); }
 
   async function showLiked() {
     state.reopen = () => showLiked();
@@ -1830,23 +1320,6 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (from >= 0 && to >= 0) queueMoveTo(from, to);
   });
   fs.qList.addEventListener("dragend", () => { fqClearMarks(); fqLockRows(); fqFrom = -1; fqTo = -1; });
-
-  /** Очередь закончилась: дописываем похожие треки и продолжаем (настройка «Продолжать похожими»). */
-  async function continueWithRecs() {
-    const cur = current();
-    if (!cur) return stopAtEnd();
-    try {
-      const qs = new URLSearchParams({ limit: "12", source: cur.source, id: cur.id, title: cur.title, exclude: queue.tracks.map(trackKey).join(",") });
-      const d = recsResult(await api(`/api/recommendations?${qs}`));
-      const have = new Set(queue.tracks.map(trackKey));
-      const fresh = d.tracks.filter((t) => !have.has(trackKey(t)));
-      const from = queue.append(fresh);                    // как и раньше: дописанная очередь — собственная
-      if (!fresh.length) return stopAtEnd();
-      queue.label = "Похожие треки";
-      toast("Очередь закончилась. Продолжаем похожими треками.");
-      return playIndex(from);
-    } catch { return stopAtEnd(); }
-  }
 
   // ==========================================================================
   // Диалоги (вместо prompt/confirm браузера)

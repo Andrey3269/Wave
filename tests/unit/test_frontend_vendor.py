@@ -34,8 +34,15 @@ def test_license_and_notice():
     assert "licenses\\hls.js\\LICENSE" in notices
 
 
+def _frontend_js() -> str:
+    """Весь JavaScript интерфейса (S9: ES-модули frontend/js/**; vendor — сторонние библиотеки, не наш код)."""
+    files = sorted(p for p in FRONT.rglob("*.js") if "vendor" not in p.relative_to(FRONT).parts)
+    assert files, "нет JavaScript интерфейса"
+    return "\n".join(p.read_text(encoding="utf-8") for p in files)
+
+
 def test_frontend_loads_hls_locally_and_uses_no_cdn():
-    app = (FRONT / "app.js").read_text(encoding="utf-8")
+    app = _frontend_js()
     index = (FRONT / "index.html").read_text(encoding="utf-8")
     assert f's.src = "vendor/{HLS["file"]}"' in app                       # относительный путь: тот же backend
     cdn = re.compile(r"https?://[^\"'\s]*(cdn|unpkg|jsdelivr|cdnjs|googleapis|cloudflare)", re.I)
