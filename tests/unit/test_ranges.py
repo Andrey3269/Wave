@@ -333,3 +333,46 @@ def test_successful_resolve_is_cached(monkeypatch):
     monkeypatch.setattr(stream, "_extract_sync", lambda s, i: stream.Resolved("https://cdn.test/x", {}, time.time() + 60))
     res = _uncached("yt", "AAAAAAAAAA1")
     assert stream._cache["yt:AAAAAAAAAA1"] is res
+
+
+# ---------------------------------------------------------------------------
+# S8: разбор Range без регулярных «дыр» (L2)
+# ---------------------------------------------------------------------------
+from streaming import ranges  # noqa: E402
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("bytes=0-", ranges.ByteRange(0, None)),
+    ("bytes=10-20", ranges.ByteRange(10, 20)),
+    ("bytes=7-7", ranges.ByteRange(7, 7)),
+    ("bytes=-500", ranges.ByteRange(None, None, suffix=500)),
+])
+def test_parse_single_valid(raw, expected):
+    assert ranges.parse_single(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "bytes=-", "bytes=20-10", "bytes=abc", "bytes=0-1,5-6", "items=0-1",
+                                 "bytes 0-1", " bytes=0-", "bytes=1.5-2", "bytes=--1"])
+def test_parse_single_ignores_invalid(raw):
+    assert ranges.parse_single(raw) is None
+
+
+@pytest.mark.parametrize("raw, header", [("bytes=0-", "bytes=0-"), ("bytes=5-9", "bytes=5-9"), ("bytes=-3", "bytes=-3")])
+def test_byte_range_header_roundtrip(raw, header):
+    assert ranges.parse_single(raw).header() == header
+
+
+@pytest.mark.parametrize("raw, ok", [
+    ("bytes=0-9", True), ("bytes=0-9,20-29", True), ("bytes=-5", True), ("bytes=99999-", True), ("BYTES=0-1", True),
+    ("bytes= 0-9 , 20-29", True),
+    ("bytes=-", False), ("bytes=abc", False), ("bytes=9-0", False), ("bytes=0-9,abc", False), ("items=0-1", False),
+    ("bytes=", False), ("", False), ("bytes=0-9,", False),
+])
+def test_is_valid_for_file(raw, ok):
+    assert ranges.is_valid_for_file(raw) is ok
+
+
+def test_cap_keeps_suffix_and_limits_start():
+    assert ranges.cap("bytes=-10", 100) == "bytes=-10"
+    assert ranges.cap("bytes=50-", 100) == "bytes=50-149"
+    assert ranges.cap("bytes=50-60", 100) == "bytes=50-60"

@@ -29,6 +29,7 @@ import time
 from typing import Literal
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -38,7 +39,7 @@ import library
 import paths
 from lyrics import fetch_lyrics
 from streaming.errors import ERROR_HEADER
-from streaming.proxy import CHUNK_SIZE, _connect
+from streaming.proxy import _connect
 from streaming.ranges import CONTENT_RANGE_RE
 from streaming.resolver import SOURCES
 
@@ -46,6 +47,8 @@ log = logging.getLogger("musicmeta.downloads")
 router = APIRouter(prefix="/api", tags=["downloads"])
 
 DL_CHUNK = 4 * 1024 * 1024                    # скачиваем порциями по 4 МБ (источники режут длинные запросы)
+MAX_BREAKS = 3                                # обрывов подряд без новых байтов, после которых загрузка — ошибка
+MAX_TOTAL_BREAKS = 20                         # и всего обрывов за одну загрузку
 ACTIVE = {"preparing", "downloading", "processing"}
 COVER_HOSTS = ("googleusercontent.com", "ytimg.com", "ggpht.com", "sndcdn.com")   # откуда разрешено брать обложки
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
@@ -69,32 +72,56 @@ def _ext(content_type: str) -> str:
 
 
 async def _download_audio(client, rs, req: DownloadRequest, dest, job: dict) -> str:
-    """Качает аудио порциями с Range; возвращает расширение файла."""
+    """
+    Качает аудио порциями с Range; возвращает расширение файла.
+
+    S8 (N2): байты пишутся по мере получения (без накопления кусков по 64 КБ), а обрыв источника посередине
+    порции не губит загрузку: полученное сохраняется, следующая порция запрашивается с первого недостающего
+    байта. Подряд допускается не больше MAX_BREAKS обрывов без единого нового байта — дальше ошибка.
+    """
     pos, total, ext = 0, None, ".m4a"
+    breaks = total_breaks = 0
     with open(dest, "wb") as f:
         while total is None or pos < total:
             up = await _connect(client, rs, req.source, req.id, f"bytes={pos}-{pos + DL_CHUNK - 1}")
-            got, whole = 0, False
+            got, whole, broken = 0, False, False
             try:
                 if up.status_code == 206:
                     m = CONTENT_RANGE_RE.fullmatch(up.headers.get("content-range", ""))
+                    if m and int(m.group(1)) != pos:
+                        raise RuntimeError(f"Источник вернул не тот диапазон ({m.group(1)} вместо {pos})")
                     total = int(m.group(3)) if m and m.group(3) != "*" else None
                 elif up.status_code == 200:                 # источник проигнорировал Range: файл целиком
+                    if pos:                                 # продолжить с середины нельзя — файл испортился бы
+                        raise RuntimeError("Источник перестал поддерживать Range посреди загрузки")
                     total, whole = int(up.headers.get("content-length") or 0) or None, True
                 else:
                     raise RuntimeError(f"Источник вернул HTTP {up.status_code}")
                 if pos == 0:
                     ext = _ext(up.headers.get("content-type", ""))
                 job["total"] = total
-                async for chunk in up.aiter_raw(CHUNK_SIZE):
-                    f.write(chunk)
-                    got += len(chunk)
-                    job["received"] = pos + got
-                    if total:
-                        job["progress"] = min(99, int((pos + got) * 100 / total))
+                try:
+                    async for chunk in up.aiter_raw():
+                        f.write(chunk)
+                        got += len(chunk)
+                        job["received"] = pos + got
+                        if total:
+                            job["progress"] = min(99, int((pos + got) * 100 / total))
+                except httpx.HTTPError as exc:
+                    if whole:                               # без Range продолжить нельзя
+                        raise
+                    broken = True
+                    log.info("Источник оборвал порцию загрузки %s:%s на %d байте: %s",
+                             req.source, req.id, pos + got, type(exc).__name__)
             finally:
                 await up.aclose()
             pos += got
+            if broken:
+                breaks = 0 if got else breaks + 1
+                total_breaks += 1
+                if breaks >= MAX_BREAKS or total_breaks > MAX_TOTAL_BREAKS:
+                    raise RuntimeError("Источник раз за разом обрывает соединение")
+                continue
             if whole or got == 0 or (total is None and got < DL_CHUNK):
                 break
     return ext

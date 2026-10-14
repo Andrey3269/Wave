@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import time
 
+import httpx
 import pytest
 
 import downloads
@@ -139,6 +140,58 @@ def test_failure_mid_download_leaves_nothing(dl):
     assert job["state"] == "error" and job["error"] == "Не удалось скачать трек. Попробуйте ещё раз."
     assert leftovers(dl) == []                                       # ни папки, ни .part
     assert dl.profile.sql("SELECT COUNT(*) FROM downloads") == [(0,)]
+
+
+def test_upstream_break_mid_portion_resumes_without_loss(dl):
+    """S8 (N2): CDN оборвал порцию посередине — полученные байты сохранены, загрузка продолжается с первого
+    недостающего байта и завершается точной копией файла."""
+    dl.net.chunk = 1000
+    real = dl.net.serve_file
+
+    def broken(request):                                            # 4096 байт порции, но обрыв после 2000
+        dl.net.fail_after = 2
+        try:
+            return real(request)
+        finally:
+            dl.net.fail_after = None
+    dl.net.queue(CDN, broken)
+    dl.post("/api/downloads", json=REQ)
+    job = wait_job(dl)
+    assert job["state"] == "done", job
+    assert (dl.profile.downloads / FOLDER / "audio.m4a").read_bytes() == DATA
+    ranges = [q.headers["range"] for q in dl.net.cdn_requests(CDN)]
+    assert ranges[:2] == ["bytes=0-4095", "bytes=2000-6095"]         # продолжение — с 2000-го байта
+
+
+def test_repeated_breaks_without_progress_fail_cleanly(dl):
+    def dead(request):
+        return httpx.Response(206, headers={"Content-Range": f"bytes 0-4095/{len(DATA)}", "Content-Type": "audio/mp4"},
+                              stream=_BrokenStream())
+    dl.net.queue(CDN, *[dead] * (downloads.MAX_BREAKS + 1))
+    dl.post("/api/downloads", json=REQ)
+    job = wait_job(dl)
+    assert job["state"] == "error" and job["code"] == "internal"
+    assert leftovers(dl) == [] and dl.profile.sql("SELECT COUNT(*) FROM downloads") == [(0,)]
+    assert len(dl.net.cdn_requests(CDN)) == downloads.MAX_BREAKS
+
+
+def test_source_dropping_range_support_mid_download_is_an_error(dl):
+    """Вторая порция пришла целиком (200 без Range): дописывать её в середину файла нельзя."""
+    dl.net.queue(CDN, dl.net.serve_file, lambda req: httpx.Response(200, content=DATA, headers={
+        "Content-Length": str(len(DATA)), "Content-Type": "audio/mp4"}))
+    dl.post("/api/downloads", json=REQ)
+    job = wait_job(dl)
+    assert job["state"] == "error"
+    assert leftovers(dl) == []
+
+
+class _BrokenStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        raise httpx.ReadError("обрыв (тест)")
+        yield b""                                                   # noqa: unreachable — делает метод генератором
+
+    async def aclose(self):
+        pass
 
 
 def test_resolver_error_message_reaches_job(dl):

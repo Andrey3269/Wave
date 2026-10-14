@@ -80,11 +80,12 @@ def test_malformed_range_never_serves_wrong_bytes(local, raw):
         assert r.content == DATA
 
 
-@pytest.mark.xfail(strict=True, reason="L2: битый Range на локальном файле даёт 400, RFC 9110 предписывает игнорировать")
-@pytest.mark.parametrize("raw", ["bytes=abc", "bytes=-", "bytes=500-100"])
+@pytest.mark.parametrize("raw", ["bytes=abc", "bytes=-", "bytes=500-100", "items=0-10", "bytes=0-9,abc"])
 def test_malformed_range_is_ignored(local, raw):
+    """L2 (закрыто в S8): битый Range на локальном файле игнорируется по RFC 9110 — 200 и файл целиком."""
     r = local.get(PATH, headers={"Range": raw})
     assert r.status_code == 200 and r.content == DATA
+    assert "content-range" not in r.headers
 
 
 def test_multiple_ranges_multipart(local):
@@ -162,11 +163,25 @@ def test_safe_folder_names_are_windows_safe(artist, title, track_id, expected):
     assert not name.endswith((" ", "."))
 
 
-@pytest.mark.xfail(strict=True, reason="L2: HEAD /api/stream/... отвечает 404 (запрос уходит мимо маршрута в StaticFiles)")
 def test_head_request_supported(local):
+    """L2 (закрыто в S8): HEAD на скачанный трек — 200, заголовки файла, без тела и без сети."""
     r = local.http.head(PATH)
     assert r.status_code == 200
     assert r.headers.get("accept-ranges") == "bytes"
+    assert r.headers["content-length"] == str(SIZE) and r.headers["content-type"] == "audio/mpeg"
+    assert r.content == b""
+    _no_network(local)
+
+
+def test_head_on_local_file_ignores_range(local):
+    r = local.http.head(PATH, headers={"Range": "bytes=100-199"})
+    assert r.status_code == 200 and "content-range" not in r.headers and r.headers["content-length"] == str(SIZE)
+
+
+def test_valid_range_still_partial_after_l2_fix(local):
+    """Контроль: исправление L2 не трогает корректные диапазоны (206) и неудовлетворимые (416)."""
+    assert local.get(PATH, headers={"Range": "bytes=10-19"}).status_code == 206
+    assert local.get(PATH, headers={"Range": "bytes=9999-"}).status_code == 416
 
 
 def test_stream_contract_constants():

@@ -21,14 +21,31 @@ def _check(source: str, track_id: str) -> resolver.Source:
 
 @router.get("/{source}/{track_id}")
 async def stream_track(source: str, track_id: str, request: Request, warm: int = 0):
+    """Аудиопоток трека: 200 / 206 / 416 по Range; ?warm=1 — прогрев."""
+    return await _stream(source, track_id, request, warm, is_head=False)
+
+
+@router.head("/{source}/{track_id}")
+async def stream_track_head(source: str, track_id: str, request: Request):
+    """
+    HEAD (S8): 200 и заголовки всего ресурса без тела. Раньше HEAD уходил мимо маршрута в раздачу фронтенда
+    и получал 404 (находка L2).
+    """
+    return await _stream(source, track_id, request, 0, is_head=True)
+
+
+async def _stream(source: str, track_id: str, request: Request, warm: int, is_head: bool):
     _check(source, track_id)
 
     # Скачанный трек играем с диска: работает без интернета и мгновенно (Range поддерживает FileResponse)
     path = library.audio_path(source, track_id)
     if path:
-        if warm:
+        if warm and not is_head:
             return Response(status_code=204)
         return local.serve(path)
+
+    if is_head:
+        return await proxy.head(request, source, track_id)
 
     # Прогрев (?warm=1): заранее получить ссылку и первую порцию. Ответ уходит сразу.
     if warm:

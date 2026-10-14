@@ -100,15 +100,50 @@ async def _connect(
                                                f"(HTTP {last}). Попробуйте позже.")
 
 
-async def _body(upstream: httpx.Response) -> AsyncIterator[bytes]:
-    """Перекачивает чанки клиенту; при разрыве/отмене гарантированно закрывает источник."""
+class UpstreamBroken(Exception):
+    """Источник оборвал тело ответа раньше, чем передал всё объявленное (N2)."""
+
+
+async def _body(upstream: httpx.Response, expected: int | None = None) -> AsyncIterator[bytes]:
+    """
+    Перекачивает байты клиенту по мере получения; при разрыве/отмене гарантированно закрывает источник.
+
+    N2 (наблюдение S1): раньше тело читалось кусками по 64 КБ (aiter_raw(CHUNK_SIZE) копит байты до полного
+    куска), и при обрыве CDN уже полученный «хвост» терялся, а ответ завершался как успешный. Теперь каждый
+    фрагмент сети уходит клиенту сразу, а обрыв — UpstreamBroken: AbortableStreamingResponse прерывает ответ
+    без завершающего сообщения, сервер закрывает соединение, и плеер видит неполный ответ и запрашивает
+    продолжение с того байта, который реально получил.
+    """
+    sent = 0
     try:
-        async for chunk in upstream.aiter_raw(CHUNK_SIZE):
+        async for chunk in upstream.aiter_raw():
+            sent += len(chunk)
             yield chunk
     except httpx.HTTPError as exc:
-        log.info("Поток оборван источником: %r", exc)
+        log.info("Поток оборван источником после %d байт: %s", sent, type(exc).__name__)
+        raise UpstreamBroken from exc
     finally:
         await upstream.aclose()
+    if expected is not None and sent < expected:
+        log.info("Источник закрыл поток раньше времени: %d из %d байт", sent, expected)
+        raise UpstreamBroken
+
+
+class AbortableStreamingResponse(StreamingResponse):
+    """
+    StreamingResponse, который при UpstreamBroken не отправляет завершающее пустое сообщение тела.
+    ASGI-сервер (uvicorn) в таком случае закрывает соединение: при объявленном Content-Length клиент
+    получает меньше байтов, при chunked — без завершающего чанка. Ответ не выглядит успешно законченным.
+    """
+
+    async def stream_response(self, send) -> None:
+        await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
+        try:
+            async for chunk in self.body_iterator:
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+        except UpstreamBroken:
+            return
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
 # ---------------------------------------------------------------------------
@@ -219,19 +254,21 @@ async def serve(request: Request, source: str, track_id: str) -> Response:
     cfg = resolver.SOURCES[source]
     client, rs = request.app.state.http, request.app.state.resolver
 
-    # --- Разбираем Range клиента. Поддерживаем один диапазон: bytes=a-b | bytes=a- | bytes=-n
+    # --- Разбираем Range клиента. Поддерживаем один диапазон: bytes=a-b | bytes=a- | bytes=-n.
+    # Битый, пустой (`bytes=-`) или множественный диапазон игнорируется (RFC 9110): ответ — весь файл, 200.
     raw_range = (request.headers.get("range") or "").strip()
-    client_wants_range = bool(ranges.RANGE_RE.fullmatch(raw_range))
+    client_range = ranges.parse_single(raw_range)
+    client_wants_range = client_range is not None
     # Диапазон клиента режем до одной порции: ответ будет 206 с честным Content-Range,
     # а плеер сам запросит продолжение. Если Range не прислан (curl, прямая ссылка),
     # отдаём файл целиком обычным 200.
-    upstream_range = _cap_range(raw_range) if client_wants_range else "bytes=0-"
+    upstream_range = _cap_range(client_range.header()) if client_wants_range else "bytes=0-"
 
     # Трек прогрет: начало лежит в памяти, отвечаем мгновенно, без обращения к источнику
     if client_wants_range:
         head = _head_get(f"{source}:{track_id}")
         if head:
-            from_memory = _serve_from_head(head, raw_range)
+            from_memory = _serve_from_head(head, client_range.header())
             if from_memory is not None:
                 return from_memory
 
@@ -254,8 +291,10 @@ async def serve(request: Request, source: str, track_id: str) -> Response:
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, max-age=3600",
     }
+    expected = None
     if length := upstream.headers.get("content-length"):
         headers["Content-Length"] = length
+        expected = int(length) if length.isdigit() else None
 
     # 206 отдаём, только если клиент просил диапазон И источник его выдал.
     # Если диапазон не просили — это обычный 200 (Content-Length = размер всего файла).
@@ -266,4 +305,46 @@ async def serve(request: Request, source: str, track_id: str) -> Response:
     else:
         code = 200
 
-    return StreamingResponse(_body(upstream), status_code=code, headers=headers)
+    return AbortableStreamingResponse(_body(upstream, expected), status_code=code, headers=headers)
+
+
+async def head(request: Request, source: str, track_id: str) -> Response:
+    """
+    HEAD /api/stream/{source}/{id} (S8, находка L2): 200 и заголовки всего ресурса без тела. Range для HEAD не
+    применяется (RFC 9110 определяет его только для GET). Размер берётся из прогретой «головы» или из одного
+    запроса `bytes=0-0` к источнику (тот же путь, что у плеера: резолв, перерезолв протухшей ссылки, ошибки).
+    """
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=3600"}
+    cached = _head_get(f"{source}:{track_id}")
+    if cached is not None:
+        headers["Content-Type"] = cached.content_type
+        if cached.total != "*":
+            headers["Content-Length"] = cached.total
+        return _head_response(headers)
+
+    upstream = await _connect(request.app.state.http, request.app.state.resolver, source, track_id, "bytes=0-0")
+    try:
+        status = upstream.status_code
+        headers["Content-Type"] = upstream.headers.get("content-type", _default_type(source))
+        m = ranges.CONTENT_RANGE_RE.fullmatch(upstream.headers.get("content-range", ""))
+        if status == 206 and m and m.group(3) != "*":
+            headers["Content-Length"] = m.group(3)
+        elif status == 200 and upstream.headers.get("content-length"):
+            headers["Content-Length"] = upstream.headers["content-length"]
+        elif status == 416:                                  # пустой файл: даже нулевой байт не удовлетворим
+            headers["Content-Length"] = "0"
+        elif status not in (200, 206):
+            label = resolver.SOURCES[source].label
+            raise errors._err(502, "upstream_status",
+                              f"Сервер аудио {label} ответил ошибкой HTTP {status}. Попробуйте позже.")
+    finally:
+        await upstream.aclose()
+    return _head_response(headers)
+
+
+def _head_response(headers: dict) -> Response:
+    """Ответ на HEAD. Если размер неизвестен, Content-Length нет вовсе (Starlette иначе подставил бы «0»)."""
+    resp = Response(status_code=200, headers=headers)
+    if "Content-Length" not in headers:
+        del resp.headers["content-length"]
+    return resp

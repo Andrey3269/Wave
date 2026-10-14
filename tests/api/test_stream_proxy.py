@@ -84,8 +84,8 @@ def test_unsupported_range_is_ignored(cdn, raw):
     assert cdn.net.cdn_requests()[-1].headers["range"] == "bytes=0-"
 
 
-@pytest.mark.xfail(strict=True, reason="L2: пустой диапазон 'bytes=-' пересылается источнику как есть")
 def test_empty_range_is_not_forwarded(cdn):
+    """L2 (закрыто в S8): пустой диапазон 'bytes=-' — битый, игнорируется: источнику уходит bytes=0-, ответ 200."""
     r = cdn.get(PATH, headers={"Range": "bytes=-"})
     assert cdn.net.cdn_requests()[-1].headers["range"] == "bytes=0-"
     assert r.status_code == 200
@@ -379,16 +379,156 @@ def test_client_disconnect_closes_upstream(harness, blocked_in):
         [(s.sent, s.closed) for s in harness.net.streams]
 
 
-def test_upstream_break_mid_stream_ends_response(cdn):
+def _raw_asgi(harness, range_: str) -> list[dict]:
+    """Один запрос напрямую в ASGI-приложение; возвращает все отправленные сообщения (как их видит uvicorn)."""
+    sent: list[dict] = []
+
+    async def go(_c):
+        async def receive():
+            await asyncio.sleep(5)
+            return {"type": "http.disconnect"}
+
+        async def send(msg):
+            sent.append(msg)
+        await asyncio.wait_for(harness.app(_asgi_scope(PATH, range_), receive, send), 5)
+
+    harness.run(go)
+    return sent
+
+
+def _start_and_bodies(sent: list[dict]) -> tuple[dict, bytes, bool]:
+    bodies = [m for m in sent if m["type"] == "http.response.body"]
+    complete = any(not m.get("more_body") for m in bodies)
+    return sent[0], b"".join(m["body"] for m in bodies), complete
+
+
+def test_upstream_break_mid_stream_ends_response(harness, monkeypatch):
     """
-    CDN оборвал тело на середине. Ошибки сервера нет, соединение с CDN закрыто, а тело короче
-    объявленного Content-Length — плеер видит обрыв и перезапрашивает диапазон. Байты, которые прокси
-    успел получить, но ещё не отдал (читает кусками по 64 КБ), при обрыве теряются: фиксируем как есть.
+    N2 (закрыто в S8). CDN оборвал тело на середине: всё, что прокси успел получить (2 куска по 200 байт),
+    доходит до клиента без потерь, ответ не завершается как полный (тело короче объявленного Content-Length,
+    завершающего сообщения ASGI нет — uvicorn закрывает соединение), соединение с CDN закрыто, ошибки 500 нет.
+    Раньше прокси читал кусками по 64 КБ и терял полученный хвост, а ответ завершал как успешный.
     """
-    cdn.net.chunk = 200
-    cdn.net.fail_after = 2
+    monkeypatch.setattr(stream, "STREAM_CHUNK_BYTES", 1000)
+    harness.net.add_file(CDN_PATH, DATA, "audio/mp4")
+    harness.net.chunk = 200
+    harness.net.fail_after = 2
+    start, body, complete = _start_and_bodies(_raw_asgi(harness, "bytes=0-"))
+    assert start["status"] == 206
+    assert dict(start["headers"])[b"content-length"] == b"1000"
+    assert body == DATA[:400]                                       # ровно то, что отдал CDN, ни байта не потеряно
+    assert not complete, "после обрыва не должно быть завершающего сообщения тела"
+    assert all(s.closed for s in harness.net.streams)
+
+
+def _read_until_break(resp) -> tuple[bytes, Exception | None]:
+    got = bytearray()
+    try:
+        for part in resp.iter_raw():
+            got += part
+    except httpx.HTTPError as exc:                                  # RemoteProtocolError: тело неполное
+        return bytes(got), exc
+    return bytes(got), None
+
+
+@pytest.mark.parametrize("unknown_length", [False, True])
+def test_upstream_break_over_real_server_lets_player_continue(harness, monkeypatch, unknown_length):
+    """
+    N2 через настоящий uvicorn (как в приложении). Клиент получает все байты, которые CDN успел отдать, и видит
+    обрыв соединения (а не успешный конец тела) — и с объявленной длиной, и без неё (chunked). Затем, как
+    плеер, запрашивает продолжение с полученного байта и получает точное продолжение файла.
+    """
+    monkeypatch.setattr(stream, "STREAM_CHUNK_BYTES", 1000)
+    harness.net.add_file(CDN_PATH, DATA, "audio/mp4")
+    harness.net.chunk = 150
+    if unknown_length:
+        real = harness.net.serve_file
+
+        def no_length(request):                                     # CDN без Content-Length (chunked)
+            r = real(request)
+            r.headers.pop("content-length", None)
+            return r
+        harness.net.queue(CDN_PATH, no_length)
+    harness.net.fail_after = 3
+    with harness.serve() as c:
+        with c.stream("GET", PATH, headers={"Range": "bytes=0-"}) as r:
+            assert r.status_code == 206
+            got, err = _read_until_break(r)
+        assert err is not None, "обрыв источника не должен выглядеть как успешно законченный ответ"
+        assert got == DATA[:450]                                    # 3 куска по 150 байт — без потерь
+        harness.net.fail_after = None
+        rest = c.get(PATH, headers={"Range": f"bytes={len(got)}-"})
+        assert rest.status_code == 206
+        assert rest.headers["content-range"] == f"bytes {len(got)}-{len(got) + 999}/{SIZE}"
+        assert got + rest.content == DATA[:len(got) + 1000]
+    assert all(s.closed for s in harness.net.streams)
+
+
+def test_upstream_closing_early_without_error_is_not_success(harness):
+    """Источник закрыл тело без ошибки, но короче своего Content-Length — это тоже обрыв, а не успех."""
+    def short(request):
+        return httpx.Response(206, headers={"Content-Length": "1000", "Content-Range": f"bytes 0-999/{SIZE}",
+                                            "Content-Type": "audio/mp4"}, stream=httpx.ByteStream(DATA[:300]))
+    harness.net.queue(CDN_PATH, short)
+    start, body, complete = _start_and_bodies(_raw_asgi(harness, "bytes=0-"))
+    assert start["status"] == 206 and body == DATA[:300] and not complete
+
+
+def test_complete_body_is_not_reported_as_broken(cdn):
+    """Обычный ответ без обрыва завершается полностью (контроль: проверка N2 не ломает нормальный путь)."""
+    cdn.net.chunk = 128
     r = cdn.get(PATH, headers={"Range": "bytes=0-"})
-    assert r.status_code == 206
-    assert r.headers["content-length"] == "1000"
-    assert len(r.content) < 1000 and DATA.startswith(r.content)
+    assert r.status_code == 206 and r.content == DATA[:1000]
+
+
+# ---------------------------------------------------------------------------
+# HEAD (S8, L2)
+# ---------------------------------------------------------------------------
+def test_head_reports_whole_resource_without_body(cdn):
+    r = cdn.http.head(PATH)
+    assert r.status_code == 200 and r.content == b""
+    assert r.headers["content-length"] == str(SIZE)
+    assert r.headers["accept-ranges"] == "bytes" and r.headers["content-type"] == "audio/mp4"
+    assert cdn.net.cdn_requests()[-1].headers["range"] == "bytes=0-0"      # к источнику — один байт, не весь файл
     assert all(s.closed for s in cdn.net.streams)
+
+
+def test_head_ignores_range(cdn):
+    r = cdn.http.head(PATH, headers={"Range": "bytes=100-199"})
+    assert r.status_code == 200 and "content-range" not in r.headers and r.headers["content-length"] == str(SIZE)
+
+
+def test_head_uses_warm_head_without_network(harness, monkeypatch):
+    monkeypatch.setattr(stream, "STREAM_CHUNK_BYTES", 1000)
+    harness.net.add_file(CDN_PATH, DATA)
+
+    async def go(c):
+        await c.get(PATH, params={"warm": 1})
+        await asyncio.gather(*list(harness.app.state.resolver.background))
+        before = len(harness.net.cdn_requests())
+        r = await c.head(PATH)
+        return r, before
+
+    r, before = harness.run(go)
+    assert r.status_code == 200 and r.headers["content-length"] == str(SIZE)
+    assert len(harness.net.cdn_requests()) == before
+
+
+def test_head_unknown_total_has_no_length(cdn):
+    cdn.net.unknown_total = True
+    r = cdn.http.head(PATH)
+    assert r.status_code == 200 and "content-length" not in r.headers      # не «0»: размер просто неизвестен
+
+
+def test_head_errors_match_get(cdn):
+    cdn.net.queue(CDN_PATH, 403, 403)
+    r = cdn.http.head(PATH)
+    assert r.status_code == 502 and r.headers[stream.ERROR_HEADER] == "link_unavailable"
+
+
+@pytest.mark.parametrize("raw", ["bytes=500-100", "bytes=0-10,20-30", "bytes= 5-9", "bytes=-"])
+def test_invalid_range_is_ignored_not_forwarded(cdn, raw):
+    """Неверный диапазон (конец раньше начала, несколько диапазонов, пустой) — весь файл, 200 (RFC 9110)."""
+    r = cdn.get(PATH, headers={"Range": raw})
+    assert r.status_code == 200 and r.content == DATA
+    assert cdn.net.cdn_requests()[-1].headers["range"] == "bytes=0-"
