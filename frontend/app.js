@@ -7,8 +7,8 @@
    одним обработчиком на документе: сколько бы таких кнопок ни было на экране, состояние одно.
    Подключается как ES-модуль (строгий режим включён всегда, отдельная директива не нужна).
    ========================================================================== */
-import { $, $$, mk, icon, button, setCover, coverEl, initImageFallback } from "./js/core/dom.js";
-import { SOURCES, clamp, rand, fmtTime, plural, thumb } from "./js/core/format.js";
+import { $, $$, mk, icon, button, setCover, initImageFallback } from "./js/core/dom.js";
+import { SOURCES, clamp, rand, fmtTime, plural } from "./js/core/format.js";
 import { enc, api, getJSON, jsonOpts, recsResult, trackKey, trackPayload } from "./js/core/api.js";
 import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
 import { state, queue, current, heroTrack, DETAIL_VIEWS, sectionOf, isCards, bus, PAGE, nextSeq, nav } from "./js/state/store.js";
@@ -18,13 +18,16 @@ import { toast, hideToast } from "./js/components/toast.js";
 import { setBlock, initEmptyRetry, skelRows, skelCards } from "./js/components/skeleton.js";
 import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/components/dialogs.js";
 import { loadLyrics, syncLyrics, initLyrics } from "./js/components/lyrics.js";
-import { setSource, renderArtists, paintFav, paintDl, BUSY, buildRow, rowTrack, markPlaying } from "./js/components/track-row.js";
+import { renderArtists, paintFav, paintDl, BUSY, buildRow, rowTrack, markPlaying } from "./js/components/track-row.js";
 import { cardKey, buildCard, renderRow, bindCardClicks, trackCard, miniCard, bindTrackGrid, mixCard, sideItem, markMix,
   initRowScroll } from "./js/components/cards.js";
 import { openMenu, closeMenu, initMenu } from "./js/components/menu.js";
-import { paintLike, repaintFav, toggleFav } from "./js/components/favorites.js";
+import { repaintFav, toggleFav } from "./js/components/favorites.js";
 import { shareTrack } from "./js/components/share.js";
 import { updateProgress, paintVolume, toggleMute, initSliders } from "./js/player/sliders.js";
+import { initPlayerBar } from "./js/views/player-bar.js";
+import { openFs, closeFs, setFsMode, initFullscreen } from "./js/views/fullscreen.js";
+import { queueAdd, queueRemove, queueMove, queueMoveTo, toggleQueue, initQueueDrawer } from "./js/views/queue-drawer.js";
 import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, playPrev, setShuffle, setRepeat,
   warmTrack, scheduleWarm, initPlayer } from "./js/player/controller.js";
 
@@ -686,46 +689,12 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // ==========================================================================
   // UI плеера: мини-плеер, баннер и страница трека показывают одно состояние
   // ==========================================================================
-  function showNowPlaying(t) {
-    el.title.textContent = t.title;
-    renderArtists(el.artist, t);
-    setSource(el.playerSrc, t.source);
-    setCover(el.cover, t.cover, 120);
-    document.title = `${t.title} — ${t.artist}`;
-    document.body.dataset.track = "1";
-    markPlaying();
-    paintLike();
-    renderHero();
-    if (state.view === "now") renderNow();
-    if (state.fs.open) renderFs();
-    renderQueue();
-  }
-
-  function setPlayingUI(playing) {
-    document.body.dataset.audio = playing ? "playing" : "paused";
-    ctl.play.forEach((b) => {
-      b.dataset.playing = String(playing);
-      if (b !== hero.play) b.setAttribute("aria-label", playing ? "Пауза" : "Играть");
-    });
-    renderHero();
-  }
-  // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
-  function setLoading(text) {
-    if (text != null) { el.artist.textContent = text; return; }
-    const t = current();
-    if (t) renderArtists(el.artist, t);
-  }
-  /** Режимы перемешивания и повтора: кнопки на всех экранах. */
-  function paintModes(changed) {
-    ctl.shuffle.forEach((b) => b.setAttribute("aria-pressed", String(state.shuffle)));
-    ctl.repeat.forEach((b) => b.setAttribute("aria-pressed", String(state.repeat)));
-    if (changed === "shuffle" && state.view === "home") renderHero();
-  }
-  playerEvents.on("track", showNowPlaying);
-  playerEvents.on("loading", setLoading);
-  playerEvents.on("playing", setPlayingUI);
-  playerEvents.on("modes", paintModes);
-  playerEvents.on("mix", () => markMix());
+  initPlayerBar();                                         // мини-плеер и кнопки управления (views/player-bar.js)
+  // Баннер главной и страница трека показывают тот же трек
+  playerEvents.on("track", () => { renderHero(); if (state.view === "now") renderNow(); });
+  playerEvents.on("playing", () => renderHero());
+  playerEvents.on("modes", (changed) => { if (changed === "shuffle" && state.view === "home") renderHero(); });
+  bus.on("hero", () => { if (state.view === "home") renderHero(); });
   initPlayer();
 
   initSliders();
@@ -819,97 +788,7 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // Это не отдельный плеер: звук, время, громкость, shuffle/repeat и очередь общие с остальным приложением.
   // Режимы только переключают, что показано рядом с обложкой. Окно Windows и браузерный Fullscreen API не трогаем.
   // ==========================================================================
-  const FS_MODES = ["default", "lyrics", "queue"];
-  /** Пока открыт полноэкранный плеер, остальное приложение недоступно ни мыши, ни клавиатуре, ни скринридеру. */
-  function setInert(on) {
-    ["side", "main", "player", "queue"].forEach((id) => document.getElementById(id)?.toggleAttribute("inert", on));
-  }
-  /** Мягкий фон из цветов обложки: 32x18 пикселей, растянутые браузером. Без blur и без тяжёлых эффектов. */
-  function paintFsBg(url) {
-    if (fs.bg._url === url) return;
-    fs.bg._url = url;
-    const g = fs.bg.getContext("2d");
-    g.clearRect(0, 0, fs.bg.width, fs.bg.height);
-    if (!url) return;
-    const img = new Image();
-    img.referrerPolicy = "no-referrer";
-    img.onload = () => {
-      if (fs.bg._url !== url) return;                      // трек уже сменился
-      g.imageSmoothingQuality = "high";
-      g.drawImage(img, 0, 0, fs.bg.width, fs.bg.height);
-    };
-    img.src = thumb(url, 120);
-  }
-  function renderFs() {
-    const t = current();
-    if (!t) { closeFs(); return; }
-    setCover(fs.cover, t.cover, 544);
-    paintFsBg(t.cover);
-    fs.title.textContent = t.title;
-    renderArtists(fs.artist, t);
-    const meta = [t.album, t.released ? String(t.released).slice(0, 4) : "", SOURCES[t.source]].filter(Boolean).join(" · ");
-    fs.meta.textContent = meta;
-    fs.meta.hidden = !meta;
-    if (state.fs.mode === "lyrics") loadLyrics(t);
-    updateProgress();
-  }
-  function openFs() {
-    if (!current() || state.fs.open) return;
-    state.fs.open = true;
-    state.fs.opener = document.activeElement;
-    el.queue.hidden = true;                                // боковая очередь обычного режима не должна остаться под плеером
-    closeMenu();
-    document.body.dataset.focus = "1";
-    fs.root.hidden = false;
-    setInert(true);
-    setFsMode("default");
-    renderFs();
-    fs.play.focus({ preventScroll: true });
-  }
-  function closeFs() {
-    if (!state.fs.open) return;
-    state.fs.open = false;
-    state.fs.mode = "default";
-    closeMenu();
-    fs.root.hidden = true;
-    document.body.dataset.focus = "0";
-    setInert(false);
-    const o = state.fs.opener;
-    state.fs.opener = null;
-    if (o && o.isConnected) o.focus({ preventScroll: true });   // фокус возвращается туда, откуда открыли
-  }
-  /** Режимы взаимоисключающие. Звук, позиция и громкость при переключении не трогаются. */
-  function setFsMode(mode) {
-    if (!FS_MODES.includes(mode)) mode = "default";
-    const prev = state.fs.mode;
-    state.fs.mode = mode;
-    fs.root.dataset.mode = mode;
-    fs.lyricsPanel.hidden = mode !== "lyrics";
-    fs.queuePanel.hidden = mode !== "queue";
-    fs.lyricsBtn.setAttribute("aria-checked", String(mode === "lyrics"));
-    fs.queueBtn.setAttribute("aria-pressed", String(mode === "queue"));
-    closeMenu();
-    const t = current();
-    if (mode === "lyrics" && t) { loadLyrics(t); syncLyrics(); }
-    if (mode === "queue") renderFsQueue();
-    // кнопки верхней панели в режиме очереди скрыты: фокус не должен пропасть
-    if (mode === "queue" && prev !== "queue") fs.queuePanel.querySelector('[data-fs="qclose"]')?.focus({ preventScroll: true });
-    else if (prev === "queue" && mode !== "queue") fs.queueBtn.focus({ preventScroll: true });
-  }
-  const toggleFsMode = (mode) => setFsMode(state.fs.mode === mode ? "default" : mode);
-
-  document.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-fs]");
-    if (!b) return;
-    switch (b.dataset.fs) {
-      case "close": closeFs(); break;
-      case "lyrics": toggleFsMode("lyrics"); break;
-      case "queue": toggleFsMode("queue"); break;
-      case "qclose": setFsMode("default"); break;
-      case "qclear": queueClearFlow(); break;
-      default: break;
-    }
-  });
+  initFullscreen();
 
   // ==========================================================================
   // Избранное (одно состояние для всех экранов)
@@ -958,176 +837,7 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // ==========================================================================
   // Очередь
   // ==========================================================================
-  // Правки очереди — методами модели (player/queue.js); здесь — то, что видит пользователь.
-  function queueAdd(t, next) {
-    queue.add(t, next);
-    toast(next ? "Будет играть следующим" : "Добавлено в очередь");
-    renderQueue();
-    if (state.view === "home") renderHero();
-  }
-  function queueRemove(i) {
-    if (!queue.remove(i)) return;                          // играющий трек не убираем
-    renderQueue();
-  }
-  function queueMove(i, d) {
-    if (!queue.move(i, d)) return;
-    renderQueue();
-  }
-  function queueClear() {
-    queue.clear();
-    renderQueue();
-  }
-  /** Очистка необратима: спрашиваем подтверждение. Играющий трек остаётся. */
-  async function queueClearFlow() {
-    if (queue.length <= 1) return;
-    if (!await askConfirm({ title: "Очистить очередь?", text: "Останется только текущий трек. Остальные уберутся из очереди (в избранном, плейлистах и истории они сохранятся).", ok: "Очистить" })) return;
-    queueClear();
-    toast("Очередь очищена");
-  }
-  /** Перенос трека на позицию to (индекс вставки до удаления). Играющий трек не прерывается. */
-  function queueMoveTo(from, to) {
-    if (!queue.moveTo(from, to)) return;
-    renderQueue();
-    if (state.view === "home") renderHero();
-  }
-  /** Перерисовывает очередь везде, где она сейчас видна. */
-  function renderQueue() {
-    if (!el.queue.hidden) renderDrawer();
-    if (state.fs.open && state.fs.mode === "queue") renderFsQueue();
-  }
-  function renderDrawer() {
-    el.queueLabel.textContent = queue.label ? `Из «${queue.label}»` : "";
-    const rows = queue.tracks.map((t, i) => {
-      const li = mk("li", i === queue.index ? "q is-current" : "q");
-      const main = mk("button", "q__main");
-      main.type = "button";
-      main.dataset.index = i;
-      main.append(coverEl(t.cover, 96, "q__cv"));
-      const text = mk("span", "q__text");
-      text.append(mk("span", "q__title", t.title), mk("span", "q__artist", t.artist));
-      main.append(text);
-      li.append(main);
-      const fav = button("q__btn q__fav", "В избранное", "i-heart");
-      fav.dataset.index = i;
-      paintFav(fav, t);
-      li.append(fav);
-      if (i !== queue.index) {
-        for (const [name, label, ico] of [["up", "Выше", "i-chev-u"], ["down", "Ниже", "i-chev-d"], ["rm", "Убрать из очереди", "i-x"]]) {
-          const b = button("q__btn", label, ico);
-          b.dataset.q = name; b.dataset.index = i;
-          li.append(b);
-        }
-      }
-      return li;
-    });
-    el.queueList.replaceChildren(...(rows.length ? rows : [mk("li", "lyrics__empty", "Очередь пуста")]));
-    el.queueList.querySelector(".is-current")?.scrollIntoView?.({ block: "nearest" });
-  }
-  // Один обработчик на весь список очереди
-  el.queueList.addEventListener("click", (e) => {
-    const b = e.target.closest("button");
-    if (!b) return;
-    const i = Number(b.dataset.index);
-    if (b.classList.contains("q__fav")) { const t = queue.at(i); if (t) toggleFav(t); return; }
-    if (b.dataset.q === "up") queueMove(i, -1);
-    else if (b.dataset.q === "down") queueMove(i, 1);
-    else if (b.dataset.q === "rm") queueRemove(i);
-    else if (b.classList.contains("q__main")) playIndex(i);   // «играть сейчас»
-  });
-  function toggleQueue() { el.queue.hidden = !el.queue.hidden; if (!el.queue.hidden) renderQueue(); }
-  $("#queue-close").addEventListener("click", () => { el.queue.hidden = true; });
-  $("#queue-clear").addEventListener("click", queueClearFlow);
-
-  // ---------- очередь в полноэкранном плеере: «Сейчас играет» и «Далее» ----------
-  const FQ_MAX = 300;                                      // длинную очередь не рисуем целиком
-  function fqRow(t, i) {
-    const cur = i === queue.index;
-    const li = mk("li", cur ? "fq__row is-current" : "fq__row");
-    li.dataset.index = i;
-    const grip = mk("span", "fq__grip");
-    grip.title = "Перетащить";
-    grip.append(icon("i-grip", "icon--fill"));
-    const main = mk("button", "fq__main");
-    main.type = "button";
-    main.dataset.index = i;
-    main.setAttribute("aria-label", `${cur ? "Пауза или продолжить" : "Играть"}: ${t.artist} — ${t.title}`);
-    const text = mk("span", "fq__text");
-    text.append(mk("span", "fq__title", t.title), mk("span", "fq__artist", t.artist));
-    main.append(coverEl(t.cover, 96, "fq__cv"), text);
-    if (cur) {                                             // индикатор текущего воспроизведения
-      const eq = mk("span", "eq");
-      eq.setAttribute("aria-hidden", "true");
-      eq.append(mk("i"), mk("i"), mk("i"));
-      main.append(eq);
-    }
-    main.append(mk("span", "fq__dur", t.duration ? fmtTime(t.duration) : ""));
-    const more = button("tbtn fq__more", "Ещё", "i-more", true);
-    more.dataset.index = i;
-    more.setAttribute("aria-haspopup", "menu");
-    li.append(grip, main, more);
-    return li;
-  }
-  function renderFsQueue() {
-    const q = queue.tracks, cur = queue.index;
-    fs.qCount.textContent = q.length ? plural(q.length, "трек", "трека", "треков") : "";
-    fs.qClear.disabled = q.length <= 1;
-    const nodes = [];
-    if (cur > 0) nodes.push(mk("li", "fq__note", `Уже сыграно: ${cur}`));   // объясняет, почему всего треков больше, чем ниже в списке
-    if (q[cur]) nodes.push(mk("li", "fq__h", "Сейчас играет"), fqRow(q[cur], cur));
-    const rest = Math.max(0, q.length - cur - 1);
-    nodes.push(mk("li", "fq__h", rest ? `Далее · ${rest}` : "Далее"));
-    if (state.shuffle && rest) nodes.push(mk("li", "fq__note", "Включено перемешивание: следующий трек выбирается случайно, порядок ниже не гарантирован."));
-    if (!rest) nodes.push(mk("li", "fq__note", state.settings.autoplay ? "Дальше ничего нет. Когда очередь закончится, Wave продолжит похожими треками." : "Дальше ничего нет."));
-    for (let i = cur + 1; i < Math.min(q.length, cur + 1 + FQ_MAX); i++) nodes.push(fqRow(q[i], i));
-    if (rest > FQ_MAX) nodes.push(mk("li", "fq__note", `Показаны первые ${FQ_MAX} из ${rest}.`));
-    fs.qList.replaceChildren(...nodes);
-  }
-  // Один набор обработчиков на весь список: клик, меню «⋯», перетаскивание за «ручку»
-  fs.qList.addEventListener("click", (e) => {
-    const more = e.target.closest(".fq__more");
-    if (more) {
-      const i = Number(more.dataset.index), t = queue.at(i);
-      if (t) openMenu(t, more, { queueIndex: i });
-      return;
-    }
-    const main = e.target.closest(".fq__main");
-    if (!main) return;
-    const i = Number(main.dataset.index);
-    if (i === queue.index) togglePlay(); else playIndex(i);
-  });
-  let fqFrom = -1, fqTo = -1;
-  const fqClearMarks = () => $$(".drop-before, .drop-after, .is-drag", fs.qList).forEach((n) => n.classList.remove("drop-before", "drop-after", "is-drag"));
-  const fqLockRows = () => $$(".fq__row", fs.qList).forEach((r) => { r.draggable = false; });
-  fs.qList.addEventListener("pointerdown", (e) => {
-    const grip = e.target.closest(".fq__grip");
-    if (grip) grip.closest(".fq__row").draggable = true;   // строка тянется только за «ручку», кнопки внутри остаются кликабельными
-  });
-  document.addEventListener("pointerup", fqLockRows);
-  fs.qList.addEventListener("dragstart", (e) => {
-    const row = e.target.closest(".fq__row");
-    if (!row) return;
-    fqFrom = Number(row.dataset.index); fqTo = -1;
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", String(fqFrom));
-    row.classList.add("is-drag");
-  });
-  fs.qList.addEventListener("dragover", (e) => {
-    const row = e.target.closest(".fq__row");
-    if (fqFrom < 0 || !row) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    const r = row.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2, i = Number(row.dataset.index);
-    fqTo = after ? i + 1 : i;
-    $$(".drop-before, .drop-after", fs.qList).forEach((n) => n.classList.remove("drop-before", "drop-after"));
-    row.classList.add(after ? "drop-after" : "drop-before");
-  });
-  fs.qList.addEventListener("drop", (e) => {
-    e.preventDefault();
-    const from = fqFrom, to = fqTo;
-    fqClearMarks(); fqFrom = -1; fqTo = -1;
-    if (from >= 0 && to >= 0) queueMoveTo(from, to);
-  });
-  fs.qList.addEventListener("dragend", () => { fqClearMarks(); fqLockRows(); fqFrom = -1; fqTo = -1; });
+  initQueueDrawer();
 
   // ==========================================================================
   // Диалоги (вместо prompt/confirm браузера)
