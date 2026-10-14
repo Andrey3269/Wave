@@ -7,56 +7,12 @@
    одним обработчиком на документе: сколько бы таких кнопок ни было на экране, состояние одно.
    Подключается как ES-модуль (строгий режим включён всегда, отдельная директива не нужна).
    ========================================================================== */
+import { $, $$, mk, icon, button, setCover, coverEl, initImageFallback } from "./js/core/dom.js";
+import { SOURCES, clamp, rand, fmtTime, plural, thumb } from "./js/core/format.js";
+import { enc, api, getJSON, jsonOpts, recsResult, trackKey, trackPayload } from "./js/core/api.js";
+import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
+
 (() => {
-  // ---------- Утилиты ----------
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-  const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
-  const rand = (n) => Math.floor(Math.random() * n);
-  const enc = encodeURIComponent;
-  const SVG_NS = "http://www.w3.org/2000/svg";
-
-  /** Элемент с классом и текстом (textContent: безопасно от XSS). */
-  const mk = (tag, cls, text) => {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  };
-  /** Иконка из SVG-спрайта в index.html. */
-  function icon(id, cls = "") {
-    const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("class", `icon ${cls}`.trim());
-    svg.setAttribute("aria-hidden", "true");
-    const use = document.createElementNS(SVG_NS, "use");
-    use.setAttribute("href", `#${id}`);
-    svg.append(use);
-    return svg;
-  }
-  function button(cls, label, ico, fill = false) {
-    const b = mk("button", cls);
-    b.type = "button";
-    b.title = label;
-    b.setAttribute("aria-label", label);
-    if (ico) b.append(icon(ico, fill ? "icon--fill" : ""));
-    return b;
-  }
-
-  function fmtTime(sec) {
-    if (!Number.isFinite(sec) || sec < 0) return "0:00";
-    const s = Math.floor(sec % 60);
-    const m = Math.floor(sec / 60) % 60;
-    const h = Math.floor(sec / 3600);
-    const ss = String(s).padStart(2, "0");
-    return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
-  }
-
-  /** «1 трек», «2 трека», «5 треков». */
-  const plural = (n, one, few, many) => `${n} ${n % 10 === 1 && n % 100 !== 11 ? one : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? few : many}`;
-
-  // Источники: ключ совпадает с track.source с бэкенда; иконка берётся из спрайта #i-src-<ключ>
-  const SOURCES = { yt: "YouTube Music", sc: "SoundCloud" };
-
   /** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
   function setSource(node, source) {
     const name = SOURCES[source];
@@ -67,101 +23,7 @@
     node.querySelector("use").setAttribute("href", `#i-src-${source}`);
   }
 
-  // ---------- Обложки: нужного размера, с запасным вариантом ----------
-  const SIZE_RE = /=w\d+-h\d+/;
-  /** Маленькому превью не нужна обложка 544x544: просим у CDN размер поменьше. */
-  function thumb(url, px) {
-    if (!url || !px) return url;
-    if (SIZE_RE.test(url)) return url.replace(SIZE_RE, `=w${px}-h${px}`);
-    if (px <= 300 && url.includes("sndcdn.com") && url.includes("-t500x500.")) return url.replace("-t500x500.", "-t300x300.");
-    return url;
-  }
-  function setCover(img, url, px) {
-    if (!img) return;
-    const src = url ? thumb(url, px) : "";
-    if (img._src === src) return;                       // тот же адрес: не перезагружаем картинку
-    img._src = src;
-    if (!src) { img.hidden = true; img.removeAttribute("src"); return; }
-    img.hidden = false;
-    img.referrerPolicy = "no-referrer";
-    img.src = src;
-  }
-  /** <span class="cv"><img></span>: если обложки нет или она не загрузилась, виден фон-заглушка. */
-  function coverEl(url, px, cls = "") {
-    const box = mk("span", `cv ${cls}`.trim());
-    const img = document.createElement("img");
-    img.alt = ""; img.loading = "lazy"; img.decoding = "async";
-    setCover(img, url, px);
-    box.append(img);
-    return box;
-  }
-  // Ошибка загрузки картинки не всплывает, поэтому слушаем в фазе перехвата
-  document.addEventListener("error", (e) => {
-    const img = e.target;
-    if (!(img instanceof HTMLImageElement)) return;
-    if (img.closest(".brand")) {                          // логотип не найден: текстовый вариант
-      const fb = mk("span", `brand__fallback ${img.className}`);
-      fb.append(icon("i-wave"), mk("span", null, "ВОЛНА"));
-      img.replaceWith(fb);
-      return;
-    }
-    img.hidden = true;
-  }, true);
-
-  // ---------- Элементы ----------
-  const el = {
-    main: $("#main"), nav: $("#nav"),
-    form: $("#search-form"), input: $("#search-input"), sourceSwitch: $("#source-switch"),
-    mixes: $("#mixes"), artistMixes: $("#artist-mixes"), artistMore: $("#artist-more"), artistHint: $("#artist-hint"),
-    avatar: $("#avatar"), profileName: $("#profile-name"),
-    // главная
-    mixRow: $("#mix-row"), hMixes: $("#h-mixes"), secContinue: $("#sec-continue"), continueRow: $("#continue-row"),
-    newGrid: $("#new-grid"), homeEmpty: $("#home-empty"), homeMore: $("#home-more"),
-    // списки
-    detail: $("#detail"), back: $("#back"), dCover: $("#d-cover"), dCoverWrap: $("#d-cover-wrap"), dKind: $("#d-kind"),
-    dTitle: $("#d-title"), dSub: $("#d-sub"), dPlay: $("#d-play"), dShuffle: $("#d-shuffle"),
-    dRename: $("#d-rename"), dDelete: $("#d-delete"),
-    tabs: $("#tabs"), albumsSec: $("#albums-sec"), albumsRow: $("#albums-row"), relatedSec: $("#related-sec"), relatedRow: $("#related-row"),
-    resultsTitle: $("#results-title"), status: $("#status"), sort: $("#sort"), clearHistory: $("#clear-history"),
-    cards: $("#cards"), empty: $("#empty"), tracks: $("#tracks"), tpl: $("#track-template"), more: $("#more"),
-    // коллекция
-    colTiles: $("#col-tiles"), colPlaylists: $("#col-playlists"), colArtists: $("#col-artists"), colArtistsSec: $("#col-artists-sec"),
-    // очередь, меню, диалоги
-    queue: $("#queue"), queueList: $("#queue-list"), queueLabel: $("#queue-label"), menu: $("#menu"), toast: $("#toast"),
-    dlg: $("#dlg"), dlgTitle: $("#dlg-title"), dlgInput: $("#dlg-input"), dlgOk: $("#dlg-ok"),
-    dlgConfirm: $("#dlg-confirm"), dcTitle: $("#dc-title"), dcText: $("#dc-text"), dcOk: $("#dc-ok"),
-    dlgPick: $("#dlg-pick"), pickList: $("#pick-list"),
-    // мини-плеер
-    audio: $("#audio"), playerNow: $("#player-now"), cover: $("#player-cover"), title: $("#player-title"),
-    artist: $("#player-artist"), playerSrc: $("#player-src"), btnLike: $("#btn-like"),
-    progress: $("#progress"), volume: $("#volume"), tCur: $("#time-current"), tTotal: $("#time-total"),
-  };
-  const views = { home: $("#view-home"), list: $("#view-list"), collection: $("#view-collection"), settings: $("#view-settings"), now: $("#view-now") };
-  const audio = el.audio;
-
-  const hero = {
-    root: $("#hero"), img: $("#hero-img"), eyebrow: $("#hero-eyebrow-text"), title: $("#hero-title"), sub: $("#hero-sub"),
-    meta: $("#hero-meta"), play: $("#hero-play"), playLabel: $("#hero-play-label"), like: $("#hero-like"),
-    prog: $("#hero-prog"), bar: $("#hero-bar"), cur: $("#hero-cur"), tot: $("#hero-tot"),
-    next: $("#hero-next"), nextT: $("#hero-next-t"), ctl: $$(".hero__ctl"),
-  };
-  const now = {
-    root: views.now, bg: $("#now-bg"), cover: $("#now-cover"), eyebrow: $("#now-eyebrow"), title: $("#now-title"),
-    artist: $("#now-artist"), meta: $("#now-meta"), bar: $("#now-bar"), cur: $("#now-cur"), tot: $("#now-tot"),
-    volume: $("#now-volume"), like: $("#now-like"), dl: $("#now-dl"), lyricsBtn: $("#now-lyrics-btn"),
-    stage: $("#now-stage"), lyricsPanel: $("#now-lyrics-panel"), lyrics: $("#np-lyrics"),
-    similarRow: $("#similar-row"), similarEmpty: $("#similar-empty"), similarArtistsSec: $("#similar-artists-sec"),
-    similarArtists: $("#similar-artists"),
-  };
-  // Полноэкранный плеер: один компонент, режимы state.fs.mode = default | lyrics | queue
-  const fs = {
-    root: $("#fs"), bg: $("#fs-bg"), cover: $("#fs-cover"), title: $("#fs-title"), artist: $("#fs-artist"), meta: $("#fs-meta"),
-    lyricsBtn: $("#fs-lyrics-btn"), queueBtn: $("#fs-queue-btn"), lyricsPanel: $("#fs-lyrics-panel"), lyrics: $("#fs-lyrics"),
-    queuePanel: $("#fs-queue"), qList: $("#fs-q-list"), qScroll: $("#fs-q-scroll"), qCount: $("#fs-q-count"), qClear: $("#fs-q-clear"),
-    bar: $("#fs-bar"), cur: $("#fs-cur"), tot: $("#fs-tot"), volume: $("#fs-volume"), play: $("#fs-play"),
-  };
-  // Кнопки управления, продублированные на разных экранах: состояние красим на всех сразу
-  const ctl = { play: $$('[data-do="play"]'), shuffle: $$('[data-do="shuffle"]'), repeat: $$('[data-do="repeat"]'), mute: $$('[data-do="mute"]') };
+  initImageFallback();
 
   // ---------- Состояние ----------
   const state = {
@@ -198,7 +60,6 @@
     fs: { open: false, mode: "default", opener: null },   // полноэкранный плеер
   };
   const current = () => state.queue[state.index] || null;
-  const trackKey = (t) => `${t.source}:${t.id}`;
   const heroTrack = () => current() || state.featured;
   const PAGE = 20;
   let seq = 0;                                         // порядок прихода треков (сортировка «по умолчанию»)
@@ -209,24 +70,6 @@
   };
   // localStorage теперь только для темы до первой отрисовки (запасной путь к /api/boot.js) и для одноразового
   // переноса старых значений в backend (migrateLocalUi). Старые ключи не удаляются: откат на прежнюю версию их найдёт.
-
-  // ---------- Сеть ----------
-  async function api(url, opts) {
-    const res = await fetch(url, opts);
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Ошибка ${res.status}`);
-    return res.json();
-  }
-  const getJSON = (url, signal) => api(url, { signal });
-  const jsonOpts = (method, body) => ({ method, headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-
-  /** Ответ /api/recommendations. Сбой источников не выдаём за «нечего предложить» (находка M4):
-   *  пусто + failed_sources = ошибка (её покажут с кнопкой «Повторить»); есть треки + failed_sources = частичный сбой. */
-  function recsResult(d) {
-    const tracks = (d && d.tracks) || [];
-    const names = ((d && d.failed_sources) || []).map((s) => SOURCES[s] || s).join(", ");
-    if (!tracks.length && names) throw new Error(`Источник сейчас недоступен: ${names}`);
-    return { tracks, partial: names };
-  }
 
   // ---------- Сохранение настроек интерфейса в backend ----------
   // Изменения копятся и уходят одним PUT /api/settings через короткую паузу (перетаскивание громкости —
@@ -263,14 +106,6 @@
     };
   })();
   window.addEventListener("pagehide", () => uiSave.flush(true));
-  // Снимок трека для избранного, истории и плейлистов — все поля Track (S6, находка M6: explicit, plays и
-  // released раньше терялись, и в «Нравится» не было сортировки по прослушиваниям и дате выхода)
-  const trackPayload = (t) => ({ id: t.id, source: t.source, title: t.title, artist: t.artist, artists: t.artists || [t.artist],
-    album: t.album || null, duration: t.duration || null, cover: t.cover || null, explicit: !!t.explicit,
-    stream_url: t.stream_url, artist_id: t.artist_id || null, artist_ids: t.artist_ids || [],
-    plays: Number.isInteger(t.plays) ? t.plays : null, released: typeof t.released === "string" ? t.released : null,
-    url: t.url || null });
-
   // ---------- Статус, уведомления, пустые состояния ----------
   function setStatus(text) { state.baseStatus = text; el.status.textContent = text; }
   let toastTimer = 0;

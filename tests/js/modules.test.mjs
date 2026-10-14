@@ -30,6 +30,25 @@ function importsOf(src) {
   return out;
 }
 
+/** Имена, которые файл экспортирует (export const/let/function/class и export { a, b as c }). */
+function exportsOf(src) {
+  const names = new Set();
+  for (const m of src.matchAll(/^\s*export\s+(?:async\s+)?(?:const|let|var|function\*?|class)\s+([A-Za-z_$][\w$]*)/gm)) names.add(m[1]);
+  for (const m of src.matchAll(/^\s*export\s*\{([^}]*)\}/gm)) {
+    for (const part of m[1].split(",").map((x) => x.trim()).filter(Boolean)) names.add(part.split(/\s+as\s+/).pop());
+  }
+  return names;
+}
+
+/** Именованные импорты файла: [{ spec, names }]. */
+function namedImportsOf(src) {
+  const out = [];
+  for (const m of src.matchAll(/^\s*import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gm)) {
+    out.push({ spec: m[2], names: m[1].split(",").map((x) => x.trim()).filter(Boolean).map((x) => x.split(/\s+as\s+/)[0]) });
+  }
+  return out;
+}
+
 function moduleEntry() {
   const html = readFileSync(join(FRONT, "index.html"), "utf8");
   const tags = [...html.matchAll(/<script\b([^>]*)>/g)].map((m) => m[1]);
@@ -70,6 +89,18 @@ test("входной модуль и все импорты существуют,
     return;
   }
   graph(entry);
+});
+
+test("каждое импортируемое имя экспортируется целевым модулем", () => {
+  const entry = moduleEntry();
+  if (!entry) return;
+  for (const file of graph(entry).keys()) {
+    for (const { spec, names } of namedImportsOf(readFileSync(file, "utf8"))) {
+      const target = resolve(dirname(file), spec);
+      const exported = exportsOf(readFileSync(target, "utf8"));
+      for (const n of names) assert.ok(exported.has(n), `${rel(file)}: «${n}» не экспортируется из ${rel(target)}`);
+    }
+  }
 });
 
 test("в графе модулей нет циклов", () => {
