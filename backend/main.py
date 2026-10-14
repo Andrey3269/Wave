@@ -328,8 +328,29 @@ async def search(
 # Раздача фронтенда (Шаги 3–4). Монтируем В САМОМ КОНЦЕ, после всех /api-роутов,
 # иначе "/" перехватит их. Один адрес для API и UI = никаких проблем с CORS.
 FRONTEND_DIR = paths.resource_dir() / "frontend"   # и в разработке, и внутри собранного приложения
+_JS_SUFFIXES = (".js", ".mjs")
+
+
+class FrontendFiles(StaticFiles):
+    """Статика интерфейса (S9: интерфейс — ES-модули).
+
+    * `.js` всегда отдаётся как JavaScript. Тип файла StaticFiles берёт из модуля `mimetypes`, а он на Windows
+      читает реестр, где `.js` бывает записан как `text/plain`. Обычный <script> это терпит, модуль — нет:
+      WebView2 отказывается исполнять модуль с таким типом, и окно остаётся пустым.
+    * `Cache-Control: no-cache`: браузер перепроверяет файлы по ETag (ответ 304, без повторной передачи).
+      Модули ссылаются друг на друга — после обновления приложения нельзя смешать файлы двух версий из кэша.
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = "no-cache"
+        if str(full_path).lower().endswith(_JS_SUFFIXES) and response.status_code != 304:
+            response.headers["Content-Type"] = "text/javascript; charset=utf-8"
+        return response
+
+
 if FRONTEND_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    app.mount("/", FrontendFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 else:
     log.warning("Папка фронтенда не найдена: %s", FRONTEND_DIR)
 
