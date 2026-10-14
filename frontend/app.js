@@ -805,11 +805,12 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   /** Играть массив треков как очередь (массив не копируется: лента может дополняться на лету). */
   function playTracks(tracks, i, label = "") {
     if (!tracks[i]) return;
+    const prev = current();                                // играющий трек — до замены очереди
     state.queue = tracks;
     state.queueOwned = false;
     state.queueLabel = label;
     state.mixId = null; markMix();
-    playIndex(i);
+    playIndex(i, prev);
   }
   /** Подпись очереди: откуда играет («Альбом 1», «Поиск: gspd», «Нравится»...). */
   function listLabel() {
@@ -819,17 +820,19 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   }
   function playFromList(i) {
     if (!state.list[i]) return;
+    const prev = current();
     state.queue = state.list;
     state.queueOwned = false;
     state.queueLabel = listLabel();
     state.mixId = state.view === "mix" ? state.ctx?.mix : null; markMix();
-    playIndex(i);
+    playIndex(i, prev);
   }
 
-  function playIndex(i) {
+  /** prev — трек, который играл до этого. Если очередь только что заменили, current() уже указывает в новую
+   *  очередь по старому номеру, поэтому вызывающий передаёт прерванный трек сам. */
+  function playIndex(i, prev = current()) {
     const track = state.queue[i];
     if (!track) return;
-    const prev = current();
     if (prev && audio.currentTime > 0 && !audio.ended && audio.currentTime < Math.min(30, (getDuration() || 999) * 0.4)) reportSkip(prev);   // переключили почти сразу = пропуск
     state.index = i;
     recordPlay(track);

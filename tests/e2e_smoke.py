@@ -777,6 +777,28 @@ def main() -> int:
         DL["stage"].clear()
         DL["done"].clear()
 
+        print("Пропуск трека при смене списка")
+        skips: list[dict] = []
+        on_skip = lambda r: skips.append(r.post_data_json) if r.url.endswith("/api/history/skip") else None   # noqa: E731
+        page.on("request", on_skip)
+        page.fill("#search-input", "gspd")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")
+        page.wait_for_selector("#tracks .row:not(.row--skel)")
+        page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/api/stream/yt/trk00000040') && !a.paused && a.currentTime > 0.3 })()")
+        skips.clear()
+        page.click("#tabs [data-tab=albums]")
+        page.wait_for_selector("#cards .card--album")
+        page.locator("#cards .card--album").first.click()
+        page.wait_for_function("document.querySelector('#d-kind').textContent === 'Альбом' && document.querySelectorAll('#tracks .row:not(.row--skel)').length === 8")
+        page.locator("#tracks .row:nth-child(2)").click(position={"x": 260, "y": 20})
+        page.wait_for_function("document.querySelector('#audio').src.endsWith('/api/stream/yt/trk00000081')")
+        page.wait_for_timeout(400)
+        page.remove_listener("request", on_skip)
+        check(skips == [{"source": "yt", "id": "trk00000040"}],
+              f"сигнал «пропуск» — для прерванного трека, а не для трека нового списка с тем же номером ({skips})")
+
         print("Узкое окно (980x640) и светлая тема")
         page.set_viewport_size({"width": 980, "height": 640})
         page.click(".nav__item[data-view=home]")
