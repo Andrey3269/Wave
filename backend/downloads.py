@@ -2,7 +2,8 @@
 Загрузки: трек, обложка, текст и metadata.json сохраняются в отдельную папку.
 
   Downloads/Wave/Artist - Title [yt-ID]/
-      audio.m4a | audio.mp3   (формат потока источника как есть, ffmpeg не нужен)
+      audio.m4a | audio.mp3   (формат потока источника как есть, ffmpeg не нужен; HLS-поток — проверенные и
+                               собранные сегменты: mp3-HLS -> .mp3, fMP4-HLS -> .m4a, S8)
       cover.jpg
       lyrics.json             (только если текст найден)
       metadata.json
@@ -38,10 +39,11 @@ import download_policy
 import library
 import paths
 from lyrics import fetch_lyrics
+from streaming import hls_download
 from streaming.errors import ERROR_HEADER
 from streaming.proxy import _connect
 from streaming.ranges import CONTENT_RANGE_RE
-from streaming.resolver import SOURCES
+from streaming.resolver import HLS, SOURCES
 
 log = logging.getLogger("musicmeta.downloads")
 router = APIRouter(prefix="/api", tags=["downloads"])
@@ -163,13 +165,16 @@ async def _run(client, rs, req: DownloadRequest) -> None:
     tmp = target.with_name(target.name + ".part")
     try:
         # preparing: поток получен штатно (тем же резолвером, что и для воспроизведения) и это не фрагмент
-        await download_policy.check(rs, req.source, req.id)
+        res = await download_policy.check(rs, req.source, req.id)
 
         shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir(parents=True)
 
         job["state"] = "downloading"
-        ext = await _download_audio(client, rs, req, tmp / "audio.part", job)
+        if res.kind == HLS:                                  # S8: тот же HLS-поток, что играет плеер
+            ext = await hls_download.download(client, rs, req.source, req.id, tmp / "audio.part", job)
+        else:
+            ext = await _download_audio(client, rs, req, tmp / "audio.part", job)
         audio = f"audio{ext}"
         os.replace(tmp / "audio.part", tmp / audio)
 

@@ -54,6 +54,7 @@ class PlaylistEncrypted(PlaylistError):
 class Resource:
     uri: str                                   # абсолютный адрес у источника
     byterange: tuple[int, int] | None = None   # (смещение, длина) или None — весь файл
+    bandwidth: int = 0                         # BANDWIDTH варианта master-плейлиста (для выбора при загрузке)
 
 
 @dataclass(slots=True)
@@ -190,12 +191,14 @@ def parse(text: str, base_url: str) -> Playlist:
 def _parse_master(lines: list[str], base: str) -> MasterPlaylist:
     pl = MasterPlaylist()
     expect_variant = False
+    bandwidth = 0
     for raw in lines[1:]:
         line = raw.strip()
         if not line:
             continue
         if line.startswith("#EXT-X-STREAM-INF:"):
-            parse_attrs(line.split(":", 1)[1])
+            bw = _attr(parse_attrs(line.split(":", 1)[1]), "BANDWIDTH") or "0"
+            bandwidth = int(bw) if bw.isdigit() else 0
             expect_variant = True
         elif line.startswith("#EXT-X-MEDIA:"):
             attrs = parse_attrs(line.split(":", 1)[1])
@@ -207,7 +210,7 @@ def _parse_master(lines: list[str], base: str) -> MasterPlaylist:
         elif line.startswith("#"):
             continue
         elif expect_variant:
-            pl.variants.append(Resource(_resolve_uri(base, line)))
+            pl.variants.append(Resource(_resolve_uri(base, line), bandwidth=bandwidth))
             expect_variant = False
         else:
             raise PlaylistError("URI без #EXT-X-STREAM-INF")

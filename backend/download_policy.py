@@ -7,6 +7,9 @@
 ошибок). Сохраняется ровно этот поток в исходном формате. Лицензия Creative Commons и признак
 `downloadable` SoundCloud условием НЕ являются.
 
+S8: поток может быть прогрессивным файлом или HLS (SoundCloud часть треков отдаёт только так) — загрузчик
+сохраняет тот же поток, что играет плеер (streaming/hls_download.py проверяет и собирает сегменты).
+
 Отказ — только если поток получить нельзя:
   * ошибки резолвера передаются как есть (unavailable, age_restricted, no_direct_stream, bot_check,
     rate_limited, network, js_runtime …): тот же текст и код, что видит плеер;
@@ -32,11 +35,15 @@ def refuse(status: int, code: str, detail: str) -> HTTPException:
     return HTTPException(status, detail, headers={ERROR_HEADER: code})
 
 
-async def check(rs, source: str, track_id: str) -> None:
-    """Поток трека штатно доступен целиком — или HTTPException с понятной причиной и кодом в X-Wave-Error."""
+async def check(rs, source: str, track_id: str) -> resolver.Resolved:
+    """
+    Поток трека штатно доступен целиком — или HTTPException с понятной причиной и кодом в X-Wave-Error.
+    Возвращает полученный поток (S8: загрузчик по нему выбирает путь — progressive или HLS).
+    """
     if source not in resolver.SOURCES:
         raise refuse(400, "unknown_source", "Некорректный трек")
     res = await resolver._resolve(rs, source, track_id)        # ошибки резолва (сеть, бот, возраст …) — как есть
     if res.preview:
         raise refuse(403, "preview_only", f"{resolver.SOURCES[source].label} отдаёт только короткий фрагмент этого "
                                           "трека (полная версия — по подписке), поэтому он не сохранён.")
+    return res
