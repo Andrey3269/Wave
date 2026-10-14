@@ -9,6 +9,7 @@ HLS-прокси, hls.js из frontend/vendor, тот же <audio>, перекл
 """
 from __future__ import annotations
 
+import os
 import re
 
 import pytest
@@ -27,7 +28,10 @@ def _launch(p):
     try:
         return p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
     except Exception as exc:                        # нет установленного Chromium: проверка невозможна
-        pytest.skip(f"Chromium для Playwright не установлен: {type(exc).__name__}")
+        reason = f"Chromium для Playwright недоступен: {str(exc).strip().splitlines()[0][:200]}"
+        if os.getenv("CI"):                         # в CI Chromium ставится всегда: пропуск = непроверенный HLS
+            pytest.fail(reason, pytrace=False)
+        pytest.skip(f"BLOCKED: {reason}")
 
 
 def _audio(page) -> dict:

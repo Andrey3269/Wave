@@ -68,6 +68,25 @@ PROXY_ENV = {k: os.environ.pop(k) for k in [k for k in os.environ
                                             if k.lower() in ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
                                                              "ws_proxy", "wss_proxy", "no_proxy")]}
 
+# Браузеры Playwright (S8, тесты HLS в Chromium) лежат в профиле настоящего пользователя: путь к ним фиксируем
+# ДО подмены HOME / LOCALAPPDATA, иначе Playwright искал бы их во временном профиле. Только чтение бинарников.
+def _real_playwright_browsers() -> Path | None:
+    if os.getenv("PLAYWRIGHT_BROWSERS_PATH"):
+        return None
+    if sys.platform == "win32":
+        base = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.getenv("XDG_CACHE_HOME") or Path.home() / ".cache")
+    path = base / "ms-playwright"
+    return path if path.is_dir() else None
+
+
+_pw = _real_playwright_browsers()
+if _pw is not None:
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(_pw)
+
 _fake_home = SESSION_ROOT / "home"
 _env = {
     "HOME": _fake_home,
