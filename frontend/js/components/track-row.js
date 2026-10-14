@@ -1,0 +1,107 @@
+// Строка трека в списке и то, что рисуется на любых кнопках трека: исполнители-ссылки, значок источника,
+// «в избранном», состояние загрузки, подсветка играющего трека.
+import { $, $$, mk, setCover } from "../core/dom.js";
+import { SOURCES, fmtTime } from "../core/format.js";
+import { trackKey } from "../core/api.js";
+import { el } from "../core/elements.js";
+import { state, current } from "../state/store.js";
+
+/** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
+export function setSource(node, source) {
+  const name = SOURCES[source];
+  node.hidden = !name;
+  if (!name) return;
+  node.title = name;
+  node.setAttribute("aria-label", name);
+  node.querySelector("use").setAttribute("href", `#i-src-${source}`);
+}
+
+/** Имена авторов трека: каждый отдельным элементом; со ссылкой, если известен его id. */
+export function renderArtists(node, t) {
+  const names = t.artists && t.artists.length ? t.artists : [t.artist];
+  const ids = t.artist_ids && t.artist_ids.length ? t.artist_ids : (t.artist_id ? [t.artist_id] : []);
+  node.replaceChildren();
+  names.forEach((name, i) => {
+    if (i) node.append(", ");
+    const span = mk("span", "who", name);
+    if (ids[i]) { span.classList.add("is-link"); span.dataset.aid = ids[i]; }
+    node.append(span);
+  });
+}
+
+/** Кнопка «в избранное» любого вида (строка, очередь, мини-плеер, страница трека, баннер). */
+export function paintFav(btn, t) {
+  const on = state.fav.has(trackKey(t));
+  const label = on ? "Убрать из избранного" : "В избранное";
+  btn.classList.toggle("is-fav", on);
+  btn.setAttribute("aria-pressed", String(on));
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  const txt = btn.querySelector("span:not(.track__pct)");
+  if (txt && btn.classList.contains("abtn")) txt.textContent = on ? "В избранном" : "Нравится";
+}
+
+// ---------- Состояние загрузки трека ----------
+export const BUSY = ["preparing", "downloading", "processing"];
+const DL_STAGE = { preparing: "Подготовка", downloading: "Скачивание", processing: "Обработка" };
+const mb = (n) => `${(n / 1048576).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
+
+/** Что сейчас с загрузкой трека: done | busy | denied | error | idle (+ текст для кнопки и подсказки). */
+function dlStatus(t) {
+  const key = trackKey(t), job = state.jobs[key];
+  if (state.dl.has(key)) return { kind: "done", short: "Скачано", label: "Скачано. Нажми, чтобы удалить локальную копию" };
+  if (job && BUSY.includes(job.state)) {
+    const stage = DL_STAGE[job.state];
+    let pct = "…";
+    if (job.state === "downloading") pct = job.total ? `${job.progress || 0}%` : job.received ? mb(job.received) : "…";
+    return { kind: "busy", short: stage, pct, label: job.state === "downloading" ? `${stage}: ${pct}` : `${stage}…` };
+  }
+  const denied = state.dlDenied.get(key);
+  if (denied) return { kind: "denied", short: "Недоступно", label: `Скачивание недоступно. ${denied}` };
+  if (job && job.state === "error") return { kind: "error", short: "Ошибка", label: `Ошибка: ${job.error || "не удалось скачать"} Нажми, чтобы повторить.` };
+  return { kind: "idle", short: "Скачать", label: "Скачать" };
+}
+
+/** Рисует кнопку загрузки: скачать / этап и прогресс / скачано (клик = удалить) / недоступно / ошибка. */
+export function paintDl(btn, t) {
+  const st = dlStatus(t);
+  btn.classList.toggle("is-done", st.kind === "done");
+  btn.classList.toggle("is-busy", st.kind === "busy");
+  btn.classList.toggle("is-denied", st.kind === "denied");
+  btn.classList.toggle("is-error", st.kind === "error");
+  btn.disabled = st.kind === "busy";
+  btn.dataset.dl = st.kind;
+  btn.title = st.label;
+  btn.setAttribute("aria-label", st.label);
+  btn.querySelector("use").setAttribute("href", st.kind === "done" ? "#i-check" : "#i-download");
+  btn.querySelector(".track__pct").textContent = st.kind === "busy" ? st.pct || "" : st.kind === "error" ? "!" : "";
+  const txt = btn.querySelector(".abtn__t");
+  if (txt) txt.textContent = st.short;
+}
+
+/** Строка трека из шаблона #track-template. i — позиция в state.list. */
+export function buildRow(t, i) {
+  const node = el.tpl.content.cloneNode(true);
+  const li = $(".row", node);
+  li.dataset.index = i;
+  li.dataset.key = trackKey(t);
+  $(".track", node).setAttribute("aria-label", `Играть: ${t.artist} — ${t.title}`);
+  $(".track__idx", node).textContent = i + 1;
+  setCover($(".track__cover img", node), t.cover, 120);
+  $(".track__title", node).textContent = t.title;
+  renderArtists($(".track__artist", node), t);          // каждый автор отдельной ссылкой на его страницу
+  setSource($(".src", node), t.source);
+  $(".track__album", node).textContent = t.reason || t.album || "";   // у рекомендаций здесь причина
+  $(".track__time", node).textContent = t.duration ? fmtTime(t.duration) : "";
+  paintFav($(".track__fav", node), t);
+  paintDl($(".track__dl", node), t);
+  return node;
+}
+/** Трек строки списка, в которой находится узел. */
+export const rowTrack = (node) => state.list[Number(node.closest(".row")?.dataset.index)];
+
+/** Подсветка играющего трека везде, где он показан (строки, карточки, «Продолжить слушать»). */
+export function markPlaying() {
+  const cur = current(), k = cur ? trackKey(cur) : null;
+  $$("[data-key]").forEach((n) => n.classList.toggle("is-playing", n.dataset.key === k));
+}

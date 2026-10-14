@@ -11,31 +11,26 @@ import { $, $$, mk, icon, button, setCover, coverEl, initImageFallback } from ".
 import { SOURCES, clamp, rand, fmtTime, plural, thumb } from "./js/core/format.js";
 import { enc, api, getJSON, jsonOpts, recsResult, trackKey, trackPayload } from "./js/core/api.js";
 import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
-import { state, queue, current, PAGE, nextSeq, nav } from "./js/state/store.js";
+import { state, queue, current, heroTrack, DETAIL_VIEWS, sectionOf, isCards, bus, PAGE, nextSeq, nav } from "./js/state/store.js";
 import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags, applySettings, fetchSettings,
   migrateLocalUi, initThemeFollowSystem } from "./js/state/settings.js";
 import { toast, hideToast } from "./js/components/toast.js";
 import { setBlock, initEmptyRetry, skelRows, skelCards } from "./js/components/skeleton.js";
 import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/components/dialogs.js";
 import { loadLyrics, syncLyrics, initLyrics } from "./js/components/lyrics.js";
+import { setSource, renderArtists, paintFav, paintDl, BUSY, buildRow, rowTrack, markPlaying } from "./js/components/track-row.js";
+import { cardKey, buildCard, renderRow, bindCardClicks, trackCard, miniCard, bindTrackGrid, mixCard, sideItem, markMix,
+  initRowScroll } from "./js/components/cards.js";
+import { openMenu, closeMenu, initMenu } from "./js/components/menu.js";
+import { paintLike, repaintFav, toggleFav } from "./js/components/favorites.js";
+import { shareTrack } from "./js/components/share.js";
 import { updateProgress, paintVolume, toggleMute, initSliders } from "./js/player/sliders.js";
 import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, playPrev, setShuffle, setRepeat,
   warmTrack, scheduleWarm, initPlayer } from "./js/player/controller.js";
 
 (() => {
-  /** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
-  function setSource(node, source) {
-    const name = SOURCES[source];
-    node.hidden = !name;
-    if (!name) return;
-    node.title = name;
-    node.setAttribute("aria-label", name);
-    node.querySelector("use").setAttribute("href", `#i-src-${source}`);
-  }
-
   initImageFallback();
 
-  const heroTrack = () => current() || state.featured;
   initSettingsSync();
 
   // ---------- Статус и пустые состояния ----------
@@ -47,9 +42,6 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // ==========================================================================
   const NAV_OF = { home: "home", search: "search", playlists: "playlists", playlist: "playlists", collection: "collection",
     liked: "liked", downloads: "downloads", history: "history", settings: "settings" };
-  const DETAIL_VIEWS = ["artist", "album", "playlist", "mix"];
-  const sectionOf = (v) => (v === "home" || v === "collection" || v === "settings" || v === "now" ? v : "list");
-  const isCards = () => state.view === "search" && state.tab !== "tracks";
 
   /** Показывает нужные блоки для state.view. Мини-плеер скрывает CSS по body[data-view] и body[data-track]. */
   function layout() {
@@ -96,26 +88,6 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // ==========================================================================
   // Список треков (строки) и карточки
   // ==========================================================================
-  /** Строка трека из шаблона. */
-  function buildRow(t, i) {
-    const node = el.tpl.content.cloneNode(true);
-    const li = $(".row", node);
-    li.dataset.index = i;
-    li.dataset.key = trackKey(t);
-    $(".track", node).setAttribute("aria-label", `Играть: ${t.artist} — ${t.title}`);
-    $(".track__idx", node).textContent = i + 1;
-    setCover($(".track__cover img", node), t.cover, 120);
-    $(".track__title", node).textContent = t.title;
-    renderArtists($(".track__artist", node), t);          // каждый автор отдельной ссылкой на его страницу
-    setSource($(".src", node), t.source);
-    $(".track__album", node).textContent = t.reason || t.album || "";   // у рекомендаций здесь причина
-    $(".track__time", node).textContent = t.duration ? fmtTime(t.duration) : "";
-    paintFav($(".track__fav", node), t);
-    paintDl($(".track__dl", node), t);
-    return node;
-  }
-  const rowTrack = (node) => state.list[Number(node.closest(".row")?.dataset.index)];
-
   // ---------- сортировка ----------
   // Сортируем уже загруженное: источники не умеют сортировать выдачу поиска, и подделывать это мы не станем.
   // «Популярные» и «Новые» есть только там, где источник отдаёт прослушивания и даты (SoundCloud).
@@ -169,116 +141,26 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
     else { fresh.forEach((t, i) => el.tracks.appendChild(buildRow(t, from + i))); updateSort(); }
   }
 
-  /** Имена авторов трека: каждый отдельным элементом; со ссылкой, если известен его id. */
-  function renderArtists(node, t) {
-    const names = t.artists && t.artists.length ? t.artists : [t.artist];
-    const ids = t.artist_ids && t.artist_ids.length ? t.artist_ids : (t.artist_id ? [t.artist_id] : []);
-    node.replaceChildren();
-    names.forEach((name, i) => {
-      if (i) node.append(", ");
-      const span = mk("span", "who", name);
-      if (ids[i]) { span.classList.add("is-link"); span.dataset.aid = ids[i]; }
-      node.append(span);
-    });
-  }
-
-  // ---------- карточки артистов, альбомов, плейлистов ----------
-  const cardKey = (c) => `${c.source}:${c.kind}:${c.id}`;
-  /** list: ключ из CARD_LISTS, по нему обработчик находит данные карточки. */
-  function buildCard(c, i, list = "cards") {
-    const b = mk("button", `card card--${c.kind}`);
-    b.type = "button";
-    b.dataset.index = i;
-    b.dataset.list = list;
-    if (c.kind === "new") {
-      const plus = mk("span", "card__cv card__cv--plus");
-      plus.append(icon("i-plus"));
-      b.append(plus, mk("span", "card__title", "Новый плейлист"), mk("span", "card__sub", "Создать"));
-      return b;
-    }
-    const sub = c.kind === "artist" ? (c.subtitle || "Артист")
-      : c.kind === "playlist" ? `${c.count} тр.` : [c.artist, c.year].filter(Boolean).join(" · ");
-    b.append(coverEl(c.cover, 320, "card__cv"), mk("span", "card__title", c.name || c.title), mk("span", "card__sub", sub));
-    return b;
-  }
+  // ---------- карточки артистов, альбомов, плейлистов (components/cards.js) ----------
   function renderCards(from = 0, append = false) {
     const nodes = state.cards.slice(from).map((c, i) => buildCard(c, from + i, "cards"));
     if (append) el.cards.append(...nodes); else el.cards.replaceChildren(...nodes);
   }
-  const renderRow = (root, items, list) => root.replaceChildren(...items.map((c, i) => buildCard(c, i, list)));
   const CARD_LISTS = { cards: () => state.cards, albums: () => state.albums, related: () => state.related,
     colpl: () => state.colPl, colar: () => state.colAr, simar: () => similar.artists };
-
-  function onCardClick(e) {
-    const node = e.target.closest(".card");
-    if (!node) return;
-    const c = (CARD_LISTS[node.dataset.list] || (() => []))()[Number(node.dataset.index)];
-    if (!c) return;
+  bindCardClicks([el.cards, el.albumsRow, el.relatedRow, el.colPlaylists, el.colArtists, now.similarArtists], CARD_LISTS, (c) => {
     if (c.kind === "new") { createPlaylistFlow(); return; }
     if (c.kind === "artist") navTo(() => openArtist(c.source, c.id));
     else if (c.kind === "playlist") navTo(() => openPlaylist(c.id));
     else navTo(() => openAlbum(c.source, c.id, c.playlist_id));
-  }
-  [el.cards, el.albumsRow, el.relatedRow, el.colPlaylists, el.colArtists, now.similarArtists].forEach((r) => r.addEventListener("click", onCardClick));
+  });
 
   // ---------- карточки треков (главная, «похожие») ----------
-  function trackCard(t, i) {
-    const art = mk("article", "tcard");
-    art.dataset.index = i;
-    art.dataset.key = trackKey(t);
-    const open = mk("button", "tcard__open");
-    open.type = "button";
-    open.setAttribute("aria-label", `Играть: ${t.artist} — ${t.title}`);
-    const cv = coverEl(t.cover, 320, "tcard__cv");
-    const ov = mk("span", "tcard__ov");
-    ov.append(icon("i-play", "icon--fill ico-play"), icon("i-pause", "icon--fill ico-pause"));
-    cv.append(ov);
-    open.append(cv, mk("span", "tcard__title", t.title), mk("span", "tcard__sub", t.artist));
-    const more = button("tbtn tcard__more", "Ещё", "i-more", true);
-    more.setAttribute("aria-haspopup", "menu");
-    art.append(open, more);
-    return art;
-  }
-  function miniCard(t, i) {
-    const art = mk("article", "minicard");
-    art.dataset.index = i;
-    art.dataset.key = trackKey(t);
-    const open = mk("button", "minicard__open");
-    open.type = "button";
-    open.setAttribute("aria-label", `Играть: ${t.artist} — ${t.title}`);
-    const body = mk("span", "minicard__body");
-    const bar = mk("span", "minibar");
-    bar.append(mk("i"));
-    body.append(mk("span", "minicard__title", t.title), mk("span", "minicard__sub", t.artist), bar);
-    const time = mk("span", "minicard__time", t.duration ? fmtTime(t.duration) : "");
-    const play = mk("span", "minicard__play");
-    play.append(icon("i-play", "icon--fill ico-play"), icon("i-pause", "icon--fill ico-pause"));
-    open.append(coverEl(t.cover, 120, "minicard__cv"), body, time, play);
-    art.append(open);
-    return art;
-  }
-  /** Один обработчик на ряд карточек: клик = играть (или пауза, если это текущий трек), «⋯» = меню. */
-  function bindTrackGrid(root, getArr, getLabel) {
-    root.addEventListener("click", (e) => {
-      const card = e.target.closest("[data-index]");
-      if (!card || !root.contains(card)) return;
-      const arr = getArr(), i = Number(card.dataset.index), t = arr[i];
-      if (!t) return;
-      if (e.target.closest(".tcard__more")) { openMenu(t, e.target.closest("button")); return; }
-      if (queue.isFrom(arr) && queue.current === t) togglePlay(); else playTracks(arr, i, getLabel());
-    });
-  }
   bindTrackGrid(el.newGrid, () => state.feed, () => feedLabel());
   bindTrackGrid(el.continueRow, () => state.hist, () => "Недавно слушали");
   bindTrackGrid(now.similarRow, () => similar.tracks, () => `Похожие на «${current()?.title || "трек"}»`);
 
-  document.addEventListener("click", (e) => {            // стрелки у горизонтальных рядов
-    const b = e.target.closest("[data-scroll]");
-    if (!b) return;
-    const [id, dir] = b.dataset.scroll.split(":");
-    const row = document.getElementById(id);
-    if (row) row.scrollBy({ left: Number(dir) * row.clientWidth * 0.85, behavior: "smooth" });
-  });
+  initRowScroll();                                         // стрелки у горизонтальных рядов
 
   // ==========================================================================
   // Поиск и ленты (поиск, артист, история)
@@ -539,25 +421,7 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
       setBlock(el.empty, `Не удалось собрать микс: ${e.message}`, () => openMix(mix));
     }
   }
-  function markMix() {
-    $$("[data-mix]").forEach((n) => n.classList.toggle("is-active", n.dataset.mix === state.mixId || (state.view === "mix" && n.dataset.mix === state.ctx?.mix)));
-  }
-
   // ---------- боковая панель: «Твоя музыка» и «Миксы по артистам» ----------
-  function sideItem({ cover, title, sub, tone, data }) {
-    const li = mk("li");
-    const b = mk("button", "mix");
-    b.type = "button";
-    Object.assign(b.dataset, data);
-    const cv = coverEl(cover, 96, "mix__cv");
-    if (!cover) { cv.dataset.tone = tone || 0; cv.append(icon("i-wave")); }
-    const text = mk("span", "mix__t");
-    text.append(mk("span", "mix__title", title), mk("span", "mix__sub", sub));
-    b.append(cv, text, icon("i-chev-r", "mix__go"));
-    b.title = title;
-    li.append(b);
-    return li;
-  }
   function renderThemeMixes() {
     el.mixes.replaceChildren(...themeMixes.map((m) => sideItem({ cover: m.cover, title: m.title, sub: m.sub, tone: m.tone, data: { mix: m.id } })));
     markMix();
@@ -666,21 +530,6 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
     renderMixRow();
     renderContinue();
     renderFeed();
-  }
-  function mixCard(m) {
-    const art = mk("article", "mixcard");
-    art.dataset.mix = m.id;
-    const open = mk("button", "mixcard__open");
-    open.type = "button";
-    open.setAttribute("aria-label", `Открыть микс: ${m.title}`);
-    const cv = coverEl(m.cover, 320, "mixcard__cv");
-    if (!m.cover) { cv.dataset.tone = m.tone || 0; cv.append(icon("i-wave")); }
-    const body = mk("span", "mixcard__body");
-    body.append(mk("span", "mixcard__title", m.title), mk("span", "mixcard__sub", m.sub));
-    open.append(cv, body);
-    const play = button("playbtn mixcard__play", `Слушать: ${m.title}`, "i-play", true);
-    art.append(open, play);
-    return art;
   }
   function renderMixRow() {
     state.mixes = buildMixes();
@@ -850,11 +699,6 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
     if (state.view === "now") renderNow();
     if (state.fs.open) renderFs();
     renderQueue();
-  }
-
-  function markPlaying() {
-    const cur = current(), k = cur ? trackKey(cur) : null;
-    $$("[data-key]").forEach((n) => n.classList.toggle("is-playing", n.dataset.key === k));
   }
 
   function setPlayingUI(playing) {
@@ -1070,44 +914,8 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // ==========================================================================
   // Избранное (одно состояние для всех экранов)
   // ==========================================================================
-  function paintFav(btn, t) {
-    const on = state.fav.has(trackKey(t));
-    const label = on ? "Убрать из избранного" : "В избранное";
-    btn.classList.toggle("is-fav", on);
-    btn.setAttribute("aria-pressed", String(on));
-    btn.title = label;
-    btn.setAttribute("aria-label", label);
-    const txt = btn.querySelector("span:not(.track__pct)");
-    if (txt && btn.classList.contains("abtn")) txt.textContent = on ? "В избранном" : "Нравится";
-  }
-  function paintLike() {
-    const t = current();
-    el.btnLike.hidden = !t;
-    if (t) { paintFav(el.btnLike, t); paintFav(now.like, t); }
-  }
-  function repaintFav() {
-    $$(".track__fav", el.tracks).forEach((b) => { const t = rowTrack(b); if (t) paintFav(b, t); });
-    paintLike();
-    const ht = heroTrack();
-    if (ht) paintFav(hero.like, ht);
-    $$(".q__fav", el.queueList).forEach((b) => { const t = queue.at(Number(b.dataset.index)); if (t) paintFav(b, t); });
-  }
-  async function toggleFav(t) {
-    const k = trackKey(t), was = state.fav.has(k);
-    const items = state.favItems;
-    if (was) { state.fav.delete(k); state.favItems = items.filter((x) => trackKey(x) !== k); }
-    else { state.fav.add(k); state.favItems = [{ ...t }, ...items]; }
-    repaintFav();                                          // сразу, без ожидания сервера
-    try {
-      if (was) await api(`/api/favorites/${t.source}/${enc(t.id)}`, { method: "DELETE" });
-      else await api("/api/favorites", jsonOpts("POST", trackPayload(t)));
-      scheduleArtists();
-    } catch (e) {
-      if (was) { state.fav.add(k); state.favItems = items; } else { state.fav.delete(k); state.favItems = items; }
-      repaintFav();
-      toast(`Не удалось обновить избранное: ${e.message}`);
-    }
-  }
+  // components/favorites.js; «Миксы по артистам» пересчитываются после сохранения избранного
+  bus.on("favorites", () => scheduleArtists());
 
   async function showLiked() {
     state.reopen = () => showLiked();
@@ -1329,77 +1137,22 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
   // ==========================================================================
   // Меню трека
   // ==========================================================================
-  let menuTrack = null, menuCtx = null;
-  /** ctx = { queueIndex }: меню строки очереди (играть сейчас, выше/ниже, убрать). */
-  function openMenu(track, anchor, ctx = null) {
-    menuTrack = track;
-    menuCtx = ctx;
-    const downloaded = state.dl.has(trackKey(track));
-    let items;
-    if (ctx && ctx.queueIndex != null) {
-      const i = ctx.queueIndex, isCur = i === queue.index, fav = state.fav.has(trackKey(track));
-      items = [];
-      if (!isCur) items.push(["playnow", "Играть сейчас", "i-play"]);
-      if (!isCur && i > queue.index + 1) items.push(["movenext", "Играть следующим", "i-next"]);
-      if (!isCur && i > queue.index + 1) items.push(["up", "Выше", "i-chev-u"]);
-      if (!isCur && i < queue.length - 1) items.push(["down", "Ниже", "i-chev-d"]);
-      if (!isCur) items.push(["rm", "Убрать из очереди", "i-trash"]);
-      items.push(["fav", fav ? "Убрать из избранного" : "В избранное", "i-heart"], ["playlist", "Добавить в плейлист…", "i-playlists"],
-        ["artist", "Перейти к исполнителю", "i-user"], ["share", "Поделиться", "i-share"]);
-    } else {
-      items = [
-        ["next", "Играть следующим", "i-next"],
-        ["add", "Добавить в очередь", "i-queue"],
-        ["playlist", "Добавить в плейлист…", "i-playlists"],
-      ];
-      if (state.view === "playlist" && anchor.closest("#tracks")) items.push(["unlist", "Убрать из плейлиста", "i-trash"]);
-      items.push(["artist", "Перейти к исполнителю", "i-user"]);
-      if (track.album) items.push(["album", "Открыть альбом", "i-disc"]);
-      const denied = !downloaded && state.dlDenied.has(trackKey(track));
-      items.push(["download", downloaded ? "Удалить загрузку" : denied ? "Скачивание недоступно" : "Скачать", downloaded ? "i-trash" : "i-download"]);
-      items.push(["share", "Поделиться", "i-share"]);
-    }
-    el.menu.replaceChildren(...items.map(([act, label, ico]) => {
-      const b = mk("button");
-      b.type = "button"; b.setAttribute("role", "menuitem"); b.dataset.act = act;
-      b.append(icon(ico), mk("span", null, label));
-      return b;
-    }));
-    el.menu.hidden = false;
-    const r = anchor.getBoundingClientRect(), mw = el.menu.offsetWidth, mh = el.menu.offsetHeight;
-    let top = r.bottom + 4;
-    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
-    el.menu.style.top = `${top}px`;
-    el.menu.style.left = `${clamp(r.right - mw, 8, Math.max(8, window.innerWidth - mw - 8))}px`;
-    el.menu.querySelector("button")?.focus();
-  }
-  function closeMenu() { el.menu.hidden = true; menuTrack = null; menuCtx = null; }
-  el.menu.addEventListener("click", (e) => {
-    const b = e.target.closest("[data-act]");
-    const t = menuTrack, qi = menuCtx ? menuCtx.queueIndex : null;
-    if (!b || !t) return;
-    closeMenu();
-    if (state.fs.open && (b.dataset.act === "artist" || b.dataset.act === "album")) closeFs();   // переходим на другую страницу: полноэкранный режим закрываем
-    switch (b.dataset.act) {
-      case "playnow": playIndex(qi); break;
-      case "movenext": queueMoveTo(qi, queue.index + 1); break;
-      case "up": queueMove(qi, -1); break;
-      case "down": queueMove(qi, 1); break;
-      case "rm": queueRemove(qi); break;
-      case "fav": toggleFav(t); break;
-      case "next": queueAdd(t, true); break;
-      case "add": queueAdd(t, false); break;
-      case "playlist": addToPlaylistFlow(t); break;
-      case "unlist": removeFromPlaylist(t); break;
-      case "artist": goArtist(t); break;
-      case "album": goAlbum(t); break;
-      case "download": toggleDownload(t); break;
-      case "share": shareTrack(t); break;
-      default: break;
-    }
-  });
-  document.addEventListener("click", (e) => {
-    if (!el.menu.hidden && !e.target.closest("#menu") && !e.target.closest('.track__more, .tcard__more, .fq__more, [data-do="more"]')) closeMenu();
+  initMenu({
+    playnow: (t, qi) => playIndex(qi),
+    movenext: (t, qi) => queueMoveTo(qi, queue.index + 1),
+    up: (t, qi) => queueMove(qi, -1),
+    down: (t, qi) => queueMove(qi, 1),
+    rm: (t, qi) => queueRemove(qi),
+    fav: (t) => toggleFav(t),
+    next: (t) => queueAdd(t, true),
+    add: (t) => queueAdd(t, false),
+    playlist: (t) => addToPlaylistFlow(t),
+    unlist: (t) => removeFromPlaylist(t),
+    // переходим на другую страницу: полноэкранный режим закрываем
+    artist: (t) => { if (state.fs.open) closeFs(); goArtist(t); },
+    album: (t) => { if (state.fs.open) closeFs(); goAlbum(t); },
+    download: (t) => toggleDownload(t),
+    share: (t) => shareTrack(t),
   });
 
   function goArtist(t) {
@@ -1419,69 +1172,14 @@ import { playerEvents, setIdleAction, play, playIndex, togglePlay, playNext, pla
     } catch (e) { toast(`Не удалось открыть альбом: ${e.message}`); }
   }
 
-  // ---------- поделиться ----------
-  const trackUrl = (t) => t.url || (t.source === "yt" ? `https://music.youtube.com/watch?v=${t.id}` : null);
-  async function copyText(text) {
-    try { await navigator.clipboard.writeText(text); return true; } catch { /* пробуем запасной путь */ }
-    try {
-      const ta = mk("textarea");
-      ta.value = text; ta.style.cssText = "position:fixed;opacity:0;top:0;left:0";
-      document.body.append(ta); ta.select();
-      const ok = document.execCommand("copy");
-      ta.remove();
-      return ok;
-    } catch { return false; }
-  }
-  async function shareTrack(t) {
-    const url = trackUrl(t);
-    const ok = await copyText(url || `${t.artist} — ${t.title}`);
-    if (!ok) toast("Не удалось скопировать");
-    else toast(url ? "Ссылка на трек скопирована" : "У этого источника нет публичной ссылки: скопировано название");
-  }
-
   // ==========================================================================
   // Загрузки и офлайн: скачать, удалить, «Скачанные»
   // ==========================================================================
-  const BUSY = ["preparing", "downloading", "processing"];
   // Скачивается штатный поток трека — тот же, что играет плеер (download_policy.py, S5). Эти коды значат, что
   // поток этого трека получить нельзя или источник отдаёт лишь фрагмент: повтор не поможет, кнопка показывает
   // причину. Остальные ошибки (сеть, лимит запросов, проверка на бота, сбой) временные: кнопка предлагает повторить.
   const DL_FINAL = ["unavailable", "age_restricted", "no_direct_stream", "preview_only"];
-  const DL_STAGE = { preparing: "Подготовка", downloading: "Скачивание", processing: "Обработка" };
-  const mb = (n) => `${(n / 1048576).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
 
-  /** Что сейчас с загрузкой трека: done | busy | denied | error | idle (+ текст для кнопки и подсказки). */
-  function dlStatus(t) {
-    const key = trackKey(t), job = state.jobs[key];
-    if (state.dl.has(key)) return { kind: "done", short: "Скачано", label: "Скачано. Нажми, чтобы удалить локальную копию" };
-    if (job && BUSY.includes(job.state)) {
-      const stage = DL_STAGE[job.state];
-      let pct = "…";
-      if (job.state === "downloading") pct = job.total ? `${job.progress || 0}%` : job.received ? mb(job.received) : "…";
-      return { kind: "busy", short: stage, pct, label: job.state === "downloading" ? `${stage}: ${pct}` : `${stage}…` };
-    }
-    const denied = state.dlDenied.get(key);
-    if (denied) return { kind: "denied", short: "Недоступно", label: `Скачивание недоступно. ${denied}` };
-    if (job && job.state === "error") return { kind: "error", short: "Ошибка", label: `Ошибка: ${job.error || "не удалось скачать"} Нажми, чтобы повторить.` };
-    return { kind: "idle", short: "Скачать", label: "Скачать" };
-  }
-
-  /** Рисует кнопку загрузки: скачать / этап и прогресс / скачано (клик = удалить) / недоступно / ошибка. */
-  function paintDl(btn, t) {
-    const st = dlStatus(t);
-    btn.classList.toggle("is-done", st.kind === "done");
-    btn.classList.toggle("is-busy", st.kind === "busy");
-    btn.classList.toggle("is-denied", st.kind === "denied");
-    btn.classList.toggle("is-error", st.kind === "error");
-    btn.disabled = st.kind === "busy";
-    btn.dataset.dl = st.kind;
-    btn.title = st.label;
-    btn.setAttribute("aria-label", st.label);
-    btn.querySelector("use").setAttribute("href", st.kind === "done" ? "#i-check" : "#i-download");
-    btn.querySelector(".track__pct").textContent = st.kind === "busy" ? st.pct || "" : st.kind === "error" ? "!" : "";
-    const txt = btn.querySelector(".abtn__t");
-    if (txt) txt.textContent = st.short;
-  }
   function repaintDl() {
     $$(".track__dl", el.tracks).forEach((b) => { const t = rowTrack(b); if (t) paintDl(b, t); });
     const cur = current();
