@@ -155,6 +155,9 @@ HLS_SEG = mp3_frames(HLS_SEG_FRAMES)
 HLS_PLAYLIST = media_playlist([f"/api/stream/hls/{HLS_TOKEN}/main/s{i}" for i in range(3)],
                               [round(HLS_SEG_FRAMES * MP3_FRAME_SEC, 6)] * 3)
 HLS = {"released": [], "segments": 0}
+# Поиск «m11» (раздел M11): вторая страница отдаётся только после того, как тест её разрешит. До этого
+# запрос обрывается (как пропавшая сеть) — иначе автоподгрузка пришла бы раньше, чем тест проверит очередь.
+M11 = {"page2": False}
 
 
 def sc_track(n: int) -> dict:
@@ -270,6 +273,12 @@ def handle(route: Route) -> None:
                           "personalized": bool(page) or mode == "personal", "radio": False, "page": page,
                           "failed_sources": bad, "source_status": {"yt": "partial" if bad else "ok"}})
 
+    if path == "/api/search" and q.get("q") == "m11":                  # две страницы для очереди (M11)
+        off = int(q.get("offset", 0))
+        if off and not M11["page2"]:
+            return route.abort("failed")
+        return js(route, {"query": "m11", "count": 20, "tracks": [track(100 + off + i) for i in range(20)] if off < 40 else [],
+                          "failed_sources": [], "has_more": off + 20 < 40})
     if path == "/api/search" and q.get("sources") == "sc":
         return js(route, {"query": q.get("q"), "count": 3, "tracks": [sc_track(i) for i in range(3)], "failed_sources": [],
                           "has_more": False, "source_status": {"sc": "ok"}})
@@ -798,6 +807,52 @@ def main() -> int:
         page.remove_listener("request", on_skip)
         check(skips == [{"source": "yt", "id": "trk00000040"}],
               f"сигнал «пропуск» — для прерванного трека, а не для трека нового списка с тем же номером ({skips})")
+
+        print("Очередь не зависит от списка на экране (M11)")
+        q_titles = "[...document.querySelectorAll('#queue-list .q .q__title')].map(n => n.textContent)"
+        row_titles = "[...document.querySelectorAll('#tracks .row .track__title')].map(n => n.textContent)"
+        playing = "(id) => { const a = document.querySelector('#audio'); return a.src.endsWith('/api/stream/yt/' + id) && !a.paused }"
+
+        def reopen_queue() -> list[str]:                            # очередь рисуется при открытии панели
+            if visible(page, "#queue"):
+                page.click("#queue-close")
+            page.click("#btn-queue")
+            page.wait_for_selector("#queue:not([hidden]) .q")
+            return page.evaluate(q_titles)
+
+        page.fill("#search-input", "m11")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 20")
+        listed = page.evaluate(row_titles)
+        page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        page.wait_for_function(playing, arg="trk00000100")
+        queued = reopen_queue()
+        check(queued == listed, "очередь запущена из списка в его порядке")
+        page.select_option("#sort", "artist")
+        page.wait_for_function(f"(t) => JSON.stringify({row_titles}) !== t", arg=json.dumps(listed, ensure_ascii=False))
+        resorted = page.evaluate(row_titles)
+        check(resorted != listed and sorted(resorted) == sorted(listed) and resorted[0] != listed[0],
+              "список на экране отсортирован по исполнителю")
+        check(reopen_queue() == queued, "сортировка списка не изменила порядок очереди")
+        check(page.locator("#queue-list .q.is-current .q__title").text_content() == listed[0], "текущий трек очереди не сменился")
+        page.click("#player [data-do=next]")
+        page.wait_for_function(playing, arg="trk00000101")
+        check(True, "«Следующий» играет следующий трек очереди, а не отсортированного списка")
+        page.click("#tracks .row[data-key='yt:trk00000101'] .track__title")
+        page.wait_for_function("document.querySelector('#audio').paused")
+        check(audio_state(page)["src"].endswith("/api/stream/yt/trk00000101"), "клик по играющей строке после сортировки — пауза, а не перезапуск")
+        page.click("#player [data-do=play]")
+        page.click("#queue-close")
+        M11["page2"] = True
+        page.click("#more")                                          # следующая страница источника («Повторить»)
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 40")
+        page.wait_for_timeout(200)
+        queued2 = reopen_queue()
+        check(len(queued2) == 40 and queued2[:20] == queued
+              and sorted(queued2[20:]) == sorted(t for t in page.evaluate(row_titles) if t not in queued),
+              "новая страница списка продолжила очередь в конце, прежний порядок очереди сохранён")
+        page.click("#queue-close")
 
         print("Узкое окно (980x640) и светлая тема")
         page.set_viewport_size({"width": 980, "height": 640})

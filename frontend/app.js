@@ -11,7 +11,7 @@ import { $, $$, mk, icon, button, setCover, coverEl, initImageFallback } from ".
 import { SOURCES, clamp, rand, fmtTime, plural, thumb } from "./js/core/format.js";
 import { enc, api, getJSON, jsonOpts, recsResult, trackKey, trackPayload } from "./js/core/api.js";
 import { el, views, audio, hero, now, fs, ctl } from "./js/core/elements.js";
-import { state, current, PAGE, nextSeq, nav } from "./js/state/store.js";
+import { state, queue, current, PAGE, nextSeq, nav } from "./js/state/store.js";
 import { uiSave, initSettingsSync, round3, markLocal, settingsGeneration, flags, applySettings, fetchSettings,
   migrateLocalUi, initThemeFollowSystem } from "./js/state/settings.js";
 import { toast, hideToast } from "./js/components/toast.js";
@@ -127,10 +127,9 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   const SORT_LABELS = { default: "По умолчанию", title: "По названию", artist: "По исполнителю",
     dur_asc: "Короткие сначала", dur_desc: "Длинные сначала", plays: "Популярные", new: "Новые" };
 
+  /** Сортирует только список на экране: у очереди свой массив (M11), её порядок сортировка не трогает. */
   function sortList() {
-    const cur = state.queue === state.list ? current() : null;
     state.list.sort(SORTS[state.sort] || SORTS.default);
-    if (cur) state.index = state.list.findIndex((t) => trackKey(t) === trackKey(cur));   // очередь не «съезжает»
   }
   function updateSort() {
     const opts = ["default", "title", "artist", "dur_asc", "dur_desc"];
@@ -153,13 +152,15 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     renderList();
     scheduleWarm(state.list.slice(0, 3));
   }
-  /** Следующая страница: без дублей, в тот же массив (очередь продолжается в новых треках). */
+  /** Следующая страница: без дублей, в тот же список. Если очередь играет этот список, она продолжается
+   *  новыми треками — через свой источник продолжения (queue.extend), а не через общий массив. */
   function appendTracks(raw) {
     const have = new Set(state.list.map(trackKey));
     const fresh = raw.filter((t) => !have.has(trackKey(t)));
     fresh.forEach((t) => { t._i = nextSeq(); });
     const from = state.list.length;
     state.list.push(...fresh);
+    if (fresh.length && queue.isFrom(state.list)) queue.extend();
     if (state.sort !== "default") { sortList(); renderList(); }
     else { fresh.forEach((t, i) => el.tracks.appendChild(buildRow(t, from + i))); updateSort(); }
   }
@@ -260,7 +261,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
       const arr = getArr(), i = Number(card.dataset.index), t = arr[i];
       if (!t) return;
       if (e.target.closest(".tcard__more")) { openMenu(t, e.target.closest("button")); return; }
-      if (state.queue === arr && i === state.index) togglePlay(); else playTracks(arr, i, getLabel());
+      if (queue.isFrom(arr) && queue.current === t) togglePlay(); else playTracks(arr, i, getLabel());
     });
   }
   bindTrackGrid(el.newGrid, () => state.feed, () => feedLabel());
@@ -736,7 +737,13 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
         if (my !== home.seq || state.view !== "home") return;
         const have = new Set(state.feed.map(trackKey));
         const fresh = d.tracks.filter((t) => !have.has(trackKey(t)));
-        if (fresh.length) { const from = state.feed.length; state.feed.push(...fresh); appendFeedCards(from); added = true; }
+        if (fresh.length) {
+          const from = state.feed.length;
+          state.feed.push(...fresh);
+          appendFeedCards(from);
+          added = true;
+          if (queue.isFrom(state.feed)) queue.extend();     // очередь играет ленту: продолжается новыми треками
+        }
       }
       state.more = added;
     } catch {
@@ -775,7 +782,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     hero.eyebrow.textContent = cur ? "Сейчас играет" : label;
     if (t) {
       hero.title.textContent = t.title;
-      hero.sub.textContent = cur ? (state.queueLabel ? `${t.artist} · из «${state.queueLabel}»` : t.artist)
+      hero.sub.textContent = cur ? (queue.label ? `${t.artist} · из «${queue.label}»` : t.artist)
         : (t.reason ? `${t.artist} · ${t.reason}` : t.artist);
       const meta = [t.duration ? fmtTime(t.duration) : "", SOURCES[t.source], t.plays != null ? `${t.plays.toLocaleString("ru-RU")} прослушиваний` : ""].filter(Boolean);
       hero.meta.textContent = meta.join(" · ");
@@ -794,7 +801,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (t) paintFav(hero.like, t);
     hero.ctl.forEach((b) => { b.hidden = !cur; });
     hero.prog.hidden = !cur;
-    const nx = cur && !state.shuffle ? state.queue[state.index + 1] : null;
+    const nx = cur && !state.shuffle ? queue.peekNext() : null;
     hero.next.hidden = !nx;
     if (nx) hero.nextT.textContent = `Далее: ${nx.title}`;
   }
@@ -802,13 +809,12 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   // ==========================================================================
   // Воспроизведение
   // ==========================================================================
-  /** Играть массив треков как очередь (массив не копируется: лента может дополняться на лету). */
+  /** Играть треки как очередь. Очередь копирует массив (M11); если источник потом дополнится (лента главной,
+   *  следующая страница списка), очередь продолжится через continuation — пока пользователь её не правил. */
   function playTracks(tracks, i, label = "") {
     if (!tracks[i]) return;
     const prev = current();                                // играющий трек — до замены очереди
-    state.queue = tracks;
-    state.queueOwned = false;
-    state.queueLabel = label;
+    queue.load(tracks, { label, source: tracks, continuation: async () => tracks });
     state.mixId = null; markMix();
     playIndex(i, prev);
   }
@@ -819,11 +825,10 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     return el.resultsTitle.textContent;
   }
   function playFromList(i) {
-    if (!state.list[i]) return;
+    const list = state.list;
+    if (!list[i]) return;
     const prev = current();
-    state.queue = state.list;
-    state.queueOwned = false;
-    state.queueLabel = listLabel();
+    queue.load(list, { label: listLabel(), source: list, continuation: async () => list });
     state.mixId = state.view === "mix" ? state.ctx?.mix : null; markMix();
     playIndex(i, prev);
   }
@@ -831,10 +836,10 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   /** prev — трек, который играл до этого. Если очередь только что заменили, current() уже указывает в новую
    *  очередь по старому номеру, поэтому вызывающий передаёт прерванный трек сам. */
   function playIndex(i, prev = current()) {
-    const track = state.queue[i];
+    const track = queue.at(i);
     if (!track) return;
     if (prev && audio.currentTime > 0 && !audio.ended && audio.currentTime < Math.min(30, (getDuration() || 999) * 0.4)) reportSkip(prev);   // переключили почти сразу = пропуск
-    state.index = i;
+    queue.select(i);
     recordPlay(track);
 
     showNowPlaying(track);
@@ -1021,7 +1026,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (player.pending) return undefined;   // трек ещё готовится (/playback): Play не запускает ничего другого
     if (!audio.getAttribute("src")) {
       if (state.view === "home") return startWave();
-      if (state.queue.length) return playIndex(Math.max(0, state.index));
+      if (queue.length) return playIndex(Math.max(0, queue.index));
       if (state.list.length) return playFromList(0);
       el.input.focus();
       return undefined;
@@ -1031,14 +1036,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   }
 
   function nextIndex() {
-    const n = state.queue.length;
-    if (!n) return -1;
-    if (state.shuffle && n > 1) {
-      let j;
-      do { j = rand(n); } while (j === state.index);
-      return j;
-    }
-    return state.index + 1 < n ? state.index + 1 : -1;
+    return queue.nextIndex({ shuffle: state.shuffle });
   }
   function playNext() {
     const j = nextIndex();
@@ -1046,8 +1044,8 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   }
   function playPrev() {
     // как в большинстве плееров: после 3 секунд «назад» перематывает в начало трека
-    if (audio.currentTime > 3 || state.index <= 0) { audio.currentTime = 0; return; }
-    playIndex(state.index - 1);
+    if (audio.currentTime > 3 || queue.index <= 0) { audio.currentTime = 0; return; }
+    playIndex(queue.prevIndex());
   }
   function seekBy(delta) {
     const dur = getDuration();
@@ -1092,7 +1090,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   }
   /** Прогреваем следующий трек очереди (при shuffle он заранее неизвестен). */
   function warmNext() {
-    if (!state.shuffle) warmTrack(state.queue[state.index + 1]);
+    if (!state.shuffle) warmTrack(queue.peekNext());
   }
 
   // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
@@ -1363,7 +1361,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (!t) return;
     setCover(now.cover, t.cover, 544);
     setCover(now.bg, t.cover, 544);
-    now.eyebrow.textContent = state.queueLabel ? `Сейчас играет · из «${state.queueLabel}»` : "Сейчас играет";
+    now.eyebrow.textContent = queue.label ? `Сейчас играет · из «${queue.label}»` : "Сейчас играет";
     now.title.textContent = t.title;
     renderArtists(now.artist, t);
     const year = t.released ? String(t.released).slice(0, 4) : "";
@@ -1600,7 +1598,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     paintLike();
     const ht = heroTrack();
     if (ht) paintFav(hero.like, ht);
-    $$(".q__fav", el.queueList).forEach((b) => { const t = state.queue[Number(b.dataset.index)]; if (t) paintFav(b, t); });
+    $$(".q__fav", el.queueList).forEach((b) => { const t = queue.at(Number(b.dataset.index)); if (t) paintFav(b, t); });
   }
   async function toggleFav(t) {
     const k = trackKey(t), was = state.fav.has(k);
@@ -1662,59 +1660,35 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   // ==========================================================================
   // Очередь
   // ==========================================================================
-  /** Очередь отдельно от списка на экране: после первой правки это собственная копия. */
-  function ownQueue() {
-    if (state.queueOwned) return;
-    state.queue = state.queue.slice();                     // иначе правка очереди испортила бы кэш микса, ленту или список на экране
-    state.queueOwned = true;
-  }
+  // Правки очереди — методами модели (player/queue.js); здесь — то, что видит пользователь.
   function queueAdd(t, next) {
-    ownQueue();
-    const copy = { ...t };                                 // своя копия: один трек может стоять в очереди дважды
-    if (next && state.index >= 0) state.queue.splice(state.index + 1, 0, copy); else state.queue.push(copy);
+    queue.add(t, next);
     toast(next ? "Будет играть следующим" : "Добавлено в очередь");
     renderQueue();
     if (state.view === "home") renderHero();
   }
   function queueRemove(i) {
-    if (i === state.index) return;                         // играющий трек не убираем
-    ownQueue();
-    state.queue.splice(i, 1);
-    if (i < state.index) state.index--;
+    if (!queue.remove(i)) return;                          // играющий трек не убираем
     renderQueue();
   }
   function queueMove(i, d) {
-    const j = i + d;
-    if (j < 0 || j >= state.queue.length) return;
-    ownQueue();
-    const cur = current();
-    [state.queue[i], state.queue[j]] = [state.queue[j], state.queue[i]];
-    if (cur) state.index = state.queue.indexOf(cur);
+    if (!queue.move(i, d)) return;
     renderQueue();
   }
   function queueClear() {
-    ownQueue();
-    const cur = current();
-    state.queue = cur ? [cur] : [];
-    state.index = cur ? 0 : -1;
+    queue.clear();
     renderQueue();
   }
   /** Очистка необратима: спрашиваем подтверждение. Играющий трек остаётся. */
   async function queueClearFlow() {
-    if (state.queue.length <= 1) return;
+    if (queue.length <= 1) return;
     if (!await askConfirm({ title: "Очистить очередь?", text: "Останется только текущий трек. Остальные уберутся из очереди (в избранном, плейлистах и истории они сохранятся).", ok: "Очистить" })) return;
     queueClear();
     toast("Очередь очищена");
   }
   /** Перенос трека на позицию to (индекс вставки до удаления). Играющий трек не прерывается. */
   function queueMoveTo(from, to) {
-    const n = state.queue.length;
-    if (from < 0 || from >= n || to < 0 || to > n || to === from || to === from + 1) return;
-    ownQueue();
-    const cur = current();
-    const [item] = state.queue.splice(from, 1);
-    state.queue.splice(to > from ? to - 1 : to, 0, item);
-    if (cur) state.index = state.queue.indexOf(cur);
+    if (!queue.moveTo(from, to)) return;
     renderQueue();
     if (state.view === "home") renderHero();
   }
@@ -1724,9 +1698,9 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (state.fs.open && state.fs.mode === "queue") renderFsQueue();
   }
   function renderDrawer() {
-    el.queueLabel.textContent = state.queueLabel ? `Из «${state.queueLabel}»` : "";
-    const rows = state.queue.map((t, i) => {
-      const li = mk("li", i === state.index ? "q is-current" : "q");
+    el.queueLabel.textContent = queue.label ? `Из «${queue.label}»` : "";
+    const rows = queue.tracks.map((t, i) => {
+      const li = mk("li", i === queue.index ? "q is-current" : "q");
       const main = mk("button", "q__main");
       main.type = "button";
       main.dataset.index = i;
@@ -1739,7 +1713,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
       fav.dataset.index = i;
       paintFav(fav, t);
       li.append(fav);
-      if (i !== state.index) {
+      if (i !== queue.index) {
         for (const [name, label, ico] of [["up", "Выше", "i-chev-u"], ["down", "Ниже", "i-chev-d"], ["rm", "Убрать из очереди", "i-x"]]) {
           const b = button("q__btn", label, ico);
           b.dataset.q = name; b.dataset.index = i;
@@ -1756,7 +1730,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     const b = e.target.closest("button");
     if (!b) return;
     const i = Number(b.dataset.index);
-    if (b.classList.contains("q__fav")) { const t = state.queue[i]; if (t) toggleFav(t); return; }
+    if (b.classList.contains("q__fav")) { const t = queue.at(i); if (t) toggleFav(t); return; }
     if (b.dataset.q === "up") queueMove(i, -1);
     else if (b.dataset.q === "down") queueMove(i, 1);
     else if (b.dataset.q === "rm") queueRemove(i);
@@ -1769,7 +1743,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   // ---------- очередь в полноэкранном плеере: «Сейчас играет» и «Далее» ----------
   const FQ_MAX = 300;                                      // длинную очередь не рисуем целиком
   function fqRow(t, i) {
-    const cur = i === state.index;
+    const cur = i === queue.index;
     const li = mk("li", cur ? "fq__row is-current" : "fq__row");
     li.dataset.index = i;
     const grip = mk("span", "fq__grip");
@@ -1796,7 +1770,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     return li;
   }
   function renderFsQueue() {
-    const q = state.queue, cur = state.index;
+    const q = queue.tracks, cur = queue.index;
     fs.qCount.textContent = q.length ? plural(q.length, "трек", "трека", "треков") : "";
     fs.qClear.disabled = q.length <= 1;
     const nodes = [];
@@ -1814,14 +1788,14 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
   fs.qList.addEventListener("click", (e) => {
     const more = e.target.closest(".fq__more");
     if (more) {
-      const i = Number(more.dataset.index), t = state.queue[i];
+      const i = Number(more.dataset.index), t = queue.at(i);
       if (t) openMenu(t, more, { queueIndex: i });
       return;
     }
     const main = e.target.closest(".fq__main");
     if (!main) return;
     const i = Number(main.dataset.index);
-    if (i === state.index) togglePlay(); else playIndex(i);
+    if (i === queue.index) togglePlay(); else playIndex(i);
   });
   let fqFrom = -1, fqTo = -1;
   const fqClearMarks = () => $$(".drop-before, .drop-after, .is-drag", fs.qList).forEach((n) => n.classList.remove("drop-before", "drop-after", "is-drag"));
@@ -1862,15 +1836,13 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     const cur = current();
     if (!cur) return stopAtEnd();
     try {
-      const qs = new URLSearchParams({ limit: "12", source: cur.source, id: cur.id, title: cur.title, exclude: state.queue.map(trackKey).join(",") });
+      const qs = new URLSearchParams({ limit: "12", source: cur.source, id: cur.id, title: cur.title, exclude: queue.tracks.map(trackKey).join(",") });
       const d = recsResult(await api(`/api/recommendations?${qs}`));
-      ownQueue();
-      const have = new Set(state.queue.map(trackKey));
+      const have = new Set(queue.tracks.map(trackKey));
       const fresh = d.tracks.filter((t) => !have.has(trackKey(t)));
+      const from = queue.append(fresh);                    // как и раньше: дописанная очередь — собственная
       if (!fresh.length) return stopAtEnd();
-      const from = state.queue.length;
-      state.queue.push(...fresh);
-      state.queueLabel = "Похожие треки";
+      queue.label = "Похожие треки";
       toast("Очередь закончилась. Продолжаем похожими треками.");
       return playIndex(from);
     } catch { return stopAtEnd(); }
@@ -1892,12 +1864,12 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     const downloaded = state.dl.has(trackKey(track));
     let items;
     if (ctx && ctx.queueIndex != null) {
-      const i = ctx.queueIndex, isCur = i === state.index, fav = state.fav.has(trackKey(track));
+      const i = ctx.queueIndex, isCur = i === queue.index, fav = state.fav.has(trackKey(track));
       items = [];
       if (!isCur) items.push(["playnow", "Играть сейчас", "i-play"]);
-      if (!isCur && i > state.index + 1) items.push(["movenext", "Играть следующим", "i-next"]);
-      if (!isCur && i > state.index + 1) items.push(["up", "Выше", "i-chev-u"]);
-      if (!isCur && i < state.queue.length - 1) items.push(["down", "Ниже", "i-chev-d"]);
+      if (!isCur && i > queue.index + 1) items.push(["movenext", "Играть следующим", "i-next"]);
+      if (!isCur && i > queue.index + 1) items.push(["up", "Выше", "i-chev-u"]);
+      if (!isCur && i < queue.length - 1) items.push(["down", "Ниже", "i-chev-d"]);
       if (!isCur) items.push(["rm", "Убрать из очереди", "i-trash"]);
       items.push(["fav", fav ? "Убрать из избранного" : "В избранное", "i-heart"], ["playlist", "Добавить в плейлист…", "i-playlists"],
         ["artist", "Перейти к исполнителю", "i-user"], ["share", "Поделиться", "i-share"]);
@@ -1937,7 +1909,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (state.fs.open && (b.dataset.act === "artist" || b.dataset.act === "album")) closeFs();   // переходим на другую страницу: полноэкранный режим закрываем
     switch (b.dataset.act) {
       case "playnow": playIndex(qi); break;
-      case "movenext": queueMoveTo(qi, state.index + 1); break;
+      case "movenext": queueMoveTo(qi, queue.index + 1); break;
       case "up": queueMove(qi, -1); break;
       case "down": queueMove(qi, 1); break;
       case "rm": queueRemove(qi); break;
@@ -2439,7 +2411,7 @@ import { askText, askConfirm, pickPlaylist, initPickPlaylist } from "./js/compon
     if (more) { openMenu(t, more); return; }
     const who = e.target.closest(".who.is-link");
     if (who) { navTo(() => openArtist(t.source, who.dataset.aid)); return; }   // имя автора: на его страницу, трек не запускаем
-    if (state.queue === state.list && i === state.index) togglePlay(); else playFromList(i);
+    if (queue.isFrom(state.list) && queue.current === t) togglePlay(); else playFromList(i);
   });
   // Имя автора в мини-плеере и на странице трека
   function artistLinkClick(e) {
