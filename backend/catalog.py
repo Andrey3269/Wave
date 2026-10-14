@@ -5,7 +5,8 @@
 backend/providers/soundcloud.py): свой пул потоков, таймаут, cooldown, единая ошибка ProviderError.
 Здесь — маршруты, проверка входных данных и кэш страниц артистов. Формат карточек прежний:
 artist {id, source, kind, name, cover, subtitle} и album {id, source, kind, title, artist, year, cover,
-track_count, playlist_id}. Ошибка источника отдаётся как 502 с `detail`, `code`, `source` (main.py).
+track_count, playlist_id}. Ошибка источника отдаётся как 502 с `detail`, `code`, `source`, `source_status`
+(обработчик в main.py).
 `source_status` (S7, аддитивно): ok — источник ответил полностью; degraded — часть страницы не получена
 (полный список релизов, альбомы SoundCloud) или альбом собран запасным путём (как плейлист).
 """

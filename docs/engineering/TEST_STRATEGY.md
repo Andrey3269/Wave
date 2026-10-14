@@ -76,6 +76,18 @@
 | `windows-build`: сборка, установщик, 17 проверок установщика, e2e против установленного `Wave.exe` (137) | **PASS** | CI `windows-latest` |
 | Обновление установленной Wave поверх S5 на Windows с настоящим профилем | **NOT RUN** — нужна Windows-машина (ручной пункт в reports/S6.md §7) | — |
 
+### Состояние после S7 (2026-10-13, ветка `claude/s7-provider-adapters`, подробности — [reports/S7.md](reports/S7.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 888 passed + 9 skipped + 6 xfail (было 765 + 9 + 7 на `34bb073`; снят M3; +118 в новых файлах, `test_search_isolation` 31 → 35). Live: 12 (было 9; + LIVE-5 ×3) | Linux, Python 3.12.3; CI — reports/S7.md §8 |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 137 + 27 (не изменилось: e2e подменяет ответы API в браузере, формы ответов только дополнены) | Linux Chromium; CI Linux и Windows Chromium |
+| `python tests/run_checks.py` | **PASS** все шаги | Linux; CI Linux и Windows |
+| LIVE-1 | артисты — **PASS**; треки и альбомы — **BLOCKED**: YouTube Music отдаёт облачной среде (регион US, выход через прокси) пустые разделы песен и альбомов уже в «сыром» ответе, одинаково для прежнего `YTMusic()` и клиента адаптера | облачная среда, прокси среды |
+| LIVE-5 | поиск — **PASS**; отказ API — **PASS**; прогрессивный поток — **FAIL, нестабильно** (4 из 9): SoundCloud в части ответов отдаёт только HLS (наблюдение N4, S8) | облачная среда, прокси среды |
+| LIVE-6 | **PASS** | облачная среда, прокси среды |
+| WIN-10 (офлайн и ограниченная сеть) | **NOT RUN** — нужна Windows-машина | — |
+
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
 ## 3. Изоляция данных (обязательно с этапа S0)
@@ -139,7 +151,14 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/api/test_stream_proxy.py` | `stream_track` с `MockTransport`: 206 с проксированными `Content-Range`/`Content-Length`; без Range → 200; апстрим 416 → 416; апстрим 403 → перерезолв и успех со второй попытки; два 403 → 502; ошибка соединения → перерезолв; отмена клиента закрывает апстрим; параллельные запросы одного трека → **один** вызов резолвера; `?warm=1` → 202/204/503 |
 | `tests/api/test_stream_local.py` | локальный файл: 200, 206 (`0-`, `a-b`, `-n`, `x-` до конца), 416, MIME по расширению; запись в индексе есть, а файл удалён → запись исчезает, ответ не 500; путь `../` в `folder` → отказ (`folder_path`) |
 | `tests/api/test_stream_lifespan.py` | последовательные lifespan в одном процессе, конкурентные запросы → без `RuntimeError` (M1, исправлено в S2b); остановка посреди прогрева; состояние резолвера отказывает в чужом цикле |
-| `tests/api/test_search_isolation.py` | `yt` OK + `sc` падает → 200, `failed_sources=["sc"]`, результат не кэшируется; `sc` в cooldown не опрашивается; оба падают → 502; таймаут провайдера; пагинация `offset`/`has_more`; пустой и слишком длинный `q` → 422/400 |
+| `tests/api/test_search_isolation.py` | `yt` OK + `sc` падает → 200, `failed_sources=["sc"]`, результат не кэшируется; `sc` в cooldown не опрашивается; оба падают → 502; таймаут провайдера; пагинация `offset`/`has_more`; пустой и слишком длинный `q` → 422/400; S7: cooldown YouTube (45 с, M3), восстановление, повторный сбой, пустая выдача — не сбой, при «висящей» сети таймаут ждётся один раз |
+| `tests/unit/test_provider_base.py` (S7) | `ProviderError` (8 типов, текст с названием источника), какие сбои открывают cooldown (поиск/страница/необязательная часть), отказ в паузе без запроса, сброс паузы успехом, жёсткий предел пула, таймаут не ждёт зависший поток, 40 таймаутов подряд не множат потоки, переполнение — сразу и без паузы, отмена клиентом снимает задачу из очереди, зависший источник не задерживает другой, остановка отменяет очередь, `snapshot()` без секретов |
+| `tests/unit/test_ttl_cache.py` (S7) | LRU-вытеснение, TTL при чтении и перезаписи, устаревшие вытесняются раньше живых, 10 000 разных ключей при лимите 64, потокобезопасность |
+| `tests/unit/test_provider_adapters.py` (S7) | классификация исключений ytmusicapi/requests и yt-dlp (HTTP-коды, транспорт, таймаут, исчезнувший внутренний метод yt-dlp → internal), цепочка причин без зацикливания; **настоящие** таймауты: `ytmusicapi.search` и `_call_api` yt-dlp против молчащего локального сервера завершаются по таймауту клиента, поток свободен; клиент YouTube Music с сессией и таймаутами без сети при создании; свой экземпляр yt-dlp SoundCloud в каждом потоке |
+| `tests/api/test_provider_isolation.py` (S7) | источник «висит» 30 с: второй источник, каталог, рекомендации, избранное, история, плейлисты, настройки отвечают < 0,75 с; пул зависшего не выше предела, лишние — сразу 502 busy; все вызовы источников идут в своих пулах (`provider-yt`, `provider-sc`); таймаут каталога — понятная ошибка; сбой разбора в адаптере — internal этого источника; при сбое единственного источника поиска `detail` — его причина |
+| `tests/api/test_source_cooldown.py` (S7) | пауза действует на каталог и рекомендации (без запросов к источнику); сбой поиска SoundCloud ставит на паузу его каталог, YouTube работает; «не найдено» и сбой одной страницы паузу не открывают, таймаут страницы — открывает; успех снимает паузу; сбой необязательной части страницы не обрывает её; запасной путь альбома после таймаута `get_album` |
+| `tests/api/test_bounded_caches.py` (S7) | лимиты и TTL кэшей поиска, артистов, текстов; LRU-вытеснение при многих разных запросах; неполная страница артиста не кэшируется и грузится один раз; нормализация запроса; временный сбой LRCLIB не кэшируется; «Очистить кэш» |
+| `tests/api/test_source_status.py` (S7) | `source_status` в поиске: все ok, частичный сбой (cooldown), переполнение (degraded), полный сбой (502), всё на паузе, из кэша, `disabled`; карточки, страницы артиста (в том числе альбомы SoundCloud: нет — ok, 503 — degraded), альбома (запасной путь — degraded); `GET /api/sources` |
 | `tests/api/test_recommendations.py` | скоринг по таблице `W` на фиксированных данных; ограничение `MAX_PER_ARTIST`; исключение недавних и `exclude`; дубли по `_sig`; четыре исхода (S2c): результаты, пусто без сбоя, частичный и полный сбой (`failed_sources`, `source_status`); честные `personalized` и `radio` |
 | `tests/api/test_userdata.py` | избранное: добавить, повторить, удалить, порядок по `added_at`; история: `GROUP BY`, пагинация, `skip`, очистка обоими эндпоинтами; `explicit`/`plays`/`released` сохраняются, старые снимки читаются как есть, запись с «/» в `id` удаляется (M6, исправлено в S6); ретеншн истории: лимит по умолчанию, проверка значения, обрезка при записи, при уменьшении лимита и при запуске, другие таблицы не тронуты (S6) |
 | `tests/api/test_settings.py` | ключи и валидация, неизвестный ключ → 400, `downloads_dir`: относительный путь → 400, недоступный для записи → 400, `WAVE_DOWNLOADS_DIR` блокирует; S2a: ключи интерфейса, атомарность (N1), испорченные строки, однократный перенос из localStorage, `boot.js`, **два запуска uvicorn на разных портах с одним профилем**; S6: ключ `history_limit` в значениях по умолчанию |
@@ -240,6 +259,8 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 
 Вывод `-rP` содержит итог каждой проверки одной строкой JSON (время резолва, число решений JS-задач, размер трека, у LIVE-4 — форматы или тип ошибки); ссылки на поток в вывод не попадают. В собранном приложении то же самое для одного трека проверяет `Wave.exe --diagnostics --live <videoId>` (поле `js_challenge_runs`). В облачной среде S3 все три — **BLOCKED**: прокси отвечает `Tunnel connection failed: 403 Forbidden` на соединение с YouTube (reports/S3.md §9).
 
+**LIVE-1 и LIVE-5 (S7).** LIVE-1 (`tests/live/test_live_sources.py`) с S7 идёт через адаптер YouTube Music: настоящий клиент с таймаутами сессии, пул, нормализация. LIVE-5 — `tests/live/test_live_soundcloud.py`: (1) поиск треков и артистов через адаптер; (2) штатный резолвер (`stream._extract_sync`) даёт прогрессивный поток, CDN отвечает 206 на `bytes=0-65535`; (3) отказ API — несуществующий пользователь → `not_found` без паузы, API недоступен (отклонённое соединение) → `unavailable` и пауза только у SoundCloud, YouTube Music отвечает. Цели — `soundcloud_query`, `soundcloud_track_id`, `ytmusic_query` в `tests/live_targets.json`. Запуск: `python -m pytest -m live -rP tests/live/test_live_sources.py tests/live/test_live_soundcloud.py` (вывод `-rP` — строка JSON на проверку, без ссылок и client_id). Результат 2026-10-13 в облачной среде (через прокси среды, подставленный временным плагином pytest вне репозитория, как в S5): LIVE-1 артисты — PASS, треки и альбомы — BLOCKED (пустые разделы у YouTube Music для этой сети, и у прежнего клиента тоже); LIVE-5 поиск и отказ — PASS, поток — FAIL нестабильно (4 из 9, N4); LIVE-6 — PASS.
+
 **LIVE-8 (S5)** — `tests/live/test_live_downloads.py`, цели `youtube_video_id` и `soundcloud_track_id` в `tests/live_targets.json`; запуск как у LIVE-2 (нужен Deno для 8a). Результат 2026-10-13 в облачной среде: **8a PASS** (`audio.m4a`, 3,4 МБ, 6,1 с), **8b PASS** (`audio.mp3`, 6,4 МБ, 6,6 с), оба играют с диска без резолва. Среда пускает в сеть только через свой прокси, а тесты намеренно убирают `YTDLP_PROXY` из окружения, поэтому прокси и его сертификат подставлялись временным плагином pytest вне репозитория; код Wave не менялся (reports/S5.md §5).
 
 ## 8. Что требует Windows
@@ -295,14 +316,13 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 
 Тест описывает **правильное** поведение и сейчас падает по указанной причине (проверено запуском с `--runxfail`). Когда дефект исправят, тест начнёт проходить, `strict` превратит это в FAIL — значит, пора снять маркер в том же коммите, что и исправление.
 
-После S6 осталось 7 (pytest: `7 xfailed`):
+После S7 осталось 6 (pytest: `6 xfailed`):
 
 | ID | Тест | Что происходит сейчас | Этап |
 |---|---|---|---|
 | L2 | `api/test_stream_proxy.py::test_empty_range_is_not_forwarded` | `Range: bytes=-` уходит на CDN как есть | S8 |
 | L2 | `api/test_stream_local.py::test_malformed_range_is_ignored` ×3 | битый Range на скачанном файле → 400 вместо 200 | S8 |
 | L2 | `api/test_stream_local.py::test_head_request_supported` | `HEAD /api/stream/...` → 404 | S8 |
-| M3 | `api/test_search_isolation.py::test_youtube_failure_enters_cooldown` | YouTube опрашивается снова при каждом поиске после сбоя | S7 |
 | M7 | `api/test_local_api_security.py::test_cross_origin_mutation_is_refused` | `POST /api/settings/clear-history` с чужого `Origin` выполняется | S13 |
 
 Сняты (тест проходит без маркера):
@@ -315,10 +335,13 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 | M8 | `unit/test_lyrics.py::test_non_json_response_is_temporary_failure`, `api/test_lyrics_api.py::test_non_json_service_response_is_handled`, `api/test_downloads.py::test_broken_lyrics_response_does_not_fail_download` | `cd4a028` (S5; таблица здесь обновлена на S6) |
 | M5 | `api/test_playlists.py::test_concurrent_add_of_same_track` | `ebb44d6` (S6) |
 | M6 | `api/test_userdata.py::test_favorite_keeps_all_track_fields`, `test_saved_favorite_can_always_be_removed` | `dc070fd` (S6) |
+| M3 | `api/test_search_isolation.py::test_youtube_failure_enters_cooldown` | `42424f0` (S7) |
 
 `test_concurrent_add_of_same_track` в S1 держал барьер после отдельного запроса проверки дубля — такого запроса в S6 больше нет. Теперь барьер выпускает оба потока к записи одновременно; дополнительно `test_concurrent_api_adds_keep_order_and_no_duplicates` шлёт 16 параллельных POST (на коде S5 падает с HTTP 500 в 3 из 3 запусков).
 
-Тесты «как есть», заменённые вместе с поведением: N1 `test_partial_write_before_error` → `test_write_is_atomic` (S2); M4 `test_all_candidate_sources_failed_returns_empty_200` → `test_all_candidate_sources_failed_is_reported` (S2); M13 `personalized` в `test_radio_of_current_track` → `False` + `radio: True` (S2); L6 `test_network_failure_message_is_misleading` → `test_network_failure_is_not_blamed_on_cookies` (S2); M5 `test_no_schema_version_yet` → `unit/test_sqlite_schema.py::test_schema_version_is_current` (S6); снимок избранного без новых полей → `test_favorite_stored_snapshot_fields` с `explicit`/`plays`/`released` (S6). Остаётся «как есть»: M3 `test_youtube_is_not_put_in_cooldown`.
+Тесты «как есть», заменённые вместе с поведением: N1 `test_partial_write_before_error` → `test_write_is_atomic` (S2); M4 `test_all_candidate_sources_failed_returns_empty_200` → `test_all_candidate_sources_failed_is_reported` (S2); M13 `personalized` в `test_radio_of_current_track` → `False` + `radio: True` (S2); L6 `test_network_failure_message_is_misleading` → `test_network_failure_is_not_blamed_on_cookies` (S2); M5 `test_no_schema_version_yet` → `unit/test_sqlite_schema.py::test_schema_version_is_current` (S6); снимок избранного без новых полей → `test_favorite_stored_snapshot_fields` с `explicit`/`plays`/`released` (S6); M3 `test_youtube_is_not_put_in_cooldown` → `test_youtube_cooldown_is_short` (S7, `42424f0`). Тестов «как есть» для M-находок больше нет.
+
+S7 также изменил закреплённые проверки вместе с поведением: тексты ошибок каталога называют источник (`test_catalog_api.py`: было «Источник временно недоступен…», теперь «YouTube Music/SoundCloud временно недоступен…» плюс `code`, `source`, `source_status`); контрактные тесты поиска принимают аддитивное поле `source_status` (прежние поля на месте); `test_cache_expires` меняет срок у самого кэша (`main._cache.ttl`), а не модульную переменную; точки подмены `ApiHarness` перенесены на границу адаптеров (`providers.youtube_music.create_client`, `providers.soundcloud.search_raw`/`api_get`), сброс состояния — `providers.reset()`.
 
 Сброс `stream._resolve_sem` в `tests/conftest.py:reset_backend_state` удалён в S2b: семафор принадлежит `app.state.resolver` и создаётся заново в каждом lifespan. С S6 тот же сброс закрывает соединение `persistence.db` вместо `library._db`.
 
@@ -330,4 +353,5 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 |---|---|---|---|
 | N1 | `PUT /api/settings` применял ключи по очереди: ключи до ошибочного уже сохранялись, хотя ответ 400 | `api/test_settings.py::test_write_is_atomic` (×4), `test_failed_downloads_dir_leaves_other_keys_untouched`, `test_invalid_key_prevents_downloads_dir_change` | **исправлено в S2a** (`1070aa8`): все ключи проверяются заранее и пишутся одной транзакцией |
 | N2 | При обрыве CDN посередине ответа прокси теряет уже полученные, но ещё не отданные байты (читает кусками по 64 КБ). Плеер видит короткое тело и перезапрашивает диапазон | `api/test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` (как есть) | **S8**, критерий приёмки 4 в ROADMAP |
+| N4 | (S7, живая проверка) SoundCloud отдаёт прогрессивный mp3 лишь в части ответов: 4 из 9 резолвов трека `soundcloud_track_id`, в остальных — только HLS (`m3u8_native`). Плеер требует прогрессивный поток, резолв падает с `Requested format is not available`, пользователь видит текст «изменил формат ответа / yt-dlp устарел» (`extractor`) | `live/test_live_soundcloud.py::test_live5_soundcloud_progressive_stream` (нестабильно) | **S8**: повторный резолв, честный тип ошибки, оценка HLS; затрагивает загрузки SoundCloud |
 | N3 | Запись индекса загрузок с `folder`, выходящим за каталог загрузок (`../`), даёт HTTP 500: чужой файл не отдаётся (`library.folder_path` бросает `ValueError`), но ответ — ошибка сервера, а не отказ | `api/test_stream_local.py::test_index_row_outside_downloads_is_not_served` (как есть: 500, посторонний файл не прочитан) | **S11 и S13**, критерии безопасности в ROADMAP: ни один эндпоинт не читает, не отдаёт и не удаляет файлы вне разрешённых каталогов, ответ — отказ, а не 500 |

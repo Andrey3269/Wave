@@ -60,6 +60,8 @@ backend/
 | `downloads.py` | `jobs/downloads.py`, `api/downloads.py` | отмена, лимит, политика источника |
 | `lyrics.py` | `providers/lyrics_lrclib.py`, `api/lyrics.py` | ограниченный кэш, защищённый `json()` |
 
+**Сделано в S7** (ветка `claude/s7-provider-adapters`, [reports/S7.md](reports/S7.md)): `providers/base.py`, `providers/cache.py`, `providers/youtube_music.py`, `providers/soundcloud.py`, `domain/models.py` (`Track` и карточки; `main.Track` — тот же класс). Нормализация из `main.py` и `catalog.py`, сборка страниц артиста и альбома, «радио» — в адаптерах; `main.py`, `catalog.py`, `recs.py` вызывают только адаптеры; `soundcloud.py` — фасад для совместимости. `_artist_cache` и кэш текстов — ограниченные LRU+TTL (текст песен остаётся в `lyrics.py`: LRCLIB не музыкальный источник, отдельный адаптер не нужен). Не сделано: `services/*`, `api/*`, `config.py` — маршруты и проверка входа пока в `main.py` и `catalog.py`; `providers/policy.py` — проверка загрузок остаётся в `download_policy.py` (S5).
+
 ## 2. Состояние, привязанное к циклу событий (M1)
 
 Объекты asyncio (Semaphore, Task, словари inflight) и `httpx.AsyncClient` создаются **в `lifespan`** и кладутся в `app.state`:
@@ -185,6 +187,23 @@ class MusicProvider(Protocol):
 - **Ограниченные кэши**: LRU с TTL и лимитом элементов для поиска, артистов, текстов. Очистка в настройках, как сейчас.
 - **Ответы API аддитивны**. В `/api/search`, `/api/search/{kind}` и `/api/recommendations` добавляется `source_status: {"yt": "ok", "sc": "cooldown"}`; `failed_sources` сохраняется. Ошибки по-прежнему отдают строку `detail` (на неё опирается `app.js:211`) и дополнительно поля `code` и `source` на верхнем уровне. Это реализуется собственным exception handler.
 
+### Реализация (S7, ветка `claude/s7-provider-adapters`, подробности — [reports/S7.md](reports/S7.md))
+
+**Интерфейс.** Базовый класс `providers.base.Provider` (не `Protocol`: общая логика пула и cooldown в нём). Методы адаптеров принимают `state` (`app.state`, в нём клиент ytmusicapi текущего запуска) и `timeout`:
+`search_tracks(state, q, limit, offset=0)`, `search_cards(state, kind, q, limit, offset) -> (items, has_more)`, `artist_info(state, id) -> (info, degraded)`, `artist_tracks(state, id, info, offset, limit) -> (tracks, has_more)`, `album(state, id, playlist_id) -> (card, tracks, unavailable, degraded)`, `radio(state, track_id, n)`. У SoundCloud дополнительно `search_tracks_plain` — прежний запрос рекомендаций (`search/tracks {q, limit}`). Ответы — прежние `Track` и карточки, не модели `Page[T]`: формы ответов API не менялись. Поток (`stream_page_url`) остаётся в `stream.SOURCES` до S8.
+
+**Возможности** (`Capabilities`, фактическое поведение Wave, не разрешение платформы): `search_tracks`, `search_artists`, `search_albums`, `artist_page`, `album_page`, `radio`, `stream`, `download` (ADR-10, решает `download_policy.py`), `attribution_required` (SoundCloud — да; Wave показывает автора и ссылку `url`, логотипа нет), `mixing_allowed` (оба — да: так работает Wave; условия API SoundCloud это запрещают, см. §6).
+
+**Ошибки.** `ProviderError(kind, source, user_message)`, `kind` из восьми типов. Перевод исключений — в адаптере: ytmusicapi (`requests.Timeout` → timeout, `requests.RequestException` → unavailable, `YTMusicServerError` по коду HTTP: 429 → rate_limited, 400/404 → not_found, 401/403 → restricted, 5xx → unavailable; `YTMusicGatedError` → restricted; `YTMusicUserError` → not_found; не-JSON → unavailable), yt-dlp для SoundCloud (`HTTPError` 429 → rate_limited, 401/403 → auth_required, 404/410 → not_found, 5xx → unavailable; `TransportError` → timeout или unavailable). Всё прочее — internal. Ответ API: статус **502** (как до S7), `detail` — текст с названием источника, аддитивно `code`, `source`, `source_status`. Поиск треков при сбое всех выбранных источников: 502; для одного источника `detail` — его причина, для нескольких — прежний текст «Источники поиска недоступны».
+
+**Пулы и таймауты.** `BoundedExecutor` на источник: YouTube Music 4 потока + 8 в очереди, SoundCloud 2 + 4 (`YTM_WORKERS`, `YTM_MAX_PENDING`, `SC_WORKERS`, `SC_MAX_PENDING`). Сверх предела — сразу `unavailable` (busy, статус degraded), без постановки в очередь. Настоящий предел времени — у HTTP-клиента: сессия requests для ytmusicapi (connect 5 с, read 10 с вместо 30 с по умолчанию; способ из документации ytmusicapi), `socket_timeout` 7 с для yt-dlp SoundCloud. Таймаут ожидания (`SEARCH_TIMEOUT` 6 с для поиска, 25 с каталог, 12 с рекомендации) отменяет задачу из очереди; работающий поток Python остановить нельзя — он помечается брошенным, занимает место в пуле до своего завершения по таймауту HTTP и учитывается в `/api/sources` (`abandoned`). Отмена запроса клиентом — так же. При остановке backend задачи из очередей отменяются (`providers.shutdown_pending()`). SoundCloud: вместо одного экземпляра yt-dlp под глобальной блокировкой — свой экземпляр в каждом потоке пула.
+
+**Cooldown.** YouTube Music 45 с (`YT_SOURCE_COOLDOWN`), SoundCloud 300 с (`SOURCE_COOLDOWN`), действует на все операции источника. Открывают: unavailable, timeout, rate_limited, auth_required — всегда; internal, restricted — только поиск. Не открывают: not_found, unsupported, пустая выдача, переполнение пула и необязательные части страницы (`optional=True`: полный список релизов артиста, альбомы SoundCloud, полное представление альбома, `get_album` при наличии запасного плейлиста — иначе пауза обрывала остальные запросы той же страницы). Успешный вызов снимает паузу; по её окончании первый же запрос снова идёт к источнику.
+
+**Статусы.** `source_status` в `/api/search`, `/api/search/{kind}`, `/api/artist/...`, `/api/album/...` и в теле ошибок источника: `ok`, `degraded` (страница собрана не полностью, источник занят или упал без паузы), `cooldown`, `disabled` (выключен `SEARCH_SOURCES`, только поиск треков). `/api/recommendations` сохраняет статусы S2 (`ok | partial | failed`). `GET /api/sources` — сводка по источникам (статус, остаток паузы, тип последней ошибки, загрузка пула, возможности).
+
+**Кэши.** Поиск — 256 × 300 с, страницы артистов — 32 × 600 с (неполная страница не кэшируется), тексты — 512 × 24 ч (временный сбой LRCLIB не кэшируется). `stream._cache` (ссылки на поток) остаётся в S8: ограничивается по сроку ссылок, а не по числу.
+
 ## 6. Политика источников и скачивание
 
 Решение владельца 2026-10-13 (S5, ADR-10, уточнено в тот же день): **сохранить прежнее поведение Wave**. Трек YouTube Music или SoundCloud можно скачать, если приложение штатно получает его аудиопоток для воспроизведения. Прежние ADR-5 (загрузки отключены) и ADR-6 (SoundCloud выключен) пересмотрены. Промежуточный вариант S5 с проверкой лицензии Creative Commons и признака `downloadable` SoundCloud отменён и в коде не используется.
@@ -219,6 +238,10 @@ class MusicProvider(Protocol):
 - Источники используются через неофициальные интерфейсы (`ytmusicapi`, внутренние методы yt-dlp для SoundCloud API v2, `client_id`). Они могут перестать работать без предупреждения; тогда перестанут работать и воспроизведение, и загрузка.
 - Перед публичным распространением сборки этот вопрос нужно отдельно оценить (условия платформ, юрисдикция, описание функции для пользователей).
 - `WAVE_SOURCE_OVERRIDES` не реализован: переопределять нечего.
+
+### SoundCloud: официальный API (проверено в S7, 2026-10-13, находка M10)
+
+Документация developers.soundcloud.com: регистрация приложения и получение ключей — только с подпиской Artist Pro; поиск и воспроизведение доступны через Client Credentials (OAuth 2.1), все клиенты считаются конфиденциальными, секрет клиента нельзя размещать в клиентском коде — то есть встроить его в распространяемое настольное приложение нельзя без собственного сервера-посредника. Условия API (разделы 03 и 05) запрещают сохранение и офлайн-доступ, а также воспроизведение вместе с контентом других сервисов (пример — YouTube) и агрегированные on-demand сервисы; требуется атрибуция автора и SoundCloud. Переход на официальный API несовместим с ADR-10 (загрузки) и с общей очередью Wave, поэтому в S7 способ подключения не менялся: интеграция изолирована в адаптере (свой пул, таймауты, cooldown, внутренние методы yt-dlp — только внутри `providers/soundcloud.py`). Решение — за владельцем (ADR-11).
 
 ## 7. Стриминг
 
@@ -340,7 +363,7 @@ frontend/js/
 
 ## 13. Наблюдаемость и производительность
 
-- События журнала с именами: `startup.phase`, `provider.fail`, `stream.reresolve`, `download.done`. Без секретов.
+- События журнала с именами: `startup.phase`, `provider.fail`, `stream.reresolve`, `download.done`. Без секретов. **S7:** `provider.fail source= op= kind=` (с отметкой `-> cooldown N с`, если сбой открыл паузу) и `provider.busy` (пул источника заполнен) пишет `providers/base.py`; client_id в тексте ошибок маскирует `applog.RedactFilter`.
 - Тайминги холодного старта: импорт, lifespan, первый `/api/health`, первый ответ ленты.
 - Лимиты: размеры кэшей, параллельность резолвов и загрузок, ретеншн истории.
 
@@ -357,4 +380,5 @@ frontend/js/
 | ADR-7 | Нативные ES-модули без бандлера для фронтенда | предложено |
 | ADR-8 | Основная платформа Windows 11 x64, совместимость с Windows 10 22H2 проверяется по возможности; CI на GitHub Actions с Windows-сборкой; без секретов в репозитории и CI; подпись установщика пока не обязательна, но сборка предусматривает шаг подписи | **принято** 2026-10-12 |
 | ADR-9 | Названия подборок описательные; утверждение о персонализации — только при реально работающем алгоритме | **принято** 2026-10-12 |
-| ADR-10 | Прежнее поведение Wave: скачивается трек YouTube Music или SoundCloud, поток которого штатно получен для воспроизведения, в исходном формате; без проверки лицензии и `downloadable`; отказ на backend с понятной причиной, если поток недоступен или это лишь фрагмент (Go+); без входа в аккаунты и обхода DRM, платного доступа и антибот-защиты; существующие загрузки не затрагиваются. Не является разрешением платформ (§6) | **реализовано** на S5 (ветка `claude/s5-downloads`, не слита); **ждёт приёмки владельцем**. Промежуточный вариант S5 (только Creative Commons / `downloadable`) отменён владельцем 2026-10-13 |
+| ADR-10 | Прежнее поведение Wave: скачивается трек YouTube Music или SoundCloud, поток которого штатно получен для воспроизведения, в исходном формате; без проверки лицензии и `downloadable`; отказ на backend с понятной причиной, если поток недоступен или это лишь фрагмент (Go+); без входа в аккаунты и обхода DRM, платного доступа и антибот-защиты; существующие загрузки не затрагиваются. Не является разрешением платформ (§6) | **принято**: реализовано на S5 (ветка `claude/s5-downloads`, не слита), **S5 принят владельцем 2026-10-13**. Промежуточный вариант S5 (только Creative Commons / `downloadable`) отменён владельцем 2026-10-13 |
+| ADR-11 | SoundCloud остаётся на неофициальном API v2 через внутренние методы yt-dlp, изолированном в `providers/soundcloud.py` (свой пул, таймауты, cooldown 300 с), пока владелец не выберет одно из: (а) так и оставить, принимая риск поломки и несоответствия условиям; (б) официальный API: подписка Artist Pro, собственный сервер-посредник для секрета, отказ от загрузок SoundCloud и от смешанной с YouTube очереди; (в) отключить SoundCloud в распространяемой сборке | **предложено** в S7 (2026-10-13), ждёт решения владельца. До решения поведение не меняется |

@@ -142,7 +142,7 @@ graph TD
 | Модули | `backend/download_policy.py` (новый), `backend/downloads.py`, `backend/library.py`, `backend/lyrics.py`, `backend/stream.py` (`Resolved.preview`), `frontend/app.js`, `frontend/style.css`, `tests/e2e_smoke.py` |
 | Тесты | `api/test_download_policy.py` (14: оба источника через поток, без лицензии и `downloadable`; недоступный поток — 7 причин; та же причина, что у плеера; фрагмент Go+; повтор; старые загрузки), `api/test_download_paths.py` (N3, 22), `unit/test_download_sources.py` (6: признак фрагмента из того же извлечения), `api/test_downloads.py` (34: + прогресс по байтам, сбой LRCLIB, имена вне каталога, перезапуск); сняты три xfail M8; e2e: раздел «Загрузки (S5)»; live: LIVE-8a/8b — настоящая загрузка через приложение |
 | Критерии приёмки | (1) Существующий сценарий загрузки сохранён: аудио, обложка и текст при наличии, `metadata.json`, атомарный перенос, запись в SQLite, трек в «Скачанных». (2) Скачивается любой трек `yt` и `sc`, поток которого штатно получен для воспроизведения; лицензия и `downloadable` не требуются. (3) Недоступный поток или лишь фрагмент — понятная причина в API и UI, без файлов и без бесконечного прогресса; проверка на backend. (4) Существующие загрузки не удаляются и играют с диска без обращения к источнику. (5) Ни один эндпоинт не читает, не отдаёт и не удаляет файлы вне папки загрузки (N3). (6) Число проверок e2e не уменьшилось. (7) Нет входа в аккаунты и обхода DRM, платного доступа, антибот-защиты. (8) Живая загрузка обоих источников (LIVE-8) |
-| Результат | (1)–(7) — **PASS** в облачной среде (pytest 712 + 10 xfail, e2e 136 + 27); (8) — LIVE-8a и LIVE-8b **PASS** 2026-10-13 (через прокси среды); WIN-14 — **NOT RUN**. Подробно — [reports/S5.md](reports/S5.md) |
+| Результат | (1)–(7) — **PASS** в облачной среде (pytest 712 + 10 xfail, e2e 136 + 27); (8) — LIVE-8a и LIVE-8b **PASS** 2026-10-13 (через прокси среды); WIN-14 — **NOT RUN**. Подробно — [reports/S5.md](reports/S5.md). **Принят владельцем 2026-10-13** после ручной проверки загрузок YouTube Music и SoundCloud |
 | Коммиты | `test(downloads): characterize …`; `fix(lyrics): … (M8)`; `fix(library): … (N3)`; `feat(downloads): save a track only with the source's own permission (S5)` и `feat(ui): download stages …` (промежуточный вариант); `test(downloads): progress follows received bytes`; `fix(ui): keep the download progress label width stable`; `feat(downloads): save any track whose stream plays, as before (owner decision, S5)`; `feat(ui): downloads no longer mention source licences`; `docs(engineering): S5 …` |
 
 <details>
@@ -166,7 +166,7 @@ graph TD
 
 Закрывает M5 и M6 (хранение). Зависит от S1.
 
-**Статус: выполнено 2026-10-13, ветка `claude/s6-sqlite` (от принятого S5, `072d614`); отчёт — [reports/S6.md](reports/S6.md). Ждёт приёмки владельцем.** Итог: `persistence/db.py` и `persistence/migrations.py` (v1), атомарные плейлисты (M5), поля `explicit`/`plays`/`released` и удаление id с «/» (M6, хранение), ретеншн истории 10 000 (настройка `history_limit`). pytest 765 passed + 9 skipped + 7 xfail (сняты M5, M6 ×2), e2e 137 + 27 (было 136 + 27). Критерии 1–5 — **PASS** (Linux; CI run 38431447697 — Linux, Windows, сборка и установщик — PASS). Отклонения от плана: отдельный `repos.py` не выделен — SQL остался в `library.py`, `userdata.py`, `playlists.py`, которые уже служат репозиториями, а `_q`/`transaction` — адаптерами (вынос — вместе с сервисным слоем, не раньше S13/S15); в `frontend/app.js` изменена одна функция `trackPayload` (без неё исправление M6 не доходило до пользователя); лаунчер показывает причину ошибки базы. Проверка формата `id` на входе остаётся в S13.
+**Статус: выполнено 2026-10-13, ветка `claude/s6-sqlite` (от принятого S5, `072d614`, итог `34bb073`); отчёт — [reports/S6.md](reports/S6.md). Принят владельцем 2026-10-13 после успешного обновления установленного приложения на Windows 11 (ручной пункт reports/S6.md §7).** Итог: `persistence/db.py` и `persistence/migrations.py` (v1), атомарные плейлисты (M5), поля `explicit`/`plays`/`released` и удаление id с «/» (M6, хранение), ретеншн истории 10 000 (настройка `history_limit`). pytest 765 passed + 9 skipped + 7 xfail (сняты M5, M6 ×2), e2e 137 + 27 (было 136 + 27). Критерии 1–5 — **PASS** (Linux; CI run 38431447697 — Linux, Windows, сборка и установщик — PASS). Отклонения от плана: отдельный `repos.py` не выделен — SQL остался в `library.py`, `userdata.py`, `playlists.py`, которые уже служат репозиториями, а `_q`/`transaction` — адаптерами (вынос — вместе с сервисным слоем, не раньше S13/S15); в `frontend/app.js` изменена одна функция `trackPayload` (без неё исправление M6 не доходило до пользователя); лаунчер показывает причину ошибки базы. Проверка формата `id` на входе остаётся в S13.
 
 - **Изменения.** `persistence/db.py` (PRAGMA, `transaction()`), `migrations.py` (`user_version`, v1 — текущая схема, бэкап `sqlite3.backup()`, хранятся три копии), репозитории. Атомарные операции с плейлистами. Ретеншн истории. Поля `explicit`, `plays`, `released` в `TrackIn`.
 - **Модули.** `backend/library.py`, `backend/userdata.py`, `backend/playlists.py`, новые `backend/persistence/*`.
@@ -182,21 +182,24 @@ graph TD
 
 Закрывает M2, M3, M9, M10 (частично). Зависит от S1 и S5. Live: LIVE-1, LIVE-5.
 
-- **Изменения.** `providers/base.py` (Protocol, ошибки, cooldown для всех, пул потоков на провайдер), `youtube_music.py`, `soundcloud.py`, ограниченные LRU+TTL-кэши, `source_status` в ответах поиска.
-- **Модули.** `backend/main.py`, `backend/catalog.py`, `backend/soundcloud.py`, `backend/recs.py`, `backend/lyrics.py`, новые `backend/providers/*`.
-- **Тесты.** `test_search_isolation` (зависший провайдер не блокирует второй и не исчерпывает общий пул; xfail M3 `test_youtube_failure_enters_cooldown` снимается, `test_youtube_is_not_put_in_cooldown` удаляется вместе с поведением), тесты кэшей (лимит и TTL), прежние тесты нормализации без изменений.
+**Статус: выполнено 2026-10-13, ветка `claude/s7-provider-adapters` (от принятого S6, `34bb073`); отчёт — [reports/S7.md](reports/S7.md). Ждёт проверки владельцем.** Итог: адаптеры `providers/youtube_music.py` и `providers/soundcloud.py` за общим слоем `providers/base.py` (ProviderError, Capabilities, cooldown, свой ограниченный пул на источник), реальные таймауты HTTP-клиентов, cooldown YouTube Music 45 с, ограниченные LRU+TTL-кэши, `source_status` в поиске и каталоге, `GET /api/sources`. pytest 888 passed + 9 skipped + 6 xfail (снят M3), e2e 137 + 27 (без изменений). M2, M3, M9 — закрыты; M10 — изолирован, не устранён (официальный API SoundCloud недоступен без решений владельца). Отклонения от плана: `download_policy.py` не перенесён в `providers/policy.py` (S5 запрещает менять его в S7; возможности источника описаны в `Capabilities`); `domain/models.py` создан ради `Track` без циклического импорта; найден и исправлен сбой: пауза из-за необязательной части страницы обрывала всю страницу (`optional=True`).
+
+- **Изменения.** `providers/base.py` (ProviderError, Capabilities, CircuitBreaker, BoundedExecutor, Provider.call), `providers/cache.py` (LRU+TTL), `providers/youtube_music.py`, `providers/soundcloud.py`, `domain/models.py`; `main.py`, `catalog.py`, `recs.py`, `lyrics.py` — через адаптеры; `soundcloud.py` — фасад.
+- **Модули.** `backend/main.py`, `backend/catalog.py`, `backend/soundcloud.py`, `backend/recs.py`, `backend/lyrics.py`, новые `backend/providers/*`, `backend/domain/*`.
+- **Тесты.** `unit/test_provider_base.py`, `unit/test_ttl_cache.py`, `unit/test_provider_adapters.py` (в том числе настоящие таймауты ytmusicapi и yt-dlp против молчащего локального сервера), `api/test_provider_isolation.py` (зависание на 30 с), `api/test_source_cooldown.py`, `api/test_bounded_caches.py`, `api/test_source_status.py`, `live/test_live_soundcloud.py` (LIVE-5); в `test_search_isolation` снят xfail M3, `test_youtube_is_not_put_in_cooldown` заменён `test_youtube_cooldown_is_short`.
 - **Критерии приёмки.**
-  1. Зависание одного источника на 30 с не задерживает ответы другого источника и SQLite-эндпоинтов.
-  2. YouTube получает cooldown.
-  3. Кэши ограничены.
-  4. Ответы аддитивны: `failed_sources` сохранён.
-  5. LIVE-1 PASS.
+  1. Зависание одного источника на 30 с не задерживает ответы другого источника и SQLite-эндпоинтов — **PASS** (`test_provider_isolation`: ответы < 0,75 с, пул зависшего источника не выше 2 + 4).
+  2. YouTube получает cooldown — **PASS** (`test_youtube_failure_enters_cooldown` без xfail, 45 с; при «висящей» сети таймаут ждётся один раз).
+  3. Кэши ограничены — **PASS** (`test_ttl_cache`, `test_bounded_caches`: поиск 256 × 300 с, артисты 32 × 600 с, тексты 512 × 24 ч).
+  4. Ответы аддитивны: `failed_sources` сохранён — **PASS** (`test_track_contract`, `test_source_status`; `detail` сохранён, добавлены `source_status`, `code`, `source`).
+  5. LIVE-1 PASS — **частично**: артисты — PASS; треки и альбомы — **BLOCKED** в облачной среде (YouTube Music отдаёт этой сети пустые разделы песен и альбомов — так же и прежнему клиенту). LIVE-5: поиск и отказ API — PASS, прогрессивный поток — **FAIL нестабильно** (4 из 9; SoundCloud в части ответов отдаёт только HLS — наблюдение N4 для S8). Требуется запуск владельцем.
 
 ### S8. Движок стриминга
 
 Закрывает L2 и структуру M1. Зависит от S7.
 
 - **Изменения.** `streaming/ranges.py` (чистые функции), `resolver.py`, `proxy.py`, `local.py`, `router.py`. Поддержка `HEAD`; битый Range → 200.
+- **Наблюдение S7 (N4).** SoundCloud отдаёт прогрессивный mp3 лишь в части ответов (живая проверка 2026-10-13: 4 из 9 резолвов), в остальных — только HLS. Плеер требует прогрессивный поток (`progressive_only`), поэтому резолв падает с `Requested format is not available`, а пользователь видит неверный текст «изменил формат ответа / yt-dlp устарел» (`extractor`). Решить: повторный резолв при отсутствии прогрессивного формата, честный тип ошибки, оценить поддержку HLS. Затрагивает и загрузки SoundCloud (S5).
 - **Тесты.** Все тесты стрима; снимаются xfail L2: `test_stream_proxy.py::test_empty_range_is_not_forwarded`, `test_stream_local.py::test_malformed_range_is_ignored`, `test_stream_local.py::test_head_request_supported`; LIVE-3. **N2** (наблюдение S1): `test_stream_proxy.py::test_upstream_break_mid_stream_ends_response` переводится с «как есть» на ожидаемое поведение.
 - **Критерии приёмки.**
   1. Поведение 200/206/416 и перерезолва идентично зафиксированному в S1; тексты и типы ошибок (`X-Wave-Error`) — как в S2d.
@@ -278,15 +281,15 @@ graph TD
 | `backend/main.py` | S0, S2a, S2b, S3, S4, S5, S7 |
 | `backend/launcher.py` | S3, S4, S17 |
 | `backend/stream.py` → `streaming/*` | S2b, S2d, S3, S8 |
-| `backend/catalog.py`, `soundcloud.py` → `providers/*` | S3, S7 |
+| `backend/catalog.py`, `soundcloud.py` → `providers/*` (S7: адаптеры созданы, `soundcloud.py` — фасад) | S3, S7 |
 | `backend/recs.py` | S0, S2c, S7, S14 |
 | `backend/library.py`, `userdata.py`, `playlists.py` → `persistence/*` | S2a, S6, S13, S15 |
 | `backend/downloads.py` → `jobs/*` | S0, S2b, S5, S11 |
-| `backend/download_policy.py` (S5) → `providers/policy.py` | S5, S7 |
+| `backend/download_policy.py` (S5) → `providers/policy.py` | S5; перенос отложен (в S7 модуль S5 не меняется), кандидат — S11 |
 | `backend/lyrics.py` | S5 (M8), S7 |
 | `backend/applog.py` | S13 |
 | `backend/paths.py` | S3 (`resource_dir` для runtime), S15 |
-| новые: `jsruntime.py`, `diagnostics.py` (S3), `version.py`, `providers/policy.py`, `persistence/*`, `streaming/*` | S3, S4, S5, S6, S8 |
+| новые: `jsruntime.py`, `diagnostics.py` (S3), `version.py`, `persistence/*` (S6), `providers/*`, `domain/*` (S7), `streaming/*` | S3, S4, S6, S7, S8 |
 | `frontend/app.js` → `frontend/js/**` | S2a, S2c, S2e, S3, S5, S9–S12, S14–S18 |
 | `frontend/index.html`, `style.css` | S2a, S2e, S5, S9, S12, S17, S18 |
 | `tests/e2e_smoke.py`, `tests/e2e_settings.py` | S0, S2a, S2c, S2e, S5, S10, S12, S18 |
@@ -322,5 +325,7 @@ graph TD
 | S2, стабильность e2e настроек | **исправлено**, принято владельцем 2026-10-13 | `claude/s2-e2e-stability` (не слита) | [reports/S2.md §9](reports/S2.md): причина — запоздавшие ответы `/api/settings` перезаписывали правки (гонка в `frontend/app.js`), воспроизведена детерминированно; `e2e_settings.py set` 8 → 11; CI на `f40d6b9` 5/5, на `17621a8` PASS (Chromium). WIN-5, WIN-12 — NOT RUN |
 | S3 | **выполнено и принято владельцем 2026-10-13** | `claude/s3-ytdlp-deno` (не слита) | [reports/S3.md](reports/S3.md); pytest 589 (Linux и Windows CI, включая настоящий Deno 2.9.7), e2e 123 + 27. На Windows 11 x64: S3-часть сборки и `Wave.exe --diagnostics` — PASS; YouTube в собранном приложении, перемотка, следующий трек, отсутствие консольного окна и завершение `deno.exe` — PASS; LIVE-2/3/4 — PASS. Полный WIN-1 с установщиком и WIN-2…4, 8, 9, 13, 15 остаются в S4. H1 закрыта; `main` не менялся |
 | S4 | **выполнено и принято владельцем 2026-10-13** | `claude/s4-installer` (не слита) | [reports/S4.md](reports/S4.md); pytest 680 (Linux и Windows CI), e2e 123 + 27, плюс 123 против установленного `Wave.exe`; `build_windows.bat` и WIN-1, 2, 3, 4, 8, 9, 13, 15 — PASS в CI `windows-latest`; на Windows 11 владельца: `build_windows.bat` — код 0, диагностика пройдена, `Wave-Setup-0.1.0.exe` 54 974 824 байта, версия 0.1.0, все ручные проверки [чек-листа](checklists/S4_WINDOWS_CHECK.md) пройдены. Для публичного выпуска открыты: подпись кода, LGPL-код в Deno/V8, издатель, условия Inno Setup. H2 закрыта; `main` не менялся |
-| S5 | **выполнено по уточнённой постановке, ждёт приёмки владельцем** | `claude/s5-downloads` (не слита) | [reports/S5.md](reports/S5.md); прежнее поведение: скачивается поток, который играет плеер; pytest 712 + 10 xfail, e2e 136 + 27 (Chromium); LIVE-8a/8b PASS, WIN-14 NOT RUN; `main` не менялся |
-| S6–S19 | не начато | — | S6 начинается только по отдельной команде владельца |
+| S5 | **выполнено и принято владельцем 2026-10-13** | `claude/s5-downloads` (не слита) | [reports/S5.md](reports/S5.md); прежнее поведение: скачивается поток, который играет плеер; pytest 712 + 10 xfail, e2e 136 + 27 (Chromium); LIVE-8a/8b PASS; загрузки YouTube Music и SoundCloud проверены владельцем; `main` не менялся |
+| S6 | **выполнено и принято владельцем 2026-10-13** | `claude/s6-sqlite` (не слита, `34bb073`) | [reports/S6.md](reports/S6.md); pytest 765 + 7 xfail, e2e 137 + 27; CI 38431447697 PASS; обновление установленного приложения на Windows 11 проверено владельцем; `main` не менялся |
+| S7 | **выполнено, ждёт проверки владельцем** | `claude/s7-provider-adapters` (от `34bb073`, не слита) | [reports/S7.md](reports/S7.md); pytest 888 + 6 xfail, e2e 137 + 27; M2, M3, M9 закрыты, M10 изолирован; LIVE-1 частично (треки/альбомы BLOCKED), LIVE-5 поиск/отказ PASS, поток FAIL нестабильно (N4); WIN-10 NOT RUN; CI 38445324705 PASS (Linux, Windows, сборка и установщик); `main` не менялся |
+| S8–S19 | не начато | — | S8 начинается только по отдельной команде владельца |
