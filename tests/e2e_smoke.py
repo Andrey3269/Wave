@@ -313,6 +313,22 @@ def handle(route: Route) -> None:
     route.continue_()
 
 
+def clear_playback() -> None:
+    """
+    Забыть сохранённую очередь (S10) перед сценарием «приложение запущено, ничего не играет». Закрытая вкладка
+    могла ещё дописать состояние запросом keepalive, поэтому удаление повторяется, пока состояние не исчезнет.
+    """
+    import time
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for _ in range(20):
+        opener.open(urllib.request.Request(f"{BASE}/api/player/state", method="DELETE"), timeout=10).read()
+        time.sleep(0.15)
+        with opener.open(f"{BASE}/api/player/state", timeout=10) as r:
+            if json.load(r)["state"] is None:
+                return
+    raise AssertionError("сохранённое состояние воспроизведения не удалось очистить")
+
+
 # ---------------------------------------------------------------- проверки
 failures: list[str] = []
 checks = 0
@@ -381,6 +397,21 @@ def wait_toast(page, text: str, timeout: int = 10000) -> bool:
         return True
     except Exception:
         return False
+
+
+def poll(page, expr: str, arg=None, timeout: float = 10.0) -> bool:
+    """
+    Ждёт, пока выражение (может вернуть Promise, например fetch) станет истинным. page.wait_for_function для этого
+    не годится: значение Promise он не ждёт и считает любой Promise выполненным условием.
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        if page.evaluate(expr, arg):
+            return True
+        if time.monotonic() > deadline:
+            return False
+        page.wait_for_timeout(100)
 
 
 def media_session(page) -> dict:
@@ -963,7 +994,7 @@ def main() -> int:
             page.click(".nav__item[data-view=settings]")
             page.wait_for_selector("#view-settings:not([hidden])")
             page.set_checked("#set-autoplay", on)
-            page.wait_for_function("(v) => fetch('/api/settings').then(r => r.json()).then(d => d.values.autoplay === v)", arg=on)
+            assert poll(page, "(v) => fetch('/api/settings').then(r => r.json()).then(d => d.values.autoplay === v)", on), "autoplay не записан"
 
         set_autoplay(False)                                          # конец очереди — без автопродолжения похожими
         page.fill("#search-input", "s10")
@@ -1035,6 +1066,59 @@ def main() -> int:
         page.click("#player [data-do=shuffle]")
         set_autoplay(True)
 
+        print("Восстановление очереди, трека, позиции и режимов после перезагрузки (S10)")
+        saved_state = "fetch('/api/player/state').then(r => r.json()).then(d => d.state)"
+        page.fill("#search-input", "s10")
+        page.keyboard.press("Enter")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 10")
+        page.locator("#tracks .row").nth(3).click(position={"x": 260, "y": 20})
+        check(wait_track("trk00000203"), "играет 4-й трек очереди из 10")
+        page.click(rep_btn); page.click(rep_btn)                     # повтор трека
+        page.wait_for_function("(() => { const a = document.querySelector('#audio'); return Number.isFinite(a.duration) && a.currentTime > 0 })()")
+        page.evaluate("document.querySelector('#audio').currentTime = 12")
+        page.wait_for_function("document.querySelector('#audio').currentTime >= 12")
+        page.click("#player [data-do=play]")                         # пауза: позиция записывается сразу
+        page.wait_for_function("document.querySelector('#audio').paused")
+        check(poll(page, f"{saved_state}.then(s => !!s && s.index === 3 && s.repeat === 'one' && !s.shuffle"
+                         " && s.position >= 11.9 && s.position < 14 && s.tracks.length === 10)"),
+              "очередь, текущий трек, позиция и режимы записаны в backend (без записи на каждый timeupdate)")
+        title203 = track(203)["title"]
+        page.reload()
+        page.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready' && document.body.dataset.track === '1'", timeout=15000)
+        st = audio_state(page)
+        check(st["paused"] and not page.evaluate("document.querySelector('#audio').getAttribute('src')"),
+              "после перезапуска звук сам не включается (поток даже не запрашивается)")
+        check(page.text_content("#hero-title") == title203 and page.inner_text("#hero-play-label") == "Продолжить",
+              "баннер показывает восстановленный трек на паузе: «Продолжить»")
+        check(page.text_content("#hero-cur") in ("0:12", "0:13"), f"позиция восстановлена ({page.text_content('#hero-cur')})")
+        check(all(u["mode"] == "one" for u in repeat_ui()) and page.get_attribute("#player [data-do=shuffle]", "aria-pressed") == "false",
+              "режимы повтора и перемешивания восстановлены")
+        ms = media_session(page)
+        check(ms["title"] == title203 and ms["state"] == "paused", "системный оверлей (Media Session): восстановленный трек, пауза")
+        page.click(".nav__item[data-view=history]")
+        page.wait_for_selector("#player:not([hidden])")
+        check(page.text_content("#player-title") == title203, "мини-плеер на другом экране — тот же восстановленный трек")
+        page.click("#btn-queue")
+        page.wait_for_selector("#queue:not([hidden]) .q")
+        q_after = page.evaluate(q_titles)
+        check(len(q_after) == 10 and q_after == [track(200 + i)["title"] for i in range(10)]
+              and page.locator("#queue-list .q.is-current .q__title").text_content() == title203,
+              "очередь восстановлена целиком, в прежнем порядке, текущий трек отмечен")
+        page.click("#queue-close")
+        page.click("#player [data-do=play]")
+        try:
+            page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/trk00000203')"
+                                   " && !a.paused && a.currentTime >= 11.5 })()", timeout=10000)
+            resumed = True
+        except Exception:
+            resumed = False
+        check(resumed, "Play продолжает восстановленный трек с сохранённой позиции")
+        page.click("#player [data-do=next]")
+        check(wait_track("trk00000204"), "«Следующий» — следующий трек восстановленной очереди")
+        page.click(rep_btn)                                          # one → off
+        # Запись несохранённого при закрытии окна (sendBeacon) проверяет tests/api/test_playback_browser.py: здесь
+        # все запросы идут через перехват Playwright (ctx.route), а он не доставляет запросы выгружаемой страницы.
+
         print("Узкое окно (980x640) и светлая тема")
         page.set_viewport_size({"width": 980, "height": 640})
         page.click(".nav__item[data-view=home]")
@@ -1054,6 +1138,7 @@ def main() -> int:
         home_page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
         RECS["mode"] = "failed"
         page.close()
+        clear_playback()                                     # S10: иначе вкладка восстановила бы прошлую очередь
         home_page.goto(BASE)
         home_page.wait_for_selector("#home-empty:not([hidden])", timeout=15000)
         empty_text = home_page.inner_text("#home-empty")

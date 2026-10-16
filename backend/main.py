@@ -29,6 +29,7 @@ import diagnostics
 import jsruntime
 import library
 import paths
+import playback
 import playlists
 import providers
 import recs
@@ -200,6 +201,7 @@ app.include_router(stream_router)  # /api/stream/{source}/{id}
 app.include_router(lyrics_router)  # /api/lyrics
 app.include_router(downloads_router)  # /api/downloads, /api/local
 app.include_router(userdata.router)  # /api/favorites, /api/history, /api/settings
+app.include_router(playback.router)  # /api/player/state: очередь и позиция между запусками (S10)
 app.include_router(playlists.router)  # /api/playlists
 app.include_router(recs.router)  # /api/recommendations
 app.include_router(catalog.router)  # /api/search/{artists|albums}, /api/artist, /api/album

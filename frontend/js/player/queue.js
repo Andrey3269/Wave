@@ -55,6 +55,9 @@ export class Queue {
   /** Откуда играет очередь («Подобрано по вашей истории», название альбома...). */
   label = "";
 
+  /** Вызывается после любого изменения очереди или текущего трека (сохранение между запусками, S10). */
+  onChange = null;
+
   /** random — источник случайности для перемешивания (в тестах — предсказуемый). */
   constructor({ random = Math.random } = {}) { this.#random = random; }
 
@@ -69,6 +72,7 @@ export class Queue {
   isFrom(source) { return source != null && this.#source === source; }
 
   #uid() { return ++this.#seq; }
+  #changed() { if (this.onChange) this.onChange(); }
   #pos(uid) { return this.#uids.indexOf(uid); }
   get #curUid() { return this.#uids[this.#index]; }
 
@@ -86,6 +90,7 @@ export class Queue {
     this.#cycle = new Set();
     this.#planned = null;
     this.#step = null;
+    this.#changed();
   }
 
   /**
@@ -110,6 +115,7 @@ export class Queue {
     if (this.#cycleFull()) this.#cycle.clear();          // круг уже сыгран целиком: этот трек открывает новый
     this.#cycle.add(uid);
     this.#index = i;
+    this.#changed();
     return t;
   }
 
@@ -117,6 +123,7 @@ export class Queue {
   restartCycle() {
     this.#cycle = new Set(this.#curUid != null ? [this.#curUid] : []);
     this.#planned = null;
+    this.#changed();
   }
 
   #cycleFull() { return this.#uids.length > 0 && this.#uids.every((u) => this.#cycle.has(u)); }
@@ -189,6 +196,7 @@ export class Queue {
     const at = next && this.#index >= 0 ? this.#index + 1 : this.#items.length;
     this.#items.splice(at, 0, copy);
     this.#uids.splice(at, 0, this.#uid());
+    this.#changed();
     return copy;
   }
 
@@ -200,6 +208,7 @@ export class Queue {
     this.#items.splice(i, 1);
     if (i < this.#index) this.#index--;
     this.#forget(new Set([uid]));
+    this.#changed();
     return true;
   }
 
@@ -227,6 +236,7 @@ export class Queue {
     this.#items = pairs.map((p) => p[0]);
     this.#uids = pairs.map((p) => p[1]);
     if (cur != null) this.#index = this.#pos(cur);
+    this.#changed();
   }
 
   /** Поменять трек i с соседом (d = -1 выше, +1 ниже). Текущий трек остаётся текущим. */
@@ -259,6 +269,7 @@ export class Queue {
     this.#cycle = new Set(cur ? [uid] : []);
     this.#planned = null;
     this.#step = null;
+    this.#changed();
   }
 
   /** Дописать треки в конец (похожие треки после конца очереди). Возвращает позицию первого. */
@@ -267,6 +278,7 @@ export class Queue {
     const from = this.#items.length;
     this.#items.push(...tracks);
     this.#uids.push(...tracks.map(() => this.#uid()));
+    this.#changed();
     return from;
   }
 
@@ -284,6 +296,7 @@ export class Queue {
     for (const t of fresh) this.#fromSource.add(trackKey(t));
     this.#items.push(...fresh);
     this.#uids.push(...fresh.map(() => this.#uid()));
+    if (fresh.length) this.#changed();
     return fresh.length;
   }
 
@@ -328,6 +341,7 @@ export class Queue {
     if (cur != null && c < 0) { this.#history.push(cur); this.#cursor = this.#history.length - 1; } else this.#cursor = c;
     this.#cycle = new Set((Array.isArray(snap.cycle) ? snap.cycle : []).filter(ok).map((k) => this.#uids[k]));
     if (cur != null) this.#cycle.add(cur);
+    this.#changed();
     return true;
   }
 }

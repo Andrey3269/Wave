@@ -28,6 +28,7 @@ export const state = {
   query: "", offset: 0, more: false, loadingMore: false,
   shuffle: false, seeking: false, errors: 0,
   repeat: "off",     // повтор: "off" | "all" | "one" (player/queue.js; до S10 — булево «повторять трек»)
+  resumeAt: null,    // трек восстановлен после перезапуска и ещё не запущен: с какой секунды он начнёт (S10)
   searchCtl: null, baseStatus: "",
   // главная
   feed: [], feedPage: 1, salt: 0, featured: null, personalized: false, feedRadio: false,

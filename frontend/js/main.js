@@ -25,7 +25,8 @@ import { repaintFav, toggleFav } from "./components/favorites.js";
 import { shareTrack } from "./components/share.js";
 import { toggleMute, initSliders } from "./player/sliders.js";
 import { setIdleAction, playIndex, togglePlay, playNext, playPrev, setShuffle, cycleRepeat,
-  initPlayer } from "./player/controller.js";
+  initPlayer, restorePlayback } from "./player/controller.js";
+import { initPersist, loadSaved } from "./player/persist.js";
 import { fetchPage, playFromList, initList, initListWarm } from "./views/list.js";
 import { syncTabs } from "./views/shell.js";
 import { openArtist, openAlbum, goAlbum } from "./views/detail.js";
@@ -81,6 +82,7 @@ initPlayerBar();
 initHomeHero();
 initNow();
 initPlayer();
+initPersist();                                           // очередь и позиция между запусками (S10)
 initSliders();
 initLyrics();
 initFullscreen();
@@ -227,13 +229,18 @@ async function boot() {
   renderThemeMixes();
   renderArtistMixes();
   syncTabs();
+  const saved = loadSaved();                             // очередь и позиция прошлого запуска (S10)
   await Promise.allSettled([
+    saved,
     api("/api/favorites").then((d) => { state.fav = new Set(d.items.map(trackKey)); state.favItems = d.items; computeArtists(); renderArtistMixes(); repaintFav(); }),
     loadSettings(),
   ]);
   // Первый экран — только если пользователь, пока шли запросы выше, сам ничего не открыл (каждый экран
   // выставляет state.reopen). Иначе поиск, начатый в первые секунды, уводило на главную.
   if (!state.reopen) { if (navigator.onLine) goHome(true); else showDownloads(); }
+  // После первого экрана: лента главной при запуске собирается как раньше (не «похоже на» восстановленный трек),
+  // а баннер и мини-плеер сразу показывают восстановленный трек на паузе
+  restorePlayback(await saved);
   refreshDownloads();
   pollJobs();                                            // подхватываем загрузки, которые шли до перезагрузки страницы
 }

@@ -335,3 +335,26 @@ test("устаревшее предложение «Назад» не приме
   }
   assert.ok(hitPrevious > 0, "сценарий «случайный выбор = предыдущий в истории» действительно встретился");
 });
+
+test("onChange: вызывается после каждого изменения очереди и текущего трека, не при чтении", async () => {
+  const list = range(0, 4);
+  const q = new Queue({ random: rng(1) });
+  let n = 0;
+  q.onChange = () => { n++; };
+  const step = (fn, expect, why) => { const before = n; fn(); assert.equal(n - before, expect, why); };
+  step(() => q.load(list, { source: list, continuation: async () => [...list, T(9)] }), 1, "load");
+  step(() => q.select(0), 1, "select");
+  step(() => { q.nextIndex({ shuffle: true }); q.prevIndex({ shuffle: true }); q.peekNext({ shuffle: true }); void q.tracks; }, 0, "чтение");
+  step(() => q.restartCycle(), 1, "restartCycle");
+  const before = n;
+  assert.equal(await q.extend(), 1);
+  assert.equal(n - before, 1, "extend с новыми треками");
+  step(() => q.add(T(5)), 1, "add");
+  step(() => q.move(1, 1), 1, "move");
+  step(() => q.moveTo(0, 3), 1, "moveTo");
+  step(() => q.remove(q.index === 2 ? 1 : 2), 1, "remove");
+  step(() => q.append([T(7)]), 1, "append");
+  step(() => q.clear(), 1, "clear");
+  step(() => q.restore({ tracks: range(0, 2), index: 0 }), 2, "restore (внутри load)");
+  step(() => { q.remove(0); q.move(9, 1); q.moveTo(5, 5); }, 0, "отказ в правке — без уведомления");
+});

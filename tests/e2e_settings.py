@@ -202,8 +202,47 @@ def start_playback(page) -> None:
     page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 0.1 })()", timeout=15000)
 
 
+def clear_playback() -> None:
+    """Сценарий set начинается без прошлой очереди (её мог оставить e2e_smoke.py на этом профиле, S10)."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener.open(urllib.request.Request(f"{BASE}/api/player/state", method="DELETE"), timeout=10).read()
+
+
+def saved_playback(page) -> dict | None:
+    return page.evaluate("fetch('/api/player/state').then(r => r.json()).then(d => d.state)")
+
+
+def set_playback(page) -> dict:
+    """
+    S10: очередь подборки (12 треков), третий трек, позиция 10,5 с, перемешивание и повтор очереди — через
+    кнопки плеера. Возвращает, что должно восстановиться после перезапуска backend на другом порту.
+    """
+    page.wait_for_selector("#player:not([hidden])")
+    for want in ("set00000002", "set00000003"):
+        page.click("#player [data-do=next]")
+        page.wait_for_function("(id) => document.querySelector('#audio').src.endsWith('/' + id)", arg=want)
+    page.click("#player [data-do=shuffle]")
+    page.click("#player [data-do=repeat]")                                   # выкл → вся очередь
+    page.wait_for_function("(() => { const a = document.querySelector('#audio'); return Number.isFinite(a.duration) && a.currentTime > 0 })()")
+    page.evaluate("document.querySelector('#audio').currentTime = 10.5")
+    page.wait_for_function("document.querySelector('#audio').currentTime >= 10.5")
+    page.click("#player [data-do=play]")                                     # пауза
+    page.wait_for_function("document.querySelector('#audio').paused")
+    deadline = time.monotonic() + SAVE_TIMEOUT_MS / 1000
+    st = saved_playback(page)
+    while time.monotonic() < deadline and not (st and st["index"] == 2 and st["shuffle"] and st["repeat"] == "all"
+                                               and st["position"] >= 10.4):
+        page.wait_for_timeout(100)
+        st = saved_playback(page)
+    ok = bool(st) and st["tracks"][st["index"]]["id"] == "set00000003" and len(st["tracks"]) == 12
+    check(ok and st["shuffle"] and st["repeat"] == "all" and st["position"] >= 10.4,
+          f"очередь, трек, позиция и режимы записаны в backend ({st and {k: st[k] for k in ('index', 'position', 'shuffle', 'repeat')}})")
+    return {"id": "set00000003", "title": "Трек 3", "position": st["position"] if st else 10.5}
+
+
 def mode_set(page) -> None:
     print("Порт A: выставляем настройки через интерфейс")
+    clear_playback()
     open_page(page)
     check(page.evaluate("window.__lsAtStart") == 0, "новый контекст: localStorage этого origin пуст")
     start_playback(page)
@@ -255,6 +294,7 @@ def mode_set(page) -> None:
     check_eq(v, {"lyrics_visible": False}, "видимость текста записана", waited)
     check_eq(v, {"profile_name": NAME, "theme": "light"}, "имя профиля и тема записаны", waited)
     check(any("/c" in c for c in v["mix_covers"].values()), "обложка открытого ранее микса хранится в backend")
+    v["playback"] = set_playback(page)
     STATE.write_text(json.dumps(v), encoding="utf-8")
 
 
@@ -272,6 +312,22 @@ def mode_verify(page) -> None:
     mood, cover = next(iter(expect["mix_covers"].items()))
     src = page.get_attribute(f"#mixes .mix[data-mix='theme:{mood}'] img", "src") or ""
     check(re.search(r"/c\d+=", cover).group(0) in src, "обложка микса в боковой панели взята из настроек")
+    # S10: очередь и позиция пережили перезапуск backend (другой порт = другой localStorage: только SQLite)
+    pb = expect["playback"]
+    page.wait_for_function("document.body.dataset.track === '1'", timeout=15000)
+    check(page.evaluate("document.querySelector('#audio').paused && !document.querySelector('#audio').getAttribute('src')"),
+          "после перезапуска backend звук сам не включается")
+    check(page.text_content("#hero-title") == pb["title"] and page.inner_text("#hero-play-label") == "Продолжить",
+          "восстановлен трек очереди, баннер «Продолжить»")
+    check(page.text_content("#hero-cur") in ("0:10", "0:11"), f"позиция восстановлена ({page.text_content('#hero-cur')})")
+    check(page.get_attribute("#player [data-do=repeat]", "data-mode") == "all"
+          and page.get_attribute("#player [data-do=shuffle]", "aria-pressed") == "true", "повтор очереди и перемешивание восстановлены")
+    page.click("#hero-play")
+    page.wait_for_function("(id) => { const a = document.querySelector('#audio'); return a.src.endsWith('/' + id) && !a.paused"
+                           " && a.currentTime >= 10 }", arg=pb["id"], timeout=15000)
+    check(True, "Play продолжает восстановленный трек с сохранённой позиции")
+    page.click("#hero-play")                                                 # пауза: дальше прежний сценарий
+    page.wait_for_function("document.querySelector('#audio').paused")
     start_playback(page)
     page.click("#hero-title")
     page.wait_for_selector("#view-now:not([hidden])")

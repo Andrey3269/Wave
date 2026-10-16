@@ -178,8 +178,13 @@ def get_setting(key: str, default: str | None = None) -> str | None:
     return rows[0]["value"] if rows else DEFAULTS.get(key, default)
 
 
+# Служебная строка той же таблицы — состояние воспроизведения (backend/playback.py, S10). Это не настройка:
+# в /api/settings её нет, а читать её JSON при каждом запросе настроек незачем.
+_NOT_SETTINGS = ("playback_state",)
+
+
 def _stored() -> dict[str, str]:
-    return {r["key"]: r["value"] for r in _q("SELECT key, value FROM settings")}
+    return {r["key"]: r["value"] for r in _q("SELECT key, value FROM settings WHERE key NOT IN (?)", _NOT_SETTINGS)}
 
 
 def _read_level(raw: str | None, default: float) -> float:

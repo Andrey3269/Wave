@@ -16,7 +16,8 @@ import { audio } from "../core/elements.js";
 import { state, queue, current } from "../state/store.js";
 import { nextRepeat, normRepeat } from "./queue.js";
 import { toast } from "../components/toast.js";
-import { getDuration, seekBy, resetProgress, updateProgress } from "./sliders.js";
+import { getDuration, seekBy, seekTo, resetProgress, updateProgress } from "./sliders.js";
+import { currentPosition, saveSoon, withoutSaving } from "./persist.js";
 
 export const playerEvents = new Emitter();
 
@@ -40,10 +41,12 @@ export function play(tracks, i, { label = "", mixId = null } = {}) {
 }
 
 /** prev — трек, который играл до этого. Если очередь только что заменили, current() уже указывает в новую
- *  очередь, поэтому вызывающий передаёт прерванный трек сам. */
-export function playIndex(i, prev = current()) {
+ *  очередь, поэтому вызывающий передаёт прерванный трек сам. at — с какой секунды начать (восстановленная
+ *  позиция после перезапуска, S10). */
+export function playIndex(i, prev = current(), { at = 0 } = {}) {
   const track = queue.at(i);
   if (!track) return;
+  state.resumeAt = null;
   const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : prev?.duration || 0;
   if (prev && audio.currentTime > 0 && !audio.ended && audio.currentTime < Math.min(30, (dur || 999) * 0.4)) reportSkip(prev);   // переключили почти сразу = пропуск
   queue.select(i);
@@ -54,7 +57,35 @@ export function playIndex(i, prev = current()) {
   playerEvents.emit("track", track);
   setLoading("Загрузка…");
   player.recover = 0;
-  startTrack(track, 0);
+  startTrack(track, at > 0 ? at : 0);
+}
+
+/**
+ * Восстановление после перезапуска (S10): очередь, текущий трек, позиция и режимы из сохранённого состояния.
+ * Решение продукта: звук сам не включается. Трек показывается на паузе с сохранённой позицией (мини-плеер,
+ * баннер «Продолжить», системный оверлей); Play продолжает с этой позиции. Если пользователь уже запустил
+ * что-то сам, пока шёл запуск, сохранённое не применяется.
+ */
+export function restorePlayback(saved) {
+  if (!saved || queue.length || audio.getAttribute("src")) return false;
+  return withoutSaving(() => applySaved(saved));
+}
+function applySaved(saved) {
+  if (!queue.restore(saved)) return false;
+  state.shuffle = saved.shuffle === true;
+  state.repeat = normRepeat(saved.repeat);
+  playerEvents.emit("modes", "shuffle");
+  playerEvents.emit("modes", "repeat");
+  const t = current();
+  if (!t) return true;
+  const dur = t.duration || 0;
+  state.resumeAt = clamp(Number(saved.position) || 0, 0, dur > 1 ? dur - 1 : Number.MAX_SAFE_INTEGER);
+  resetProgress(t.duration);
+  updateProgress();
+  updateMediaMetadata(t);
+  playerEvents.emit("track", t);
+  setPlaying(false);
+  return true;
 }
 
 function recordPlay(t) { api("/api/history", jsonOpts("POST", trackPayload(t))).catch(() => {}); }
@@ -237,7 +268,11 @@ function onPlayRejected(err) {
 // ---------- Управление ----------
 export function togglePlay() {
   if (player.pending) return undefined;   // трек ещё готовится (/playback): Play не запускает ничего другого
-  if (!audio.getAttribute("src")) return idleAction();
+  if (!audio.getAttribute("src")) {
+    // восстановленный после перезапуска трек — с сохранённой позиции (S10); иначе решает приложение
+    if (state.resumeAt != null && current()) return playIndex(queue.index, null, { at: state.resumeAt });
+    return idleAction();
+  }
   if (audio.paused) audio.play().catch(onPlayRejected); else audio.pause();
   return undefined;
 }
@@ -256,15 +291,16 @@ export function playNext() {
 export function playPrev() {
   // как в большинстве плееров: после 3 секунд «назад» перематывает в начало трека;
   // при перемешивании «назад» идёт по истории воспроизведения (player/queue.js)
-  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (currentPosition() > 3) { seekTo(0); return; }
   const j = queue.prevIndex({ shuffle: state.shuffle });
-  if (j < 0) { audio.currentTime = 0; return; }
+  if (j < 0) { seekTo(0); return; }
   playIndex(j);
 }
 export function setShuffle(on) {
   state.shuffle = !!on;
   if (state.shuffle) queue.restartCycle();               // новый круг без повторов — с текущего трека
   playerEvents.emit("modes", "shuffle");
+  saveSoon();
 }
 /** Повтор: "off" | "all" | "one". audio.loop не используется: с ним не приходит ended, и повтор не работал бы
  *  одинаково для обычного файла и HLS. */
@@ -272,6 +308,7 @@ export function setRepeat(mode) {
   state.repeat = normRepeat(mode);
   audio.loop = false;
   playerEvents.emit("modes", "repeat");
+  saveSoon();
 }
 /** Кнопка повтора: выкл → вся очередь → текущий трек → выкл. */
 export function cycleRepeat() { setRepeat(nextRepeat(state.repeat)); }
@@ -386,7 +423,7 @@ function updatePositionState() {
   const dur = getDuration();
   if (!dur) return;
   try {
-    mediaSession.setPositionState({ duration: dur, playbackRate: audio.playbackRate || 1, position: clamp(audio.currentTime || 0, 0, dur) });
+    mediaSession.setPositionState({ duration: dur, playbackRate: audio.playbackRate || 1, position: clamp(currentPosition(), 0, dur) });
   } catch { /* некорректное состояние при смене трека: игнорируем */ }
 }
 
@@ -418,14 +455,14 @@ export function initPlayer() {
 
   if (mediaSession) {
     const actions = {
-      play: () => audio.play().catch(onPlayRejected),
+      play: () => (audio.getAttribute("src") ? audio.play().catch(onPlayRejected) : togglePlay()),
       pause: () => audio.pause(),
       previoustrack: playPrev,
       nexttrack: playNext,
-      stop: () => { audio.pause(); audio.currentTime = 0; },
+      stop: () => { audio.pause(); seekTo(0); },
       seekbackward: (d) => seekBy(-(d.seekOffset || 10)),
       seekforward: (d) => seekBy(d.seekOffset || 10),
-      seekto: (d) => { if (Number.isFinite(d.seekTime)) audio.currentTime = d.seekTime; },
+      seekto: (d) => { if (Number.isFinite(d.seekTime)) seekTo(d.seekTime); },
     };
     for (const [name, handler] of Object.entries(actions)) {
       try { mediaSession.setActionHandler(name, handler); } catch { /* действие не поддерживается */ }

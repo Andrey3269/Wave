@@ -5,16 +5,31 @@ import { el, audio, hero, now, fs, ctl } from "../core/elements.js";
 import { state, current } from "../state/store.js";
 import { uiSave, round3, flags } from "../state/settings.js";
 import { tickLyrics } from "../components/lyrics.js";
+import { currentPosition, savePosition } from "./persist.js";
 
 /** Длительность текущего трека: из <audio>, пока она неизвестна — из данных трека. */
 export function getDuration() {
   if (Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
   return current()?.duration || 0;
 }
+/** Перемотка на t с. Трек восстановлен после перезапуска, но ещё не запущен (S10): меняется позиция, с которой
+ *  он начнёт играть, — <audio> без источника не трогаем. */
+export function seekTo(t) {
+  const dur = getDuration();
+  t = clamp(t, 0, dur || Math.max(0, t));
+  if (!audio.getAttribute("src")) {
+    if (state.resumeAt == null) return;
+    state.resumeAt = t;
+    updateProgress();
+    savePosition();
+    return;
+  }
+  audio.currentTime = t;
+}
 export function seekBy(delta) {
   const dur = getDuration();
   if (!dur) return;
-  audio.currentTime = clamp(audio.currentTime + delta, 0, dur);
+  seekTo(currentPosition() + delta);
 }
 
 // Полосы прогресса: мини-плеер, баннер, страница трека, полноэкранный плеер
@@ -31,7 +46,7 @@ export function resetProgress(duration) {
 }
 export function updateProgress() {
   const dur = getDuration();
-  const cur = audio.currentTime || 0;
+  const cur = currentPosition();
   const pct = dur ? clamp((cur / dur) * 100, 0, 100) : 0;
   for (const p of progressBars) {
     p.bar.style.setProperty("--p", `${pct}%`);
@@ -132,7 +147,7 @@ export function initSliders() {
       commit(f) {
         state.seeking = false;
         const dur = getDuration();
-        if (dur) audio.currentTime = f * dur;            // сервер ответит 206 на Range-запрос
+        if (dur) seekTo(f * dur);                        // сервер ответит 206 на Range-запрос
         updateProgress();
       },
       cancel() { state.seeking = false; updateProgress(); },
