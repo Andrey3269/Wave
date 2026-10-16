@@ -1128,11 +1128,11 @@ def test_second_cancel_in_the_completion_window_keeps_the_user_cancel(harness):
         entry.task.cancel()
         await asyncio.sleep(0)                                   # задача обработала отмену, колбэк ещё в очереди
         window = entry.task.done() and state(IDS[2]) == "queued"
-        result = await mgr.cancel(key)
+        result = dict(await mgr.cancel(key))                     # ответ — ровно то, что ушло бы клиенту
         for t in IDS[:2]:
             hold.release(t)
         await until(lambda: finished(IDS[0]) and finished(IDS[1]))
-        return window, dict(result)
+        return window, result
 
     window, result = harness.run(scenario)
     assert window                                                # сценарий действительно попал в окно
