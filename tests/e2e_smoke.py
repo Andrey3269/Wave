@@ -1035,6 +1035,7 @@ def main() -> int:
         to_end()
         page.wait_for_function("document.querySelector('#audio').paused && document.body.dataset.audio === 'paused'", timeout=10000)
         check(page.evaluate(cur_id) == "trk00000209", "repeat off: после последнего трека очередь закончилась (без автопродолжения)")
+        check(media_session(page)["state"] == "paused", "Media Session: очередь закончилась — состояние «пауза»")
         page.click(rep_btn)                                          # all
         page.click("#player [data-do=play]")
         page.wait_for_function("!document.querySelector('#audio').paused")
@@ -1112,14 +1113,15 @@ def main() -> int:
               and page.locator("#queue-list .q.is-current .q__title").text_content() == title203,
               "очередь восстановлена целиком, в прежнем порядке, текущий трек отмечен")
         page.click("#queue-close")
-        page.click("#player [data-do=play]")
+        ms_action(page, "play")                                      # медиаклавиша Play (кнопка — в e2e_settings verify)
         try:
             page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/trk00000203')"
                                    " && !a.paused && a.currentTime >= 11.5 })()", timeout=10000)
             resumed = True
         except Exception:
             resumed = False
-        check(resumed, "Play продолжает восстановленный трек с сохранённой позиции")
+        check(resumed and media_session(page)["state"] == "playing",
+              "медиаклавиша Play продолжает восстановленный трек с сохранённой позиции")
         page.click("#player [data-do=next]")
         check(wait_track("trk00000204"), "«Следующий» — следующий трек восстановленной очереди")
         page.click(rep_btn)                                          # one → off
