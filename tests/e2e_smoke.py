@@ -545,6 +545,33 @@ def tab_walk(pg, steps: int, key: str = "Tab") -> tuple[list[str], int]:
     return bad, len(seen)
 
 
+# Контраст отрисованного элемента (S12): цвет текста (или значка — currentColor) против фактического фона — первые
+# непрозрачные фоны предков с наложением полупрозрачных. Порог: текст 4.5:1, крупный (24px или 18.66px жирным) 3:1,
+# значок без текста 3:1. Возвращает [{sel, ratio, need}] для первого видимого элемента каждого селектора.
+CONTRAST_JS = """(sels) => {
+  const parse = (c) => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return [0, 0, 0, 0];
+    const p = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
+  const over = (f, b) => [0, 1, 2].map((i) => f[3] * f[i] + (1 - f[3]) * b[i]).concat(1);
+  const lum = (c) => { const ch = (x) => { x /= 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2]); };
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+  const background = (n) => { const layers = [];
+    for (let e = n; e; e = e.parentElement) { const c = parse(getComputedStyle(e).backgroundColor); if (c[3] > 0) layers.push(c); if (c[3] >= 1) break; }
+    let bg = [255, 255, 255, 1];
+    for (let i = layers.length - 1; i >= 0; i--) bg = over(layers[i], bg);
+    return bg; };
+  return sels.map((sel) => {
+    const n = [...document.querySelectorAll(sel)].find((x) => x.checkVisibility() && x.getClientRects().length);
+    if (!n) return { sel, ratio: 0, need: 0, missing: true };
+    const cs = getComputedStyle(n), bg = background(n), fg = over(parse(cs.color), bg);
+    const size = parseFloat(cs.fontSize), bold = Number(cs.fontWeight) >= 700;
+    const icon = n.tagName.toLowerCase() === "svg" || n.closest("svg");
+    const need = icon ? 3 : (size >= 24 || (size >= 18.66 && bold)) ? 3 : 4.5;
+    return { sel, ratio: Math.round(ratio(fg, bg) * 100) / 100, need };
+  });
+}"""
+
+
 def main() -> int:
     ensure_test_profile(BASE)
     print(f"Скриншоты: {SHOTS}")
@@ -2189,7 +2216,61 @@ def main() -> int:
         kb.keyboard.press("Enter")
         kb.wait_for_function("document.body.dataset.view === 'liked'")
         check(reached and kb.evaluate("document.activeElement.dataset.view") == "liked", "клавиатура: боковое меню — «Нравится»")
-        kb.close()
+
+        print("Доступность (S12): контраст отрисованных элементов в обеих темах")
+        # Тема переключается через настройки, как у пользователя; фон-картинки (баннер, страница трека) не измеряются
+        list_sels = [".nav__item:not([aria-current])", ".nav__item[aria-current]", ".side__h", ".mix__title", ".mix__sub",
+                     ".seg__btn[aria-selected=true]", ".seg__btn[aria-selected=false]", ".tab[aria-selected=true]", ".tab[aria-selected=false]",
+                     ".results__title", "#status", ".row.is-playing .track__title", ".row:not(.is-playing) .track__title",
+                     ".track__artist .who", ".track__album", ".track__time", ".track__num", ".track__tools .icon", ".sort",
+                     ".mp__title", ".mp__artist .who", "#time-current", "#player [data-do=shuffle] .icon", ".profile__name", ".profile__sub",
+                     ".more"]
+        detail_sels = [".detail__kind", ".detail__title", ".detail__sub", "#d-play", "#d-shuffle", ".back", ".card__title", ".card__sub"]
+        other_sels = {"settings": [".page-h", ".set h3", ".set__row", ".set__hint", "#set-dir"],
+                      "collection": [".tile__title", ".tile__sub", ".tile__ico .icon"]}
+        menu_sels = ["#menu [role=menuitem] span", "#menu [role=menuitem] .icon"]
+        queue_sels = [".queue__titles h2", ".queue__label", ".q.is-current .q__title", ".q:not(.is-current) .q__title", ".q__artist", ".queue__clear"]
+        for theme in ("dark", "light"):
+            cx = ctx.new_page()
+            cx.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+            kb.close() if theme == "dark" else None
+            clear_playback()
+            cx.goto(BASE)
+            cx.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+            cx.click(".nav__item[data-view=settings]")
+            cx.select_option("#set-theme", theme)
+            cx.wait_for_function("(t) => document.documentElement.dataset.theme === t", arg=theme)
+            res = cx.evaluate(CONTRAST_JS, other_sels["settings"])
+            cx.click(".nav__item[data-view=collection]")
+            cx.wait_for_selector("#col-tiles .tile")
+            res += cx.evaluate(CONTRAST_JS, other_sels["collection"])
+            cx.fill("#search-input", "more12")
+            cx.keyboard.press("Enter")
+            cx.wait_for_function(rows_ready, arg=20)
+            cx.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+            cx.wait_for_function("!document.querySelector('#audio').paused")
+            cx.evaluate("document.querySelector('#main').scrollTo({top: 1e6})")
+            cx.wait_for_function("document.querySelector('#more').dataset.state === 'error'")
+            cx.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+            res += cx.evaluate(CONTRAST_JS, list_sels)
+            cx.click("#tracks .row:nth-child(2) .track__more")
+            res += cx.evaluate(CONTRAST_JS, menu_sels)
+            cx.keyboard.press("Escape")
+            cx.click("#btn-queue")
+            cx.wait_for_selector("#queue:not([hidden]) .q")
+            res += cx.evaluate(CONTRAST_JS, queue_sels)
+            cx.click("#queue-close")
+            cx.click("#tracks .row:nth-child(3) .who.is-link")
+            cx.wait_for_selector("#albums-row .card")
+            res += cx.evaluate(CONTRAST_JS, detail_sels)
+            low = [f"{r['sel']} {r['ratio']}<{r['need']}" for r in res if r.get("missing") or r["ratio"] < r["need"]]
+            worst = min(res, key=lambda r: r["ratio"] - r["need"])
+            check(not low, f"{theme}: контраст {len(res)} видов отрисованных текстов и значков не ниже WCAG AA; "
+                           f"наименьший запас — {worst['sel']} {worst['ratio']}:1 {low}")
+            cx.click(".nav__item[data-view=settings]")
+            cx.select_option("#set-theme", "dark")
+            cx.wait_for_function("document.documentElement.dataset.theme === 'dark'")
+            cx.close()
 
         browser.close()
 

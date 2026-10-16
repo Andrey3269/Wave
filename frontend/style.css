@@ -25,11 +25,12 @@
   --accent-hover: #FF7B64;
   --accent-deep: #8F251D;
   --accent-soft: rgba(255, 101, 74, .14);
+  --accent-ink: #FF654A;              /* S12: акцент как цвет текста и значков (в тёмной теме = --accent) */
   --on-accent: #1A0B08;               /* текст на акценте (контраст 6.6:1); белый даёт только 2.9:1 */
   --bar: #34353C;
   /* тексты песен */
   --ly: #6A6A74;
-  --ly-past: #4A4A53;
+  --ly-past: #67676E;                 /* S12: было #4A4A53 (2.0:1 на панели текста); крупный текст — от 3:1 */
   --ly-plain: #C9C9D1;
   /* геометрия */
   --r-s: 6px;
@@ -49,15 +50,18 @@
   --line: #E4E4EA;
   --line-2: #D2D2DA;
   --text: #17171A;
-  --muted: #6C6C78;
-  --faint: #9A9AA6;
-  --accent: #E5502F;
-  --accent-hover: #C73F21;
+  /* S12, контраст WCAG (tests/unit/test_contrast.py): было muted #6C6C78 (4.48:1 на --surface-2), faint #9A9AA6
+     (2.8:1 для значков), белый текст на коралле 3.8:1, коралл как цвет текста 3.8:1, тексты песен 2.2 и 1.5:1 */
+  --muted: #696975;
+  --faint: #868691;
+  --accent: #E5502F;                  /* заливки, рамки, шкалы — фирменный коралл без изменений */
+  --accent-hover: #E75D3E;            /* светлее заливки: тёмный текст на ней 5.5:1 (было #C73F21) */
   --accent-soft: rgba(229, 80, 47, .12);
-  --on-accent: #FFFFFF;
+  --accent-ink: #B13E24;              /* акцент как цвет текста и значков на светлых поверхностях: от 4.6:1 */
+  --on-accent: #1A0B08;               /* тёмный текст на коралле, как в тёмной теме (5.0:1; белый — 3.8:1) */
   --bar: #DADAE1;
-  --ly: #A6A6B2;
-  --ly-past: #C9C9D2;
+  --ly: #7C7C86;
+  --ly-past: #8B8B91;
   --ly-plain: #3A3A42;
 }
 
@@ -85,7 +89,7 @@ img, svg { display: block; }
 h1, h2, h3, p { margin: 0; }
 ol, ul { margin: 0; padding: 0; list-style: none; }
 [hidden] { display: none !important; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 /* S12: внутри прокручиваемых и обрезающих областей рамка фокуса рисуется внутрь элемента — иначе overflow контейнера
    срезает её (ряды карточек, карточка микса, боковая панель в компактном режиме, очередь, тексты песен, выбор плейлиста) */
 .scroller :focus-visible, .mixcard :focus-visible, .side__scroll .nav__item:focus-visible, .side__scroll .mix:focus-visible,
@@ -93,7 +97,7 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 /* Текст песни на странице трека прокручивается и потому фокусируется (Chromium): рамка — у всей панели, а не у
    прокручиваемого блока, который на узком окне выше панели и срезался бы её overflow */
 #np-lyrics:focus-visible { outline: none; }
-.now__lyrics:has(#np-lyrics:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.now__lyrics:has(#np-lyrics:focus-visible) { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
@@ -146,7 +150,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .brand { display: block; align-self: flex-start; padding: 0 8px; }
 .brand img { display: block; height: auto; }
 .brand__mini { display: none !important; }
-.brand__fallback { display: inline-flex; align-items: center; gap: 10px; color: var(--accent); font-size: 22px; font-weight: 800; letter-spacing: .04em; }
+.brand__fallback { display: inline-flex; align-items: center; gap: 10px; color: var(--accent-ink); font-size: 22px; font-weight: 800; letter-spacing: .04em; }
 .brand__fallback .icon { width: 28px; height: 28px; }
 .brand__mini.brand__fallback span { display: none; }
 
@@ -157,7 +161,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
   transition: background-color .12s, color .12s;
 }
 .nav__item:hover { background: var(--surface); color: var(--text); }
-.nav__item[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.nav__item[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }
 
 /* Прокручивается содержимое панели (меню + «Твоя музыка»), логотип и профиль остаются на месте */
 .side__scroll {
@@ -177,7 +181,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .mix__t { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .mix__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13.5px; }
 .mix__sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
-.mix.is-active .mix__title { color: var(--accent); }
+.mix.is-active .mix__title { color: var(--accent-ink); }
 .mix__go { width: 16px; height: 16px; color: var(--faint); }
 .side__hint { margin: 0 8px; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .side__more { display: flex; align-items: center; margin: 6px 8px 0; color: var(--muted); font-weight: 600; font-size: 13px; }
@@ -200,7 +204,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 /* Нет соединения (S10): строка во всю ширину закреплённой верхней панели, существующие цвета и кнопки */
 .offline { flex: 1 1 100%; display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 14px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r-s); font-size: 13px; }
 .offline[hidden] { display: none; }
-.offline > .icon { flex: none; color: var(--accent); }
+.offline > .icon { flex: none; color: var(--accent-ink); }
 .offline__text { flex: 1; min-width: 0; }
 .offline__close { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); }
 .offline__close:hover, .offline__close:focus-visible { color: var(--text); background: var(--surface-3); }
@@ -231,7 +235,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .btn--sm { height: 32px; padding: 0 14px; font-size: 13px; }
 .btn--ghost { background: var(--surface-2); color: var(--text); border: 1px solid var(--line-2); }
 .btn--ghost:hover:not(:disabled) { background: var(--surface-3); }
-.btn--danger:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.btn--danger:hover:not(:disabled) { color: var(--accent-ink); border-color: var(--accent); }
 .btn:disabled { opacity: .5; }
 /* play/pause: иконка переключается атрибутом data-playing */
 [data-do="play"] .i-pause { display: none; }
@@ -244,20 +248,27 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
   transition: background-color .12s, color .12s, border-color .12s;
 }
 .rbtn:hover { background: var(--surface-3); }
-.rbtn[aria-pressed="true"], .rbtn.is-fav { color: var(--accent); border-color: var(--accent); }
+.rbtn[aria-pressed="true"], .rbtn.is-fav { color: var(--accent-ink); border-color: var(--accent); }
 .rbtn--s { width: 32px; height: 32px; }
+/* S12: включённый переключатель (перемешивание, повтор, текст, очередь полноэкранного плеера) отмечен не только цветом —
+   точкой под значком. «В избранном» отличается заливкой сердца, «Без звука» — значком, им точка не нужна. */
+:is(.ctrl, .rbtn, .abtn, .fs__iconbtn)[aria-pressed="true"]:not(.is-fav):not(.vol-btn) { position: relative; }
+:is(.ctrl, .rbtn, .abtn, .fs__iconbtn)[aria-pressed="true"]:not(.is-fav):not(.vol-btn)::after {
+  content: ""; position: absolute; left: 50%; bottom: 3px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: currentColor;
+}
 .rbtn--s .icon { width: 18px; height: 18px; }
 .is-fav .icon { fill: currentColor; }
 
 .tbtn { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 36px; height: 36px; padding: 0 8px; border-radius: var(--r-s); color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .tbtn:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
-.tbtn.is-fav, .tbtn.is-done, .tbtn:disabled { color: var(--accent); }
+.tbtn.is-fav, .tbtn.is-done, .tbtn:disabled { color: var(--accent-ink); }
 /* Загрузка (S5): источник не разрешил сохранить трек — приглушённая перечёркнутая стрелка; временная ошибка — акцент с «!» */
-.tbtn.is-denied, .abtn.is-denied { color: var(--faint); }
+.tbtn.is-denied { color: var(--faint); }                /* значок: неактивный элемент, от 3:1 */
+.abtn.is-denied { color: var(--muted); }                /* S12: у пилюли есть текст «Недоступно» — вторичный цвет, от 4.5:1 */
 .tbtn.is-denied::after { content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 2px; margin: -1px 0 0 -10px; border-radius: 1px; background: currentColor; transform: rotate(-45deg); pointer-events: none; }
-.tbtn.is-error, .abtn.is-error { color: var(--accent); }
+.tbtn.is-error, .abtn.is-error { color: var(--accent-ink); }
 /* S11: идущая загрузка — акцент и крестик (нажатие отменяет); ждущая места в очереди — приглушённая, без процента */
-.tbtn.is-busy, .abtn.is-busy { color: var(--accent); }
+.tbtn.is-busy, .abtn.is-busy { color: var(--accent-ink); }
 .tbtn.is-busy.is-queued, .abtn.is-busy.is-queued { color: var(--muted); }
 .tbtn[aria-disabled="true"], .abtn[aria-disabled="true"] { opacity: .7; cursor: progress; }
 /* Подпись прогресса резервирует место под «100%»: смена разрядов не сдвигает колонки строки */
@@ -303,6 +314,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 /* Баннер всегда тёмный (афиша), независимо от темы приложения */
 .hero {
   --text: #FFFFFF; --muted: #C2C2C9; --surface-2: #23242A; --surface-3: #2F3037; --line-2: #3C3D45; --bar: rgba(255, 255, 255, .22);
+  --accent-ink: var(--accent);        /* S12: на тёмном баннере акцентный текст — заливочный коралл и в светлой теме */
   position: relative; isolation: isolate; display: flex; align-items: flex-end;
   min-height: 340px; overflow: hidden; border-radius: var(--r-l);
   background: #141416; color: #fff;
@@ -315,7 +327,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .hero__art img { width: 100%; height: 100%; object-fit: cover; object-position: center 30%; }
 .hero__wave { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 62%; z-index: -1; pointer-events: none; }
 .hero__body { position: relative; max-width: 62%; padding: 40px; }
-.hero__eyebrow { display: flex; align-items: center; margin-bottom: 10px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.hero__eyebrow { display: flex; align-items: center; margin-bottom: 10px; color: var(--accent-ink); font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .hero__title {
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   font-size: clamp(28px, 4vw, 52px); line-height: 1.04; font-weight: 800; letter-spacing: -.01em; text-transform: uppercase; overflow-wrap: anywhere;
@@ -382,7 +394,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .tcard__title, .tcard__sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcard__title { font-weight: 600; }
 .tcard__sub { color: var(--muted); font-size: 13px; }
-.tcard.is-playing .tcard__title { color: var(--accent); }
+.tcard.is-playing .tcard__title { color: var(--accent-ink); }
 .tcard__ov { position: absolute; right: 8px; bottom: 8px; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: var(--accent); color: var(--on-accent); opacity: 0; transform: translateY(4px); transition: opacity .12s, transform .12s; }
 .tcard__ov .icon { width: 16px; height: 16px; }
 .tcard__open:hover .tcard__ov, .tcard__open:focus-visible .tcard__ov, .tcard.is-playing .tcard__ov { opacity: 1; transform: none; }
@@ -399,7 +411,7 @@ body[data-audio="playing"] .is-playing .ico-play { display: none; }
 .detail__head { display: flex; align-items: flex-end; gap: 28px; padding-bottom: 24px; }
 .detail__cover { width: 200px; height: 200px; border-radius: var(--r-m); }
 .detail__cover--round { border-radius: 50%; }
-.detail__kind { margin-bottom: 6px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.detail__kind { margin-bottom: 6px; color: var(--accent-ink); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .detail__title { margin-bottom: 6px; font-size: 44px; line-height: 1.05; font-weight: 800; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .detail__sub { margin-bottom: 20px; color: var(--muted); }
 .detail__actions { display: flex; flex-wrap: wrap; gap: 12px; }
@@ -421,7 +433,7 @@ body[data-audio="playing"] .is-playing .ico-play { display: none; }
 .card--artist .card__cv { border-radius: 50%; }
 .card__cv--plus { display: grid; place-items: center; border: 2px dashed var(--line-2); background: transparent; color: var(--muted); }
 .card__cv--plus .icon { width: 40px; height: 40px; }
-.card--new:hover .card__cv--plus { color: var(--accent); border-color: var(--accent); }
+.card--new:hover .card__cv--plus { color: var(--accent-ink); border-color: var(--accent); }
 .card__title, .card__sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card__title { font-weight: 600; }
 .card__sub { color: var(--muted); font-size: 13px; }
@@ -442,14 +454,14 @@ body[data-audio="playing"] .is-playing .ico-play { display: none; }
 .track__play { display: block; min-width: 0; text-align: left; }
 .track__play:focus-visible { outline: none; }
 .track__play::after { content: ""; position: absolute; inset: 0; border-radius: var(--r-s); pointer-events: none; }
-.track__play:focus-visible::after { outline: 2px solid var(--accent); outline-offset: -2px; }
+.track__play:focus-visible::after { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
 .track__title, .track__artist, .track__album { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .track__title { display: block; }
 .track__sub { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .track__title { font-weight: 600; }
 .track__artist, .track__album, .track__time { color: var(--muted); }
 .track__time { text-align: right; font-variant-numeric: tabular-nums; }
-.row.is-playing .track__title, .row.is-playing .track__icon { color: var(--accent); }
+.row.is-playing .track__title, .row.is-playing .track__icon { color: var(--accent-ink); }
 .track__tools { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
 /* Ссылки на исполнителей (S12: кнопки рядом с кнопкой трека, а не внутри неё). Строки с именами обрезаются
    многоточием (overflow: hidden): поле 2px/3px с отрицательным отступом даёт место рамке фокуса, раскладка та же. */
@@ -463,7 +475,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }
 .tile { display: flex; align-items: center; gap: 14px; padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-m); text-align: left; transition: background-color .12s, border-color .12s; }
 .tile:hover { background: var(--surface-2); border-color: var(--line-2); }
-.tile__ico { display: grid; place-items: center; width: 44px; height: 44px; border-radius: var(--r-s); background: var(--accent-soft); color: var(--accent); }
+.tile__ico { display: grid; place-items: center; width: 44px; height: 44px; border-radius: var(--r-s); background: var(--accent-soft); color: var(--accent-ink); }
 .tile__t { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .tile__title { font-weight: 600; }
 .tile__sub { color: var(--muted); font-size: 13px; }
@@ -475,10 +487,11 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .set__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; }
 .set__row--col { flex-direction: column; align-items: stretch; gap: 8px; }
 .set select, .set input[type="text"] { padding: 9px 12px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line-2); border-radius: var(--r-m); }
+.set input[type="text"] { border-color: var(--faint); }   /* S12: граница поля ввода — от 3:1 (у --line-2 было 1.3–1.6:1) */
 .set input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
 .set__actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .set__hint { margin-top: 10px; color: var(--muted); font-size: 13px; word-break: break-all; }
-.set__msg { min-height: 20px; margin-top: 16px; color: var(--accent); }
+.set__msg { min-height: 20px; margin-top: 16px; color: var(--accent-ink); }
 
 /* ---------- 10. Страница текущего трека ---------- */
 .view.now { position: relative; isolation: isolate; margin: -24px -32px 0; padding: 20px 32px 8px; overflow: hidden; }
@@ -492,7 +505,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .now__stage.no-lyrics .now__lyrics { display: none; }
 .now__main { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: 28px; align-items: end; }
 .now__cover { width: 100%; aspect-ratio: 1; border-radius: var(--r-l); }
-.eyebrow { margin-bottom: 8px; color: var(--accent); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.eyebrow { margin-bottom: 8px; color: var(--accent-ink); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .now__title { font-size: clamp(26px, 3vw, 40px); line-height: 1.08; font-weight: 800; letter-spacing: -.02em; overflow-wrap: anywhere; }
 .now__artist { margin-top: 6px; color: var(--muted); font-size: 18px; }
 .now__meta { margin-top: 6px; color: var(--muted); font-size: 13px; }
@@ -502,7 +515,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .now__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .abtn { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line-2); font-weight: 500; transition: background-color .12s, color .12s, border-color .12s; }
 .abtn:hover:not(:disabled) { background: var(--surface-3); }
-.abtn[aria-pressed="true"], .abtn.is-fav, .abtn.is-done { color: var(--accent); border-color: var(--accent); }
+.abtn[aria-pressed="true"], .abtn.is-fav, .abtn.is-done { color: var(--accent-ink); border-color: var(--accent); }
 .abtn--icon { justify-content: center; width: 36px; padding: 0; }
 .abtn .icon { width: 18px; height: 18px; }
 .abtn:disabled { opacity: .7; }
@@ -534,7 +547,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .controls { display: flex; align-items: center; gap: 8px; }
 .ctrl { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 50%; color: var(--muted); transition: color .12s, background-color .12s; }
 .ctrl:hover { color: var(--text); }
-.ctrl[aria-pressed="true"], .ctrl.is-fav { color: var(--accent); }
+.ctrl[aria-pressed="true"], .ctrl.is-fav { color: var(--accent-ink); }
 .ctrl--main { width: 44px; height: 44px; background: var(--accent); color: var(--on-accent); }
 .ctrl--main:hover { background: var(--accent-hover); color: var(--on-accent); }
 .timeline { display: flex; align-items: center; gap: 12px; width: 100%; max-width: 640px; }
@@ -566,7 +579,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .queue__list { flex: 1; min-height: 0; padding: 0 8px 16px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 .q { display: flex; align-items: center; gap: 2px; border-radius: var(--r-s); }
 .q:hover { background: var(--surface-2); }
-.q.is-current .q__title { color: var(--accent); }
+.q.is-current .q__title { color: var(--accent-ink); }
 .q__main { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; padding: 6px 8px; text-align: left; }
 .q__cv { width: 40px; height: 40px; border-radius: 4px; }
 .q__text { display: flex; flex-direction: column; min-width: 0; }
@@ -576,7 +589,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .q__btn { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 6px; color: var(--muted); }
 .q__btn .icon { width: 16px; height: 16px; }
 .q__btn:hover { color: var(--text); background: var(--surface-3); }
-.q__btn.is-fav { color: var(--accent); }
+.q__btn.is-fav { color: var(--accent-ink); }
 
 .menu { position: fixed; z-index: 60; min-width: 224px; padding: 6px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r-m); }
 .menu button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; border-radius: var(--r-s); text-align: left; }
@@ -588,7 +601,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .dlg::backdrop { background: rgba(0, 0, 0, .6); }
 .dlg h3 { margin-bottom: 14px; font-size: 18px; }
 .dlg__text { color: var(--muted); line-height: 1.5; }
-.dlg input { width: 100%; padding: 10px 14px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line-2); border-radius: var(--r-m); }
+.dlg input { width: 100%; padding: 10px 14px; background: var(--surface-2); color: var(--text); border: 1px solid var(--faint); border-radius: var(--r-m); }
 .dlg input:focus { outline: none; border-color: var(--accent); }
 .dlg__actions { display: flex; flex-direction: row-reverse; gap: 12px; margin-top: 20px; }
 .pick { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
@@ -677,9 +690,9 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
 /* ---------- 14. Полноэкранный плеер (#fs): одно состояние, режимы default | lyrics | queue ---------- */
 /* Всегда тёмный, независимо от темы приложения. Все стили под .fs: другие страницы не затрагиваются. */
 .fs {
-  --text: #FFFFFF; --muted: #A9A9B1; --faint: #7E7F88;
+  --text: #FFFFFF; --muted: #A9A9B1; --faint: #888991;   /* S12: faint был #7E7F88 (4.4:1 на панели очереди) */
   --surface: #18191D; --surface-2: #202126; --surface-3: #2A2B31; --line: #2B2C32; --line-2: #3A3B42; --bar: rgba(255, 255, 255, .2);
-  --accent: #FF654A; --accent-hover: #FF7B64; --on-accent: #1A0B08;
+  --accent: #FF654A; --accent-hover: #FF7B64; --on-accent: #1A0B08; --accent-ink: #FF654A;
   --ly: #C7C7CE; --ly-past: #C7C7CE; --ly-plain: #D8D8DE;
   --fs-cover: clamp(150px, 34vh, 340px);
   --fs-gap: clamp(32px, 5vw, 96px);
@@ -696,7 +709,7 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
 .fs__top { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; padding: 16px clamp(16px, 2.4vw, 32px) 0; }
 .fs__back, .fs__iconbtn { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; color: #fff; transition: background-color .12s, color .12s; }
 .fs__back:hover, .fs__iconbtn:hover { background: var(--surface-2); }
-.fs__iconbtn[aria-pressed="true"] { color: var(--accent); }
+.fs__iconbtn[aria-pressed="true"] { color: var(--accent-ink); }
 .fs__iconbtn--s { width: 34px; height: 34px; }
 .fs__top-r { display: flex; align-items: center; gap: 6px; }
 .fs__switch { display: inline-flex; align-items: center; gap: 12px; height: 42px; padding: 0 10px 0 14px; border-radius: 999px; color: #fff; }
@@ -724,7 +737,7 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
 .fs .ctrl .icon { width: 22px; height: 22px; }
 .fs .ctrl--aux { width: 40px; height: 40px; color: var(--muted); }
 .fs .ctrl--aux .icon { width: 20px; height: 20px; }
-.fs .ctrl--aux[aria-pressed="true"] { color: var(--accent); }
+.fs .ctrl--aux[aria-pressed="true"] { color: var(--accent-ink); }
 .fs .ctrl:hover { background: var(--surface-2); }
 .fs .ctrl--main { width: 64px; height: 64px; background: var(--accent); color: var(--on-accent); }
 .fs .ctrl--main:hover { background: var(--accent-hover); }
@@ -739,7 +752,7 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
 .fs .bar__thumb { display: block; width: 14px; height: 14px; margin: -7px 0 0 -7px; background: #fff; }
 .fs__vol { display: flex; align-items: center; gap: 8px; width: clamp(200px, 22vw, 260px); margin-top: clamp(12px, 2.4vh, 24px); }
 .fs__vol .ctrl { width: 36px; height: 36px; color: var(--muted); }
-.fs__vol .ctrl[aria-pressed="true"] { color: var(--accent); }
+.fs__vol .ctrl[aria-pressed="true"] { color: var(--accent-ink); }
 .fs__vol .ctrl .icon { width: 20px; height: 20px; }
 .fs__vol .bar__thumb { width: 16px; height: 16px; margin: -8px 0 0 -8px; }
 
@@ -751,7 +764,7 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
 .fs .fs__ly { flex: 1; min-height: 0; padding: 8vh 12px; text-align: center; }
 .fs .fs__ly:has(.ly:not(.ly--plain)) { padding-block: 34vh; }
 .fs .fs__ly .ly { margin-bottom: clamp(12px, 2.2vh, 22px); font-size: clamp(20px, 3.2vh, 30px); font-weight: 500; text-align: center; }
-.fs .fs__ly .ly.cur { color: var(--accent); }
+.fs .fs__ly .ly.cur { color: var(--accent-ink); }
 .fs .fs__ly .ly--plain { font-size: clamp(16px, 2.4vh, 20px); line-height: 1.8; }
 .fs .fs__ly .lyrics__empty { margin-top: 14vh; text-align: center; }
 
@@ -788,7 +801,7 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
 .fq__title, .fq__artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fq__title { font-weight: 500; }
 .fq__artist { color: var(--muted); font-size: 13px; }
-.fq__row.is-current .fq__title { color: var(--accent); font-weight: 600; }
+.fq__row.is-current .fq__title { color: var(--accent-ink); font-weight: 600; }
 .fq__dur { flex: none; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .fq__row .eq { margin: 0 2px 0 0; }
 .fq__more { width: 34px; min-width: 0; height: 34px; padding: 0; }
