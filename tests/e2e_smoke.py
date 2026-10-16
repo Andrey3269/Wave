@@ -146,7 +146,9 @@ JS_RUNTIME_DETAIL = "Компонент воспроизведения YouTube (
 # проверяются API-тестами (tests/api/test_downloads.py, test_download_policy.py).
 # S11: queued — id, для которых POST отвечает «в очереди»; cancels — запросы отмены; cancel_done — id, для которых отмена
 # опоздала (трек успел сохраниться, ответ done)
-DL = {"mock": False, "stage": {}, "posts": [], "done": {}, "queued": set(), "cancels": [], "cancel_done": set()}
+# hold — id, для которых ответ на POST придерживается до явного held_release() (двойной клик до ответа backend)
+DL = {"mock": False, "stage": {}, "posts": [], "done": {}, "queued": set(), "cancels": [], "cancel_done": set(),
+      "hold": set(), "held": []}
 DL_OUTCOME = {"trk00000041": ("error", "unavailable", "Трек недоступен"),
               "trk00000042": ("error", "network", "Нет связи с YouTube Music. Проверьте подключение к интернету.")}
 
@@ -188,6 +190,14 @@ def dl_job(tid: str) -> dict:
     return job
 
 
+def held_release() -> None:
+    """Отвечает на придержанные POST /api/downloads (S11: проверка двойного клика)."""
+    while DL["held"]:
+        route, tid, first = DL["held"].pop(0)
+        DL["stage"][tid] = first
+        js(route, {"state": first, "progress": 0, "error": None, "code": None}, 202)
+
+
 def dl_mock(route: Route, path: str) -> bool:
     req = route.request
     if path == "/api/downloads" and req.method == "POST":
@@ -198,6 +208,9 @@ def dl_mock(route: Route, path: str) -> bool:
             return True
         outcome = DL_OUTCOME.get(body["id"])
         first = "queued" if body["id"] in DL["queued"] else "preparing"
+        if body["id"] in DL["hold"]:                                   # ответ отдаст тест (held_release)
+            DL["held"].append((route, body["id"], first))
+            return True
         DL["stage"][body["id"]] = outcome if outcome else first
         js(route, {"state": first, "progress": 0, "error": None, "code": None}, 202)
         return True
@@ -864,7 +877,8 @@ def main() -> int:
         toast_has = "(t) => (document.querySelector('#toast')?.innerText || '').includes(t)"
         ok_id = "trk00000040"
         page.click(row_dl(1))
-        page.wait_for_function(label_starts, arg=[row_dl(1), "Подготовка"])
+        page.wait_for_function("(s) => (document.querySelector(s)?.getAttribute('aria-label') || '').includes('отменить')",
+                               arg=row_dl(1))
         # S11: кнопка идущей загрузки не отключается — она отменяет загрузку (раньше: disabled, «кнопка занята»)
         check(not page.is_disabled(row_dl(1)) and "Нажми, чтобы отменить загрузку" in page.get_attribute(row_dl(1), "aria-label")
               and page.get_attribute(row_dl(1) + " use", "href") == "#i-x" and DL["posts"] == [ok_id],
@@ -965,6 +979,22 @@ def main() -> int:
         page.wait_for_function(toast_has, arg="отменить не успели")
         page.wait_for_function(has_class, arg=[row_dl(5), "is-done"])
         check(DL["cancels"][-1] == late_id, "отмена опоздала (трек уже сохраняется): честное «уже сохранён», кнопка «Скачано»")
+
+        dbl_id = "trk00000047"                                          # строка 8
+        DL["hold"].add(dbl_id)
+        posts, cancels = len(DL["posts"]), len(DL["cancels"])
+        page.dblclick(row_dl(8))
+        page.wait_for_function(label_starts, arg=[row_dl(8), "Подготовка"])
+        check(page.get_attribute(row_dl(8), "aria-disabled") == "true" and len(DL["posts"]) == posts + 1
+              and len(DL["cancels"]) == cancels, "двойной клик «Скачать» до ответа backend: один запуск, без отмены")
+        held_release()
+        page.wait_for_function("(s) => (document.querySelector(s)?.getAttribute('aria-label') || '').includes('отменить')",
+                               arg=row_dl(8))
+        check(page.get_attribute(row_dl(8), "aria-disabled") is None and len(DL["cancels"]) == cancels,
+              "после ответа backend кнопка снова доступна и предлагает отмену")
+        DL["hold"].discard(dbl_id)
+        DL["stage"][dbl_id] = "done"
+        page.wait_for_function(has_class, arg=[row_dl(8), "is-done"])
 
         page.click(row_dl(6))
         page.click(row_dl(7))

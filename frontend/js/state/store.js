@@ -26,6 +26,7 @@ export const state = {
   dlDenied: new Map(),   // "source:id" -> причина окончательного отказа источника (на время сессии)
   dlTitles: new Map(),   // "source:id" -> название (для сообщений о готовности и ошибке)
   dlCancelling: new Set(),   // S11: "source:id" загрузок, для которых запрос отмены ещё в пути
+  dlStarting: new Set(),     // S11: "source:id", для которых POST /api/downloads ещё в пути (отменять нечего)
   query: "", offset: 0, more: false, loadingMore: false,
   shuffle: false, seeking: false, errors: 0,
   repeat: "off",     // повтор: "off" | "all" | "one" (player/queue.js; до S10 — булево «повторять трек»)

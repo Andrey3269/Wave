@@ -64,15 +64,19 @@ async function startDownload(t) {
   state.dlTitles.set(key, t.title);
   state.dlDenied.delete(key);
   state.jobs[key] = { state: "preparing", progress: 0 };
+  // S11: пока backend не ответил на POST, задачи ещё нет — второе нажатие (двойной клик) ничего не отменяет
+  state.dlStarting.add(key);
   repaintDl();
   try {
     const j = await api("/api/downloads", jsonOpts("POST", { source: t.source, id: t.id, title: t.title, artist: t.artist, album: t.album, duration: t.duration, cover: t.cover }));
+    state.dlStarting.delete(key);
     if (j.state === "done") { await refreshDownloads(); toast(`«${t.title}» уже скачан`); return; }
     state.jobs[key] = j;                                  // S11: сразу честный этап — «Подготовка» или «В очереди»
     repaintDl();
     toast(j.state === "queued" ? "Загрузка в очереди: начнётся, когда закончится одна из текущих" : "Загрузка началась");
     pollJobs();
   } catch (e) {
+    state.dlStarting.delete(key);
     delete state.jobs[key];
     repaintDl();
     toast(`Не удалось начать загрузку: ${e.message}`);
@@ -97,8 +101,11 @@ async function cancelDownload(t) {
   try {
     const j = await api(`/api/downloads/jobs/${t.source}/${enc(t.id)}`, { method: "DELETE" });
     state.jobs[key] = j;
-    if (j.finished_at) seenFinished.add(key + j.finished_at);    // итог уже сообщён здесь, опрос не повторит
+    // Итог сообщается один раз: если опрос уже показал «Готово» или ошибку, здесь не повторяем; и наоборот
+    const id = key + j.finished_at, told = !!j.finished_at && seenFinished.has(id);
+    if (j.finished_at) seenFinished.add(id);
     if (j.state === "cancelled") toast(`Загрузка «${t.title}» отменена`);
+    else if (told) { /* уже сообщено опросом */ }
     else if (j.state === "done") toast(`«${t.title}» уже сохранён — отменить не успели. Удалить копию можно кнопкой «Скачано».`, 6000);
     else if (j.state === "error") toast(`«${t.title}»: ${j.error}`, 6000);
   } catch (e) {
@@ -115,6 +122,7 @@ async function cancelDownload(t) {
 export function toggleDownload(t) {
   const key = trackKey(t);
   if (state.dl.has(key)) return removeDownload(t);
+  if (state.dlStarting.has(key)) return;                 // запуск ещё не подтверждён backend
   if (state.jobs[key] && BUSY.includes(state.jobs[key].state)) return cancelDownload(t);
   const denied = state.dlDenied.get(key);
   if (denied) { toast(`Скачивание недоступно. ${denied}`, 6000); return; }

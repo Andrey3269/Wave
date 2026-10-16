@@ -53,6 +53,8 @@ const mb = (n) => `${(n / 1048576).toLocaleString("ru-RU", { maximumFractionDigi
 function dlStatus(t) {
   const key = trackKey(t), job = state.jobs[key];
   if (state.dl.has(key)) return { kind: "done", short: "Скачано", label: "Скачано. Нажми, чтобы удалить локальную копию" };
+  // Запуск ещё не подтверждён backend: задачи в /api/downloads/jobs может ещё не быть, а отменять нечего
+  if (state.dlStarting.has(key)) return { kind: "busy", short: DL_STAGE.preparing, pct: "…", label: "Подготовка… Загрузка запускается", cancelling: true };
   if (job && BUSY.includes(job.state)) {
     if (state.dlCancelling.has(key)) return { kind: "busy", short: "Отмена…", pct: "", label: "Загрузка отменяется…", cancelling: true };
     const stage = DL_STAGE[job.state];
