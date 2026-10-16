@@ -157,7 +157,8 @@ async def lifespan(app: FastAPI):
     library.init()  # локальный индекс загрузок (SQLite)
     userdata.init()  # избранное, история, настройки
     playlists.init()  # локальные плейлисты
-    cleanup_partial()  # недокачанные загрузки прошлого запуска
+    # Недокачанные загрузки прошлого запуска — во всех проверенных каталогах загрузок (S11); обход диска — в потоке
+    await asyncio.to_thread(cleanup_partial)
     # S11: менеджер загрузок этого запуска (лимит, очередь, отмена); объекты asyncio — в цикле этого запуска (M1)
     app.state.downloads = DownloadManager()
     try:

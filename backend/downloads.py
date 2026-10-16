@@ -24,7 +24,8 @@
 
 S11 (остаток M8): задачами управляет DownloadManager (app.state.downloads, создаётся и закрывается в lifespan):
 лимит параллельности, очередь, отмена (DELETE /api/downloads/jobs/{source}/{id}), запись файлов вне event loop
-(download_io), остановка всех задач при выходе до закрытия HTTP-клиентов.
+(download_io), остановка всех задач при выходе до закрытия HTTP-клиентов; при старте — очистка `*.part` во всех
+проверенных каталогах загрузок.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections import deque
@@ -48,7 +50,7 @@ from pydantic import BaseModel
 import download_policy
 import library
 import paths
-from download_io import ThreadFile, clear_part_dir, remove_partial, run_in_thread
+from download_io import ThreadFile, clear_part_dir, is_link, remove_partial, run_in_thread
 from lyrics import fetch_lyrics
 from streaming import hls_download
 from streaming.errors import ERROR_HEADER
@@ -72,6 +74,10 @@ SHUTDOWN_WAIT = 15.0                          # S11: сколько выход �
 ACTIVE = {"queued", "preparing", "downloading", "processing"}
 COVER_HOSTS = ("googleusercontent.com", "ytimg.com", "ggpht.com", "sndcdn.com")   # откуда разрешено брать обложки
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
+# Временная папка загрузки: имя library.safe_folder() + ".part" — «… [источник-id].part» (S11: только такие
+# папки удаляет очистка при старте)
+PART_RE = re.compile(r"^.+ \[(?:" + "|".join(map(re.escape, SOURCES)) + r")-[^\[\]\\/]+\]\.part$")
+
 jobs: dict[str, dict] = {}
 
 
@@ -436,10 +442,63 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
         job.update(outcome, finished_at=time.time())
 
 
+# ---------------------------------------------------------------------------
+# Очистка недокачанного при старте (S11: во всех проверенных каталогах загрузок)
+# ---------------------------------------------------------------------------
+def _cleanup_roots() -> list[Path]:
+    """
+    Где могли остаться `*.part`: текущий каталог загрузок (настройки или WAVE_DOWNLOADS_DIR), каталог по умолчанию
+    (если он есть) и каталоги из индекса, в которых Wave реально сохранял треки (library.verified_roots: строки базы
+    не доверенные, N3). Произвольные пути из базы сюда не попадают.
+    """
+    found: list[Path] = []
+    try:
+        found.append(paths.downloads_dir())
+    except OSError as exc:
+        log.warning("Текущий каталог загрузок недоступен: %r", exc)
+    found.append(paths.default_downloads_dir())
+    try:
+        found.extend(library.verified_roots())
+    except Exception as exc:                                 # база недоступна — чистим то, что известно без неё
+        log.warning("Каталоги загрузок из индекса не прочитаны: %r", exc)
+    roots: dict[str, Path] = {}
+    for p in found:
+        try:
+            k = os.path.normcase(os.path.realpath(p))
+        except (OSError, ValueError):
+            continue
+        roots.setdefault(k, p)
+    return list(roots.values())
+
+
+def _clean_root(root: Path) -> int:
+    """Удаляет `*.part` загрузчика прямо в root (не глубже, без перехода по ссылкам). Возвращает число удалённых."""
+    try:
+        if not root.is_dir():
+            return 0
+        with os.scandir(root) as it:
+            candidates = [e for e in it if PART_RE.fullmatch(e.name)]
+    except (OSError, ValueError) as exc:
+        log.warning("Каталог загрузок %s недоступен для очистки: %r", root, exc)
+        return 0
+    removed = 0
+    for e in candidates:
+        try:
+            if is_link(e.stat(follow_symlinks=False)) or not e.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        if clear_part_dir(Path(e.path)):
+            removed += 1
+    return removed
+
+
 def cleanup_partial() -> None:
     """Убирает недокачанные папки *.part (остаются, если приложение закрыли во время загрузки)."""
-    for p in paths.downloads_dir().glob("*.part"):
-        shutil.rmtree(p, ignore_errors=True)
+    for root in _cleanup_roots():
+        n = _clean_root(root)
+        if n:
+            log.info("Удалено недокачанных загрузок: %d", n)
 
 
 def _check(source: str, track_id: str) -> None:

@@ -1,6 +1,7 @@
 """
 S11 (остаток M8): менеджер загрузок — лимит параллельности и очередь, отмена (API и реальные точки отмены в Python),
-гонки отмены с фиксацией, остановка в lifespan до закрытия HTTP-клиентов, запись файлов вне event loop.
+гонки отмены с фиксацией, остановка в lifespan до закрытия HTTP-клиентов, запись файлов вне event loop,
+очистка `*.part` во всех проверенных каталогах загрузок при старте.
 
 Сети нет: CDN, резолвер, тексты и обложки подменены (wavetest.fakes). Загрузки «удерживаются» на нужном этапе
 событиями asyncio/threading, поэтому тесты детерминированы и не зависят от скорости машины.
@@ -19,6 +20,7 @@ import pytest
 import download_io
 import downloads
 import library
+import paths
 from streaming import hls_download
 from wavetest.fakes import audio_bytes
 
@@ -717,3 +719,170 @@ def test_hls_download_writes_off_loop_and_cancels_cleanly(harness, spy_open, mon
     assert len(spy_open.threads) == 2 and loop_thread not in spy_open.threads
     assert names(harness.profile.downloads) == []
     assert harness.profile.sql("SELECT COUNT(*) FROM downloads") == [(0,)]
+
+
+# ---------------------------------------------------------------------------
+# 11–12. Очистка .part при старте во всех проверенных каталогах
+# ---------------------------------------------------------------------------
+def make_download(root: Path, tid: str, title: str = "Песня") -> str:
+    """Готовая загрузка Wave в root: папка с аудио + строка индекса (как после настоящей загрузки)."""
+    name = library.safe_folder("Исполнитель", title, "yt", tid)
+    (root / name).mkdir(parents=True)
+    (root / name / "audio.m4a").write_bytes(b"audio")
+    library.add(source="yt", track_id=tid, title=title, artist="Исполнитель", album=None, duration=1, folder=name,
+                audio="audio.m4a", cover=None, lyrics=None, size=5, created_at=time.time(), root=str(root))
+    return name
+
+
+def make_part(root: Path, name: str, files=("audio.part",)) -> Path:
+    p = root / name
+    p.mkdir(parents=True)
+    for f in files:
+        (p / f).write_bytes(b"half")
+    return p
+
+
+def test_startup_cleanup_covers_every_verified_root(harness, tmp_path, monkeypatch):
+    other = tmp_path / "Старая папка загрузок" / "Музыка Wave"              # кириллица в пути
+    default = tmp_path / "home-downloads" / "Wave"
+    default.mkdir(parents=True)
+    monkeypatch.setattr(paths, "default_downloads_dir", lambda: default, raising=False)
+    with harness.client():
+        kept_current = make_download(harness.profile.downloads, IDS[0], "Текущая")
+        kept_other = make_download(other, IDS[1], "Прошлая")
+    cur = harness.profile.downloads
+    parts = [
+        make_part(cur, "Исполнитель - Обрыв [yt-AAAAAAAAAA7].part"),
+        make_part(other, "Исполнитель - Обрыв [yt-AAAAAAAAAA8].part", files=("audio.part", "cover.jpg", "metadata.json")),
+        make_part(default, "Исполнитель - По умолчанию [sc-123].part"),
+        make_part(cur, "Длинное имя исполнителя Ёжик - " + "Очень длинное название " * 3 + "[yt-AAAAAAAAAA9].part"),
+    ]
+    # не наше: имя не по шаблону загрузчика, файл с суффиксом .part, обычная папка
+    (cur / "notes.part").mkdir()
+    (cur / "Чужая папка.part").mkdir()
+    (cur / "Исполнитель - Файл [yt-AAAAAAAAAA6].part").write_bytes(b"file, not folder")
+    (cur / "Мои заметки").mkdir()
+    with harness.client():
+        pass
+    assert not any(p.exists() for p in parts)
+    assert sorted(names(cur)) == sorted([kept_current, "notes.part", "Чужая папка.part",
+                                         "Исполнитель - Файл [yt-AAAAAAAAAA6].part", "Мои заметки"])
+    assert names(other) == [kept_other] and names(default) == []
+    assert (other / kept_other / "audio.m4a").read_bytes() == b"audio"
+    with harness.client() as h:                                                   # повторный старт — без изменений
+        assert sorted(t["id"] for t in h.get("/api/downloads").json()["items"]) == sorted(IDS[:2])
+    assert names(other) == [kept_other]
+
+
+def test_startup_cleanup_ignores_roots_from_untrusted_index_rows(harness, tmp_path):
+    """Строки индекса с выходом за каталог, с чужой папкой или без аудиофайла каталогами загрузок не становятся."""
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    stranger = make_part(victim, "Исполнитель - Чужое [yt-AAAAAAAAAA7].part")          # «.part» в чужом каталоге
+    (victim / "Исполнитель - Пусто [yt-AAAAAAAAAA1]").mkdir()                       # папка без аудиофайла
+    (victim / "Не Wave").mkdir()
+    (victim / "Не Wave" / "audio.m4a").write_bytes(b"x")
+    rows = [
+        ("AAAAAAAAAA1", "Исполнитель - Пусто [yt-AAAAAAAAAA1]", str(victim)),       # аудио нет
+        ("AAAAAAAAAA2", "Не Wave", str(victim)),                                    # папку создал не Wave
+        ("AAAAAAAAAA3", "../victim/x [yt-AAAAAAAAAA3]", str(harness.profile.downloads)),   # выход наружу
+        ("AAAAAAAAAA4", "x [yt-AAAAAAAAAA4]", "relative/root"),                     # относительный каталог
+        ("AAAAAAAAAA5", "x [yt-AAAAAAAAAA5]", str(victim / "нет такого диска")),    # недоступный каталог
+    ]
+    with harness.client():
+        for tid, name, root in rows:
+            library.add(source="yt", track_id=tid, title="t", artist="a", album=None, duration=1, folder=name,
+                        audio="audio.m4a", cover=None, lyrics=None, size=1, created_at=time.time(), root=root)
+        assert library.verified_roots() == []                         # ни одна строка не подтверждает каталог
+    with harness.client() as h:
+        assert h.get("/api/health").status_code == 200
+    assert stranger.is_dir() and (stranger / "audio.part").read_bytes() == b"half"
+    assert sorted(names(victim)) == sorted(["Исполнитель - Чужое [yt-AAAAAAAAAA7].part",
+                                            "Исполнитель - Пусто [yt-AAAAAAAAAA1]", "Не Wave"])
+
+
+def test_startup_cleanup_does_not_follow_links(harness, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("не трогать")
+    cur = harness.profile.downloads
+    link = cur / "Исполнитель - Ссылка [yt-AAAAAAAAAA1].part"
+    symlink(link, outside, is_dir=True)                                             # .part — ссылка наружу
+    inner = make_part(cur, "Исполнитель - Внутри [yt-AAAAAAAAAA2].part")
+    symlink(inner / "audio.part.link", outside / "precious.txt")                     # ссылка внутри .part
+    (inner / "подкаталог").mkdir()                                                  # загрузчик каталогов не делает
+    (inner / "подкаталог" / "file").write_text("x")
+    with harness.client():
+        pass
+    assert (outside / "precious.txt").read_text() == "не трогать"
+    assert link.is_symlink()                                                        # ссылку не трогаем вовсе
+    assert inner.is_dir() and names(inner) == ["подкаталог"]                       # файлы и ссылка удалены, каталог — нет
+    assert (inner / "подкаталог" / "file").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junction есть только в Windows")
+def test_startup_cleanup_does_not_follow_windows_junctions(harness, tmp_path):
+    """Windows: .part-junction наружу (is_symlink() её не видит) не обходится и не удаляется вместе с целью."""
+    import _winapi
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "precious.txt").write_text("не трогать")
+    junction = harness.profile.downloads / "Исполнитель - Junction [yt-AAAAAAAAAA1].part"
+    _winapi.CreateJunction(str(outside), str(junction))
+    inner = make_part(harness.profile.downloads, "Исполнитель - Внутри [yt-AAAAAAAAAA2].part")
+    _winapi.CreateJunction(str(outside), str(inner / "dir-junction"))
+    with harness.client():
+        pass
+    assert (outside / "precious.txt").read_text() == "не трогать"
+    assert junction.exists() and not inner.exists()             # внутренняя junction снята как ссылка
+
+
+def test_cleanup_survives_unavailable_roots(harness, tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    with harness.client():
+        make_download(other, IDS[1])
+    part = make_part(other, "Исполнитель - Обрыв [yt-AAAAAAAAAA8].part")
+    real_scandir = os.scandir
+
+    def flaky_scandir(p="."):
+        if Path(p) == harness.profile.downloads:
+            raise PermissionError("нет доступа (тест)")
+        return real_scandir(p)
+
+    monkeypatch.setattr(downloads.os, "scandir", flaky_scandir)
+    with harness.client() as h:                                    # текущий каталог недоступен — старт не падает
+        assert h.get("/api/health").status_code == 200
+    assert not part.exists()                                       # другой каталог всё равно очищен
+
+    monkeypatch.setattr(downloads.os, "scandir", real_scandir)
+
+    def broken_dir():
+        raise OSError("диск отключён (тест)")
+
+    def broken_index():
+        raise RuntimeError("база недоступна (тест)")
+
+    part2 = make_part(other, "Исполнитель - Ещё [yt-AAAAAAAAAA9].part")
+    monkeypatch.setattr(downloads.paths, "downloads_dir", broken_dir)
+    downloads.cleanup_partial()                                    # не бросает
+    assert not part2.exists()
+    monkeypatch.setattr(downloads.library, "verified_roots", broken_index)
+    downloads.cleanup_partial()                                    # не бросает и без базы
+
+
+def test_cleanup_handles_a_very_long_root_path(harness, tmp_path, monkeypatch):
+    deep = tmp_path
+    for i in range(6):
+        deep = deep / (f"Папка уровня {i} " + "ж" * 30)
+    try:
+        deep.mkdir(parents=True)
+        (deep / "probe").write_bytes(b"")
+    except OSError:
+        pytest.skip("длинные пути недоступны в этой среде (Windows без LongPathsEnabled)")
+    (deep / "probe").unlink()
+    assert len(str(deep)) > 260
+    monkeypatch.setenv("WAVE_DOWNLOADS_DIR", str(deep))
+    part = make_part(deep, "Исполнитель - Длинный путь [yt-AAAAAAAAAA1].part")
+    with harness.client():
+        pass
+    assert not part.exists() and deep.is_dir()

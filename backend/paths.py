@@ -37,8 +37,13 @@ def set_downloads_dir(p: Path | None) -> None:
     _downloads_override = p
 
 
+def default_downloads_dir() -> Path:
+    """Папка загрузок по умолчанию (без создания): ~/Downloads/Wave."""
+    return Path.home() / "Downloads" / "Wave"
+
+
 def downloads_dir() -> Path:
     """Скачанные треки: ~/Downloads/Wave по умолчанию, либо папка из настроек."""
-    p = Path(os.getenv("WAVE_DOWNLOADS_DIR") or _downloads_override or Path.home() / "Downloads" / "Wave")
+    p = Path(os.getenv("WAVE_DOWNLOADS_DIR") or _downloads_override or default_downloads_dir())
     p.mkdir(parents=True, exist_ok=True)
     return p

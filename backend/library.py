@@ -164,6 +164,29 @@ def add(**f) -> None:
     )
 
 
+def verified_roots() -> list[Path]:
+    """
+    Каталоги загрузок из индекса, в которых Wave действительно сохранял треки (S11: там может остаться `*.part`
+    после закрытия приложения посреди загрузки). Строки базы не доверенные (N3), поэтому каталог засчитывается,
+    только если строка проходит те же проверки, что и при чтении (папка — одно имя внутри своего каталога,
+    без выхода наружу), папку создал загрузчик Wave для этого трека, а её аудиофайл реально лежит на диске.
+    Строка, указывающая, например, на C:\\Windows, каталогом загрузок не становится. Строки не удаляются.
+    """
+    roots: dict[str, Path] = {}
+    for row in _q("SELECT * FROM downloads"):
+        folder = _row_dir(row)
+        if folder is None or not owns_folder(row):
+            continue
+        audio = _row_file(row, "audio")
+        try:
+            if audio is None or not audio.is_file():
+                continue
+        except OSError:                          # диск недоступен
+            continue
+        roots.setdefault(str(folder.parent), folder.parent)
+    return list(roots.values())
+
+
 class FolderKept(Exception):
     """Запись индекса удалена, а папку Wave не тронул: она не создана загрузчиком для этого трека."""
 
