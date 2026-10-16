@@ -336,6 +336,15 @@ frontend/js/
 - Модули `core/*` и `player/queue.js` не зависят от DOM и тестируются через `node --test` без новых зависимостей.
 - Порядок выделения — от наименее рискованного: `core` → `components/dialogs, toast` → `player/queue` → `player/controller` → `views`. После каждого шага e2e должен проходить полностью (109/109 или больше).
 
+### Реализация (S9, ветка `claude/s9-app-js-modules`, подробности — [reports/S9.md](reports/S9.md))
+
+- `frontend/app.js` удалён; 34 модуля `frontend/js/**`, вход `js/main.js` (композиция: init-функции в исходном порядке, `data-do`, навигация, клавиатура, `boot()`). `frontend/js/package.json` (`"type": "module"`) нужен только Node.
+- Сверх списка выше: `core/elements.js` (статические узлы `index.html`), `state/mixes.js`, `components/favorites.js`, `lyrics.js`, `share.js`, `views/list.js` (общий `#view-list`), `shell.js`, `sidebar.js`, `player-bar.js`.
+- `state/store.js` владеет единственными `state` и `queue`, стеком «Назад» (`nav`) и шиной `bus` для уведомлений экран → экран без циклов импорта. `player/controller.js` сообщает интерфейсу через `playerEvents` (`track`, `loading`, `playing`, `modes`, `mix`).
+- `player/queue.js` — `class Queue`: собственный массив, `load(tracks, {label, source, continuation})`, `extend()`, `isFrom(source)`, правки и навигация. Shuffle без повторов, repeat в модели и сериализация — S10; в S9 перемешивание и повтор работают как раньше.
+- Раздача: `backend/main.py:FrontendFiles` — `.js`/`.mjs` всегда `text/javascript` (на Windows `mimetypes` читает реестр, где `.js` бывает `text/plain`, и WebView2 не исполнит модуль), `Cache-Control: no-cache` (ETag, 304) против смешения модулей двух версий после обновления.
+- Граф модулей проверяет `tests/js/modules.test.mjs`: импорты существуют и экспортируются, циклов нет, все файлы достижимы из `main.js`, нет `import()` и сетевых скриптов. Сборка: `packaging/wave.spec` уже включает весь `frontend`; CI `windows-build` сверяет каждый файл `frontend\js` в `dist` побайтно.
+
 ## 12. Сборка и инсталлятор (H2)
 
 - `packaging/wave.spec`:

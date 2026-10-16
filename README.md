@@ -17,7 +17,7 @@
 | Windows 11 x64 (основная платформа), Windows 10 22H2 (совместимость проверяется) | запуск приложения | — |
 | Microsoft Edge WebView2 Runtime | окно приложения | актуальная |
 | Python | разработка и тесты; сборка | ≥ 3.10 для разработки; **сборка — только CPython 3.12 x64** (под неё закреплён `packaging/requirements-build.lock`) |
-| Node.js | только проверка синтаксиса фронтенда | любая актуальная LTS |
+| Node.js | проверка синтаксиса и unit-тесты фронтенда (`node --test`), только для разработки | 22 (проверено локально и в CI); шаблон файлов в `node --test` поддерживается с Node 21 |
 | Deno | воспроизведение YouTube при запуске из исходников (в сборку входит свой) | ≥ 2.3.0; закреплён 2.9.7 (`packaging/runtime/deno.lock`) |
 | Inno Setup 6 | сборка установщика | 6.x, проверено с **6.7.3** (Inno Setup 7 не используется) |
 
@@ -82,8 +82,14 @@ python backend\launcher.py
 Все проверки одной командой:
 
 ```sh
-python tests/run_checks.py            # гигиена git, compileall, pyflakes, node --check, pytest, e2e
+python tests/run_checks.py            # гигиена git, compileall, pyflakes, node --check, node --test, pytest, e2e
 python tests/run_checks.py --no-e2e   # без браузерного теста
+```
+
+Только unit-тесты фронтенда (модель очереди, форматирование, граф ES-модулей; без браузера и зависимостей):
+
+```sh
+node --test "tests/js/*.test.mjs"     # в Node 21+ каталог (node --test tests/js) аргументом не принимается
 ```
 
 Только unit- и API-тесты (pytest, без сети, на временном профиле):

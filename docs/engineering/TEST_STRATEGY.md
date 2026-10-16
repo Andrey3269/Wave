@@ -121,6 +121,17 @@
 
 **Правило монотонности.** Число проверок e2e не уменьшается. Изменение проверки допускается только вместе с изменением поведения, которое она проверяет, в том же коммите и с пояснением.
 
+### Состояние после S9 (2026-10-14, повторно 2026-10-16; ветка `claude/s9-app-js-modules`, подробности — [reports/S9.md](reports/S9.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 1251 passed + 9 skipped + 1 xfail (было 1235 + 9 + 1; новые — `test_frontend_static.py`, `test_run_checks_jstest.py`) | Linux, Python 3.13; CI `ubuntu-latest` (1258) и `windows-latest` (1260, 0 skipped) |
+| `node --test "tests/js/*.test.mjs"` | **PASS**: 37 тестов — `queue` 15 (из них M11 — 4), `format` 9, `api` 6, `emitter` 2, `modules` 5 | Linux Node 22; CI Linux и Windows Node 22 |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 152 + 27 (было 144 + 27; +1 «пропуск при смене списка», +7 M11 — оба раздела падают на коде до исправления; прежние проверки не менялись) | Linux Chromium 141; CI Linux и Windows Chromium; e2e против установленного `Wave.exe` — 152 |
+| `python tests/run_checks.py` | **PASS** 8/8 (новый шаг `jstest`) перед каждым из 15 коммитов и на HEAD | Linux; CI Linux и Windows |
+| `tests/ui_snapshots.py` (19 экранов × 980/1366/1440/1920) | **PASS**: 76 из 76 совпадают с допуском 20/255; без допуска различия — сглаживание на краю аватара и текста, такой же шум между двумя снятиями одного коммита | Linux Chromium 141 headless |
+| Окно WebView2, ручной чек-лист [checklists/S9_WINDOWS_CHECK.md](checklists/S9_WINDOWS_CHECK.md) | **NOT RUN** | — |
+
 ## 3. Изоляция данных (обязательно с этапа S0)
 
 Тесты никогда не трогают `%LOCALAPPDATA%\Wave`, `~/.local/share/wave`, `~/Downloads/Wave`.
@@ -161,7 +172,7 @@
 | Unit backend | `pytest` 9.1.1 | любая ОС | `pytest` (dev, S1) |
 | API | `fastapi.testclient.TestClient` | любая ОС | нет (использует `httpx`) |
 | Интеграция стрима | `TestClient` + `httpx.MockTransport` вместо CDN; резолвер yt-dlp подменяется фикстурой | любая ОС | нет |
-| Unit frontend | `node --test` для `player/queue.js` и `core/*` | любая ОС | нет |
+| Unit frontend | `node --test "tests/js/*.test.mjs"` для `player/queue.js`, `core/*` и графа модулей (S9); в `run_checks.py` — шаг `jstest`. В Node 21+ `node --test tests/js` не работает: каталог аргументом не принимается | любая ОС | нет |
 | e2e | Playwright + Chromium (`tests/e2e_smoke.py`) | Linux/Windows | `playwright` (dev) |
 | e2e в WebView2 | ручной чек-лист (раздел 8); позже автоматизация через CDP WebView2 | только Windows | — |
 | Сборка | `build_windows.bat`, `Wave.exe --diagnostics` | только Windows | PyInstaller, Inno Setup |
@@ -271,7 +282,7 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | Backend и API | + тесты затронутого модуля; совместимость ответа (старые поля на месте) |
 | SQLite | + `test_db_migrations` на фикстурах старых схем; изолированный профиль |
 | Стрим и плеер | + `test_ranges`, `test_stream_proxy`, `test_stream_local`; e2e: seek, pause/resume, переключение треков, ошибки, локальные файлы |
-| Фронтенд | + `node --test tests/js`; e2e 109+; скриншоты 980/1366/1440/1920; клавиатура и фокус; нет горизонтального переполнения |
+| Фронтенд | + `node --test "tests/js/*.test.mjs"`; e2e 109+; скриншоты 980/1366/1440/1920; клавиатура и фокус; нет горизонтального переполнения |
 | Провайдеры | + `test_search_isolation`; live-канарейка вручную при изменении yt-dlp или ytmusicapi |
 | Сборка | + Windows-чек-лист (раздел 8) |
 
@@ -346,7 +357,7 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 - `checks (ubuntu-latest)` и `checks (windows-latest)`: Python 3.12, установка с `constraints.txt`, Playwright Chromium, затем `python tests/run_checks.py` — hygiene, compileall, pyflakes, `node --check`, pytest, e2e через раннер, проверка неизменности рабочего каталога. Шаг успешен только при коде 0, то есть все шаги PASS (BLOCKED даёт код 3).
 - `windows-build`: команды `build_windows.bat` без шага установщика — `svg_to_ico.py`, `PyInstaller packaging/wave.spec`; проверка, что в `dist\Wave` есть `Wave.exe` и `frontend\index.html`, а баз, журналов, `.env`, cookies и медиа нет. Это проверка spec, а не запуск приложения.
 - S3: в `checks` перед тестами шаг `fetch_runtime.py` скачивает закреплённый Deno (Linux или Windows) со сверкой SHA-256 для `test_jsruntime_real.py`; итог pytest со списком пропущенных тестов и упавшие проверки выводятся аннотациями (`tests/ci_annotate.py`) — они доступны через API check-runs, даже когда полный журнал запуска недоступен. В `windows-build` — загрузка Deno, проверка состава папки (хэш `deno.exe` = `deno.lock`, лицензии, скрипты yt-dlp-ejs, нет `mutagen`), размеры аннотацией, `Wave.exe --diagnostics` в нескольких сценариях (§8) с таймаутами и сбором улик при зависании.
-- Не входят в CI: окно WebView2, воспроизведение в собранном приложении, Inno Setup (S4), live-тесты, ручной Windows-чек-лист §8. `node --test` появится вместе с JS-модулями (S9).
+- Не входят в CI: окно WebView2, воспроизведение в собранном приложении, Inno Setup (S4), live-тесты, ручной Windows-чек-лист §8. С S9 в `checks` входит шаг `jstest` (`node --test` по `tests/js/*.test.mjs`, Node 22 через `actions/setup-node`), а `windows-build` сверяет, что каждый файл `frontend\js` попал в `dist` побайтно и старого `app.js` нет.
 - Первый запуск: https://github.com/Andrey3269/Wave/actions/runs/38310405338 — все три job'а зелёные.
 
 ## 10. Формат отчёта по этапу
