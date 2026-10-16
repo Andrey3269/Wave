@@ -495,6 +495,56 @@ def audio_state(page) -> dict:
     return page.evaluate("(() => { const a = document.querySelector('#audio'); return {paused: a.paused, t: a.currentTime, vol: a.volume, muted: a.muted, src: a.src} })()")
 
 
+# Рамка фокуса (S12): у элемента в фокусе есть рамка не тоньше 2px, она не обрезана ни одним предком с overflow, сам
+# элемент виден и ничем не перекрыт (например, закреплённой верхней панелью). У кнопки трека рамка — на ::after (вся
+# строка), у текста песни на странице трека — у панели; поле поиска выделяется рамкой всей строки поиска (.search).
+FOCUS_RING = """() => {
+  const a = document.activeElement;
+  const who = (n) => n === document.body ? "body" : `${n.tagName.toLowerCase()}${n.id ? "#" + n.id : ""}${n.classList.length ? "." + [...n.classList].join(".") : ""}${n.dataset.do ? "[do=" + n.dataset.do + "]" : ""}`;
+  if (!a || a === document.body) return { ok: false, why: "фокус на body", who: "body" };
+  if (a.id === "search-input") { const f = getComputedStyle(a.closest(".search")); return { ok: f.borderTopColor !== getComputedStyle(document.querySelector(".seg")).borderTopColor, why: "рамка поля поиска не выделена", who: who(a) }; }
+  let box = a, cs = getComputedStyle(a);
+  if (a.classList.contains("track__play")) { box = a.closest(".track"); cs = getComputedStyle(a, "::after"); }
+  if (a.id === "np-lyrics") { box = a.parentElement; cs = getComputedStyle(box); }
+  if (cs.outlineStyle === "none" || parseFloat(cs.outlineWidth) < 2) return { ok: false, why: "нет рамки", who: who(a) };
+  if (!a.checkVisibility()) return { ok: false, why: "элемент не виден", who: who(a) };
+  const r = box.getBoundingClientRect(), g = parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth);
+  const ring = { l: r.left - g, t: r.top - g, r: r.right + g, b: r.bottom + g };
+  for (let p = box.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+    const s = getComputedStyle(p);
+    if (s.overflowX === "visible" && s.overflowY === "visible") continue;
+    const pr = p.getBoundingClientRect();
+    const c = { l: pr.left + parseFloat(s.borderLeftWidth), t: pr.top + parseFloat(s.borderTopWidth),
+      r: pr.right - parseFloat(s.borderRightWidth), b: pr.bottom - parseFloat(s.borderBottomWidth) };
+    const out = [];
+    if (s.overflowX !== "visible" && ring.l < c.l - 0.5) out.push("слева");
+    if (s.overflowX !== "visible" && ring.r > c.r + 0.5) out.push("справа");
+    if (s.overflowY !== "visible" && ring.t < c.t - 0.5) out.push("сверху");
+    if (s.overflowY !== "visible" && ring.b > c.b + 0.5) out.push("снизу");
+    if (out.length) return { ok: false, why: `рамка обрезана ${out.join(",")} (${who(p)})`, who: who(a) };
+  }
+  const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2, hit = document.elementFromPoint(cx, cy);
+  if (!hit || !(box.contains(hit) || hit.contains(box))) return { ok: false, why: `перекрыт (${hit ? who(hit) : "вне окна"})`, who: who(a) };
+  return { ok: true, who: who(a) };
+}"""
+
+
+def tab_walk(pg, steps: int, key: str = "Tab") -> tuple[list[str], int]:
+    """Нажимает Tab (или Shift+Tab) steps раз; возвращает проблемы с рамкой фокуса и число разных элементов."""
+    bad, seen = [], set()
+    for _ in range(steps):
+        pg.keyboard.press(key)
+        if pg.evaluate("!!document.activeElement.closest('.scroller')"):
+            pg.wait_for_timeout(350)                                  # прокрутка ряда к карточке (scroll-snap)
+        r = pg.evaluate(FOCUS_RING)
+        if r["who"] == "body":                                       # конец документа: фокус уходит в окно браузера
+            continue
+        seen.add(r["who"])
+        if not r["ok"] and f"{r['why']} :: {r['who']}" not in bad:
+            bad.append(f"{r['why']} :: {r['who']}")
+    return bad, len(seen)
+
+
 def main() -> int:
     ensure_test_profile(BASE)
     print(f"Скриншоты: {SHOTS}")
@@ -1538,6 +1588,9 @@ def main() -> int:
         def ax_search(q: str = "gspd", n: int = 20) -> None:
             ax.fill("#search-input", q)
             ax.keyboard.press("Enter")
+            ax.wait_for_selector("#tabs:not([hidden])")
+            if ax.get_attribute("#tabs [data-tab=tracks]", "aria-selected") != "true":   # вкладка «Артисты» с прошлого шага
+                ax.click("#tabs [data-tab=tracks]")
             ax.wait_for_function(rows_ready, arg=n)
 
         def ax_playing(tid: str) -> bool:
@@ -1950,6 +2003,193 @@ def main() -> int:
         check(f["cls"] == "track__play" and f["row"] == 21, f"страниц больше нет: кнопка скрылась, фокус — на первой подгруженной строке ({f})")
         ax.remove_listener("request", on_more)
         MORE["mode"] = "fail"
+
+        print("Доступность (S12): вкладки и источник с клавиатуры")
+        ax_search()
+        tabs_state = "[...document.querySelectorAll('#tabs .tab')].map(b => [b.dataset.tab, b.getAttribute('aria-selected'), b.tabIndex])"
+        check(ax.evaluate(tabs_state) == [["tracks", "true", 0], ["artists", "false", -1], ["albums", "false", -1]]
+              and ax.get_attribute("#results", "role") == "tabpanel" and ax.get_attribute("#results", "aria-labelledby") == "tab-tracks",
+              "вкладки: в порядке Tab только выбранная, результаты — панель выбранной вкладки")
+        ax.focus("#search-input")
+        for _ in range(4):
+            ax.keyboard.press("Tab")
+            if ax.evaluate("document.activeElement.classList.contains('tab')"):
+                break
+        on_tab = ax.evaluate("document.activeElement.dataset.tab || ''")
+        moves = []
+        for key in ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowLeft", "End", "Home"]:
+            ax.keyboard.press(key)
+            moves.append(ax.evaluate("document.activeElement.dataset.tab"))
+        check(on_tab == "tracks" and moves == ["artists", "albums", "tracks", "albums", "albums", "tracks"]
+              and ax.evaluate(tabs_state)[0][1] == "true",
+              f"Tab приходит на выбранную вкладку; стрелки (по кругу), Home и End двигают фокус, не меняя выбор ({moves})")
+        ax.keyboard.press("ArrowRight")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#cards .card--artist")
+        check(ax.evaluate(tabs_state)[1] == ["artists", "true", 0] and ax.get_attribute("#results", "aria-labelledby") == "tab-artists"
+              and ax.evaluate("document.activeElement.dataset.tab") == "artists",
+              "Enter выбирает вкладку «Артисты»: карточки, aria-selected, панель подписана вкладкой, фокус на ней")
+        ax.keyboard.press("ArrowLeft")
+        ax.keyboard.press("Space")
+        ax.wait_for_function(rows_ready, arg=20)
+        check(ax.evaluate(tabs_state)[0] == ["tracks", "true", 0], "пробел выбирает вкладку «Треки»")
+        src_state = "[...document.querySelectorAll('#source-switch .seg__btn')].map(b => [b.dataset.source, b.getAttribute('aria-selected'), b.tabIndex])"
+        ax.focus("#source-switch [data-source=yt]")
+        ax.keyboard.press("ArrowRight")
+        ax.keyboard.press("Enter")
+        ax.wait_for_function("document.querySelector('#tracks .row:not(.row--skel)') && document.querySelector('#tracks .row').dataset.key.startsWith('sc:')")
+        sc_ok = ax.evaluate(src_state) == [["yt", "false", -1], ["sc", "true", 0]]
+        ax.keyboard.press("ArrowLeft")
+        ax.keyboard.press("Enter")
+        ax.wait_for_function("document.querySelector('#tracks .row:not(.row--skel)') && document.querySelector('#tracks .row').dataset.key.startsWith('yt:')")
+        check(sc_ok and ax.evaluate(src_state) == [["yt", "true", 0], ["sc", "false", -1]],
+              "источник: стрелки и Enter переключают YouTube ↔ SoundCloud, поиск перезапускается, в Tab — только выбранный")
+        ax.set_viewport_size({"width": 1440, "height": 900})
+
+        print("Доступность (S12): рамка фокуса видна и не обрезана (обход Tab)")
+
+        def walk_check(label: str, steps: int, key: str = "Tab", start: str | None = None, kinds: int = 3) -> None:
+            if start:
+                ax.focus(start)
+            bad, n = tab_walk(ax, steps, key)
+            check(not bad and n >= kinds, f"{label}: {n} видов элементов, рамка фокуса видна и не обрезана {bad}")
+
+        for (w, h) in [(1440, 900), (980, 640)]:
+            ax.set_viewport_size({"width": w, "height": h})
+            ax.click(".nav__item[data-view=home]")
+            ax.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+            ax.wait_for_timeout(400)
+            walk_check(f"{w}px главная (боковая панель, баннер, ряды карточек)", 90, start=".brand")
+            ax_search()
+            walk_check(f"{w}px поиск: вкладки, строки, ссылки исполнителей", 60, start="#search-input")
+            walk_check(f"{w}px поиск: обратный обход Shift+Tab (верхняя панель не перекрывает фокус)", 50, "Shift+Tab")
+            ax.click("#tabs [data-tab=artists]")
+            ax.wait_for_selector("#cards .card--artist")
+            ax.locator("#cards .card--artist").first.click()
+            ax.wait_for_selector("#albums-row .card")
+            walk_check(f"{w}px страница артиста: альбомы, похожие, треки", 50, start="#back")
+            ax.click("#player-open")
+            ax.wait_for_selector("#similar-row .tcard:not(.tcard--skel)")
+            walk_check(f"{w}px страница трека: управление, тексты, похожие", 60, start="#view-now [data-do=back]")
+            ax.click("[data-do=queue].rbtn")
+            ax.wait_for_selector("#queue:not([hidden]) .q")
+            walk_check(f"{w}px панель очереди", 16, start="#queue-clear")
+            ax.click("#queue-close")
+            ax.click("[data-do=expand]")
+            ax.wait_for_selector("#fs:not([hidden])")
+            walk_check(f"{w}px полноэкранный плеер", 16)
+            ax.click("#fs-queue-btn")
+            ax.wait_for_selector("#fs-q-list .fq__row")
+            walk_check(f"{w}px полноэкранная очередь", 24, kinds=2)            # строки: кнопка трека и «⋯»
+            ax.keyboard.press("Escape")
+            ax.keyboard.press("Escape")
+            ax.wait_for_selector("#fs", state="hidden")
+            ax.click(".nav__item[data-view=settings]")
+            ax.wait_for_selector("#view-settings:not([hidden])")
+            walk_check(f"{w}px настройки", 16, start="#search-input")
+            ax.click(".nav__item[data-view=collection]")
+            ax.wait_for_selector("#col-tiles .tile")
+            walk_check(f"{w}px коллекция", 16, start="#search-input")
+        ax.set_viewport_size({"width": 900, "height": 640})            # компактная боковая панель (окно уже 960px)
+        ax.click(".nav__item[data-view=home]")
+        ax.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        compact = ax.evaluate("getComputedStyle(document.querySelector('.nav__label')).display") == "none"
+        walk_check(f"900px компактная боковая панель ({'свёрнута' if compact else 'НЕ свёрнута'})", 18, start=".brand")
+        ax.set_viewport_size({"width": 1440, "height": 900})
+        ax_search()
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        menu_bad = []
+        for _ in range(8):
+            r = ax.evaluate(FOCUS_RING)
+            if not r["ok"]:
+                menu_bad.append(f"{r['why']} :: {r['who']}")
+            ax.keyboard.press("ArrowDown")
+        ax.keyboard.press("Escape")
+        check(not menu_bad, f"меню трека: рамка фокуса каждого пункта видна {menu_bad}")
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        menu_to(ax, "playlist")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#dlg-pick[open] .pick__item")
+        dlg_bad, dlg_out = [], []
+        for _ in range(4):
+            r = ax.evaluate(FOCUS_RING)
+            if r["who"] != "body":                                   # после последней кнопки — окно браузера
+                if not ax.evaluate("!!document.activeElement.closest('#dlg-pick')"):
+                    dlg_out.append(r["who"])
+                if not r["ok"]:
+                    dlg_bad.append(f"{r['why']} :: {r['who']}")
+            ax.keyboard.press("Tab")
+        ax.keyboard.press("Escape")
+        check(not dlg_bad and not dlg_out, f"диалог выбора плейлиста: фокус не выходит в приложение, рамка видна {dlg_bad} {dlg_out}")
+        ax.evaluate("document.documentElement.dataset.theme = 'light'")
+        ax.click(".nav__item[data-view=home]")
+        ax.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        walk_check("светлая тема: главная", 40, start=".brand")
+        ax_search()
+        walk_check("светлая тема: поиск", 30, start="#search-input")
+        ax.evaluate("document.documentElement.dataset.theme = 'dark'")
+        check(ax.locator("[tabindex]:not([tabindex='-1']):not([tabindex='0'])").count() == 0, "положительных tabindex нет: порядок обхода — порядок разметки")
+
+        print("Доступность (S12): основной сценарий только с клавиатуры")
+        kb = ctx.new_page()
+        kb.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        kb.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        ax.close()
+        clear_playback()
+        kb.goto(BASE)
+        kb.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+
+        def tab_to(js_pred: str, key: str = "Tab", limit: int = 200) -> bool:
+            for _ in range(limit):
+                kb.keyboard.press(key)
+                if kb.evaluate(js_pred):
+                    return True
+            return False
+
+        kb.keyboard.press("/")
+        kb.keyboard.type("gspd")
+        kb.keyboard.press("Enter")
+        kb.wait_for_function(rows_ready, arg=20)
+        reached = tab_to("document.activeElement.matches('#tracks .row:nth-child(1) .track__play')")
+        kb.keyboard.press("Enter")
+        try:
+            kb.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/trk00000040') && !a.paused })()", timeout=10000)
+            played = True
+        except Exception:
+            played = False
+        check(reached and played, "клавиатура: «/», запрос, Enter, Tab до трека, Enter — трек играет")
+        kb.keyboard.press("Tab")
+        kb.keyboard.press("Enter")                                   # исполнитель первого трека
+        kb.wait_for_function("document.querySelector('#d-kind').textContent === 'Артист'")
+        on_title = kb.evaluate("document.activeElement.id")
+        kb.keyboard.press("Shift+Tab")
+        back_ok = kb.evaluate("document.activeElement.id") == "back"
+        kb.keyboard.press("Enter")
+        kb.wait_for_function(rows_ready, arg=20)
+        check(on_title == "d-title" and back_ok and kb.evaluate("document.activeElement.id") == "results-title",
+              "клавиатура: исполнитель → фокус на заголовке, Shift+Tab — «Назад», Enter — снова результаты, фокус на их заголовке")
+        kb.keyboard.press("Space")
+        kb.wait_for_function("document.querySelector('#audio').paused")
+        kb.keyboard.press("Space")
+        kb.wait_for_function("!document.querySelector('#audio').paused")
+        check(True, "клавиатура: пробел вне кнопок — пауза и продолжение")
+        reached = tab_to("document.activeElement.id === 'player-open'")
+        kb.keyboard.press("Enter")
+        kb.wait_for_selector("#view-now:not([hidden])")
+        reached = reached and tab_to("document.activeElement.dataset.do === 'expand'", "Shift+Tab", 30)
+        kb.keyboard.press("Enter")
+        kb.wait_for_selector("#fs:not([hidden])")
+        kb.keyboard.press("Escape")
+        kb.wait_for_selector("#fs", state="hidden")
+        check(reached and kb.evaluate("document.activeElement.dataset.do") == "expand" and kb.get_attribute("body", "data-view") == "now",
+              "клавиатура: мини-плеер → страница трека → полноэкранный режим → Esc, фокус вернулся")
+        reached = tab_to("document.activeElement.matches('.nav__item[data-view=liked]')", "Shift+Tab")
+        kb.keyboard.press("Enter")
+        kb.wait_for_function("document.body.dataset.view === 'liked'")
+        check(reached and kb.evaluate("document.activeElement.dataset.view") == "liked", "клавиатура: боковое меню — «Нравится»")
+        kb.close()
 
         browser.close()
 

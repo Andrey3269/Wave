@@ -135,7 +135,7 @@
       </form>
       <div class="seg" id="source-switch" role="tablist" aria-label="Источник музыки">
         <button class="seg__btn" type="button" role="tab" data-source="yt" aria-selected="true">YouTube</button>
-        <button class="seg__btn" type="button" role="tab" data-source="sc" aria-selected="false">SoundCloud</button>
+        <button class="seg__btn" type="button" role="tab" data-source="sc" aria-selected="false" tabindex="-1">SoundCloud</button>
       </div>
       <!-- Нет соединения (S10): сообщение вместо перехода на «Скачанные»; переход — только по кнопке -->
       <div class="offline" id="offline" role="status" hidden>
@@ -234,9 +234,9 @@
         </section>
 
         <div class="tabs" id="tabs" role="tablist" aria-label="Что искать" hidden>
-          <button class="tab" type="button" role="tab" data-tab="tracks" aria-selected="true">Треки</button>
-          <button class="tab" type="button" role="tab" data-tab="artists" aria-selected="false">Артисты</button>
-          <button class="tab" type="button" role="tab" data-tab="albums" aria-selected="false">Альбомы</button>
+          <button class="tab" id="tab-tracks" type="button" role="tab" data-tab="tracks" aria-selected="true" aria-controls="results">Треки</button>
+          <button class="tab" id="tab-artists" type="button" role="tab" data-tab="artists" aria-selected="false" aria-controls="results" tabindex="-1">Артисты</button>
+          <button class="tab" id="tab-albums" type="button" role="tab" data-tab="albums" aria-selected="false" aria-controls="results" tabindex="-1">Альбомы</button>
         </div>
 
         <section class="sec sec--tight" id="albums-sec" hidden>

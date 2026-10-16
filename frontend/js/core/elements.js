@@ -16,7 +16,7 @@ export const el = {
   dTitle: $("#d-title"), dSub: $("#d-sub"), dPlay: $("#d-play"), dShuffle: $("#d-shuffle"),
   dRename: $("#d-rename"), dDelete: $("#d-delete"),
   tabs: $("#tabs"), albumsSec: $("#albums-sec"), albumsRow: $("#albums-row"), relatedSec: $("#related-sec"), relatedRow: $("#related-row"),
-  resultsTitle: $("#results-title"), status: $("#status"), sort: $("#sort"), clearHistory: $("#clear-history"),
+  results: $("#results"), resultsTitle: $("#results-title"), status: $("#status"), sort: $("#sort"), clearHistory: $("#clear-history"),
   cards: $("#cards"), empty: $("#empty"), tracks: $("#tracks"), tpl: $("#track-template"), more: $("#more"),
   // коллекция
   colTiles: $("#col-tiles"), colPlaylists: $("#col-playlists"), colArtists: $("#col-artists"), colArtistsSec: $("#col-artists-sec"),

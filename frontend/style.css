@@ -86,6 +86,14 @@ h1, h2, h3, p { margin: 0; }
 ol, ul { margin: 0; padding: 0; list-style: none; }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* S12: внутри прокручиваемых и обрезающих областей рамка фокуса рисуется внутрь элемента — иначе overflow контейнера
+   срезает её (ряды карточек, карточка микса, боковая панель в компактном режиме, очередь, тексты песен, выбор плейлиста) */
+.scroller :focus-visible, .mixcard :focus-visible, .side__scroll .nav__item:focus-visible, .side__scroll .mix:focus-visible,
+.queue__list :focus-visible, .fq__scroll :focus-visible, .pick :focus-visible, .lyrics:focus-visible { outline-offset: -2px; }
+/* Текст песни на странице трека прокручивается и потому фокусируется (Chromium): рамка — у всей панели, а не у
+   прокручиваемого блока, который на узком окне выше панели и срезался бы её overflow */
+#np-lyrics:focus-visible { outline: none; }
+.now__lyrics:has(#np-lyrics:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 .icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
@@ -113,7 +121,9 @@ ol, ul { margin: 0; padding: 0; list-style: none; }
 
 /* ---------- 3. Каркас ---------- */
 .side { grid-area: side; }
-.main { grid-area: main; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+/* scroll-padding (S12): элемент, к которому прокрутил фокус, не уходит под закреплённую верхнюю панель (72px) и не
+   прижимается к нижнему краю, где срезалась бы его рамка фокуса */
+.main { grid-area: main; overflow-y: auto; scroll-padding: 88px 0 40px; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 .player { grid-area: player; }
 .content { max-width: 1400px; padding: 24px 32px 48px; }
 .view[hidden] { display: none !important; }

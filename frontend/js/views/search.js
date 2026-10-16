@@ -1,5 +1,7 @@
 // Поиск: треки, артисты, альбомы выбранного источника; переход к артисту по имени.
+import { $$ } from "../core/dom.js";
 import { el } from "../core/elements.js";
+import { navTarget } from "../core/keynav.js";
 import { state, nav } from "../state/store.js";
 import { setBlock } from "../components/skeleton.js";
 import { layout, syncTabs } from "./shell.js";
@@ -53,7 +55,22 @@ export function initSearchForm() {
     search(el.input.value);
   });
 }
+/**
+ * S12, модель WAI-ARIA «tabs» с ручной активацией (смена вкладки запускает запрос к источнику): стрелки влево/вправо
+ * и Home/End переводят фокус между вкладками, Enter и пробел выбирают (обычный click кнопки).
+ */
+function tabKeys(list, selector) {
+  list.addEventListener("keydown", (e) => {
+    const tabs = $$(selector, list);
+    const to = navTarget(tabs.map(() => true), tabs.indexOf(document.activeElement), e.key, "horizontal");
+    if (to < 0) return;
+    e.preventDefault();
+    tabs[to].focus();
+  });
+}
 export function initSearchTabs() {
+  tabKeys(el.tabs, ".tab");
+  tabKeys(el.sourceSwitch, ".seg__btn");
   el.tabs.addEventListener("click", (e) => {
     const btn = e.target.closest(".tab");
     if (!btn || btn.dataset.tab === state.tab) return;

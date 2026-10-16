@@ -131,4 +131,26 @@ export function initRowScroll() {
     const row = document.getElementById(id);
     if (row) row.scrollBy({ left: Number(dir) * row.clientWidth * 0.85, behavior: "smooth" });
   });
+  // S12: карточка, на которую фокус пришёл с клавиатуры, видна в ряду целиком. Chromium при обходе Tab не прокручивает
+  // частично видимый элемент — часть карточки и её рамка фокуса оставались за краем ряда. Прокручиваем до точки привязки
+  // (начало карточки, scroll-snap-align: start), иначе scroll-snap вернул бы ряд обратно.
+  document.addEventListener("focusin", (e) => {
+    const t = e.target;
+    const row = t.closest?.(".scroller");
+    if (!row || !t.matches(":focus-visible")) return;
+    const cards = [...row.children], card = cards.find((c) => c.contains(t));
+    if (!card) return;
+    const q = row.getBoundingClientRect(), r = card.getBoundingClientRect();
+    const right = r.right > q.right + 0.5, left = r.left < q.left - 0.5;
+    if (!right && !left) return;
+    const x = (c) => c.getBoundingClientRect().left - q.left + row.scrollLeft;     // начало карточки в координатах ряда
+    const max = row.scrollWidth - row.clientWidth;
+    let to;
+    if (left) to = x(card);
+    else {
+      const need = row.scrollLeft + (r.right - q.right);                         // меньше нельзя: карточка не влезет
+      to = cards.map(x).find((s) => s >= need - 0.5) ?? max;
+    }
+    row.scrollTo({ left: Math.min(Math.max(0, to), max) });
+  });
 }

@@ -15,6 +15,9 @@ export function layout() {
   Object.entries(views).forEach(([k, n]) => { n.hidden = k !== sec; });
   el.detail.hidden = !DETAIL_VIEWS.includes(v);
   el.tabs.hidden = !(v === "search" && state.query);
+  // S12: при вкладках поиска результаты — панель выбранной вкладки; на других экранах — обычная область с заголовком
+  if (el.tabs.hidden) { el.results.removeAttribute("role"); el.results.setAttribute("aria-labelledby", "results-title"); }
+  else { el.results.setAttribute("role", "tabpanel"); el.results.setAttribute("aria-labelledby", `tab-${state.tab}`); }
   el.dRename.hidden = el.dDelete.hidden = v !== "playlist";
   el.albumsSec.hidden = !(v === "artist" && state.albums.length);
   el.relatedSec.hidden = !(v === "artist" && state.related.length);
@@ -45,7 +48,10 @@ function viewHeading() {
 }
 setFocusFallback(viewHeading);
 
+/** Вкладки поиска и источник. S12: в порядке Tab только выбранная вкладка (tabindex 0), остальные — стрелками. */
 export function syncTabs() {
-  $$(".tab", el.tabs).forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));
-  $$(".seg__btn", el.sourceSwitch).forEach((b) => b.setAttribute("aria-selected", String(b.dataset.source === state.source)));
+  const mark = (b, on) => { b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1; };
+  $$(".tab", el.tabs).forEach((b) => mark(b, b.dataset.tab === state.tab));
+  $$(".seg__btn", el.sourceSwitch).forEach((b) => mark(b, b.dataset.source === state.source));
+  if (!el.tabs.hidden) el.results.setAttribute("aria-labelledby", `tab-${state.tab}`);
 }
