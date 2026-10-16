@@ -16,6 +16,20 @@ export function initEmptyRetry() {
   });
 }
 
+// ---------- «Загрузить ещё» (S12: #more и #home-more — настоящие <button>) ----------
+// Кнопка — и цель IntersectionObserver (подгрузка при прокрутке), и ручная подгрузка или повтор после ошибки.
+// idle — есть ещё; loading — запрос идёт: aria-busy и aria-disabled, а не disabled, чтобы фокус не пропадал (второго
+// запроса не будет: его не пустит loadMore); error — не удалось, нажатие повторяет; none — больше нечего, кнопки нет.
+const MORE_TEXT = { idle: "Загрузить ещё", error: "Не удалось загрузить. Нажми, чтобы повторить" };
+export function setMore(btn, mode, loadingText = "Загружаем…") {
+  const busy = mode === "loading";
+  btn.hidden = mode === "none";
+  btn.dataset.state = mode;
+  btn.textContent = busy ? loadingText : (MORE_TEXT[mode] || MORE_TEXT.idle);
+  if (busy) { btn.setAttribute("aria-busy", "true"); btn.setAttribute("aria-disabled", "true"); }
+  else { btn.removeAttribute("aria-busy"); btn.removeAttribute("aria-disabled"); }
+}
+
 // ---------- Скелетоны (состояние загрузки) ----------
 const skelRow = () => {
   const li = mk("li", "row row--skel");

@@ -7,7 +7,8 @@ import { state, queue, PAGE, nextSeq, isCards, sectionOf, DETAIL_VIEWS } from ".
 import { play, togglePlay, setShuffle, scheduleWarm, warmTrack } from "../player/controller.js";
 import { buildRow, markPlaying } from "../components/track-row.js";
 import { buildCard, cardKey } from "../components/cards.js";
-import { setBlock, skelRows, skelCards } from "../components/skeleton.js";
+import { setBlock, skelRows, skelCards, setMore } from "../components/skeleton.js";
+import { focusLost, focusSafely } from "../components/focus.js";
 import { openMenu } from "../components/menu.js";
 import { toggleFav } from "../components/favorites.js";
 
@@ -64,6 +65,7 @@ function appendTracks(raw) {
   if (fresh.length && queue.isFrom(state.list)) queue.extend();
   if (state.sort !== "default") { sortList(); renderList(); }
   else { fresh.forEach((t, i) => el.tracks.appendChild(buildRow(t, from + i))); updateSort(); }
+  return fresh[0] ? el.tracks.querySelector(`.row[data-key="${CSS.escape(trackKey(fresh[0]))}"] .track__play`) : null;
 }
 
 /** Карточки поиска (артисты, альбомы) и плейлистов в #cards. */
@@ -101,18 +103,21 @@ export async function fetchPage(append) {
   const q = state.query;
   const ctl = (state.searchCtl = new AbortController());
   state.loadingMore = append;
-  if (append) { el.more.hidden = false; el.more.textContent = "Загружаем…"; }
+  const moreFocused = append && document.activeElement === el.more;
+  if (append) setMore(el.more, "loading");
   try {
     const data = await getJSON(feedUrl(append ? state.offset : 0), ctl.signal);
     const got = data.items || data.tracks || [];
+    let firstNew = null;                                 // первая подгруженная строка или карточка
     if (isCards()) {
       const have = new Set(state.cards.map(cardKey));
       const fresh = append ? got.filter((c) => !have.has(cardKey(c))) : got;
       const from = append ? state.cards.length : 0;
       state.cards = append ? state.cards.concat(fresh) : fresh;
       renderCards(from, append);
+      if (fresh.length) firstNew = el.cards.children[from];
     } else if (append) {
-      appendTracks(got);
+      firstNew = appendTracks(got);
     } else {
       state.lastQuery = q;
       setTracks(got);
@@ -120,7 +125,9 @@ export async function fetchPage(append) {
     if (state.view === "search") el.resultsTitle.textContent = `Результаты: ${q}`;
     state.offset = (append ? state.offset : 0) + got.length;
     state.more = !!data.has_more && got.length > 0;
-    el.more.hidden = !state.more; el.more.textContent = "";
+    setMore(el.more, state.more ? "idle" : "none");
+    // Подгрузка кнопкой, а страниц больше нет: кнопка скрылась вместе с фокусом — переносим его на первую новую строку
+    if (moreFocused && focusLost()) focusSafely(firstNew);
 
     const n = isCards() ? state.cards.length : state.list.length;
     setBlock(el.empty, n ? "" : emptyText());
@@ -129,7 +136,7 @@ export async function fetchPage(append) {
     return isCards() ? state.cards : state.list;
   } catch (err) {
     if (err.name === "AbortError") return null;
-    if (append) { el.more.hidden = false; el.more.textContent = "Не удалось загрузить. Нажми, чтобы повторить"; }
+    if (append) setMore(el.more, "error");
     else {
       clearSkeleton();
       setStatus("");
@@ -145,7 +152,7 @@ export async function fetchPage(append) {
 export function resetList(extra) {
   state.searchCtl?.abort();
   Object.assign(state, { query: "", offset: 0, more: false, sort: "default", cards: [], albums: [], related: [] }, extra);
-  el.more.hidden = true;
+  setMore(el.more, "none");
 }
 
 // ---------- воспроизведение из списка ----------

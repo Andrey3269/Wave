@@ -164,6 +164,10 @@ HLS = {"released": [], "segments": 0}
 # Поиск «m11» (раздел M11): вторая страница отдаётся только после того, как тест её разрешит. До этого
 # запрос обрывается (как пропавшая сеть) — иначе автоподгрузка пришла бы раньше, чем тест проверит очередь.
 M11 = {"page2": False}
+# «Загрузить ещё» (S12). Поиск «more12»: вторая страница обрывается (fail), придерживается до more_release() (hold)
+# или отдаётся (ok). Лента главной: RECS["paged"] — следующие страницы отдают новые треки (а не радио последнего),
+# RECS["fail_more"] — следующие страницы отвечают 502.
+MORE = {"mode": "fail", "held": []}
 
 
 def sc_track(n: int) -> dict:
@@ -188,6 +192,17 @@ def dl_job(tid: str) -> dict:
     elif stage == "done":
         job.update(progress=100, received=1_000_000, total=1_000_000, finished_at=2.0)
     return job
+
+
+def more12_page(off: int) -> dict:
+    return {"query": "more12", "count": 20, "tracks": [track(500 + off + i) for i in range(20)], "failed_sources": [],
+            "has_more": off + 20 < 40}
+
+
+def more_release() -> None:
+    """Отвечает на придержанные запросы второй страницы «more12» (S12)."""
+    while MORE["held"]:
+        js(MORE["held"].pop(0), more12_page(20))
 
 
 def held_release() -> None:
@@ -285,12 +300,17 @@ def handle(route: Route) -> None:
         return route.fulfill(status=200, body=audio, headers={"Content-Type": "audio/wav", "Accept-Ranges": "bytes"})
 
     if path == "/api/recommendations":
-        if q.get("id"):                                               # «радио» трека
+        if q.get("id") and not (RECS.get("paged") or RECS.get("fail_more")):   # «радио» трека
             title = q.get("title", "")
             return js(route, {"tracks": [track(20 + i, f"Похоже на «{title}»") for i in range(14)], "personalized": False,
                               "radio": True, "page": 0, "failed_sources": [], "source_status": {"yt": "ok"}})
         page = int(q.get("page", 0))
         mode = RECS["mode"]
+        if page and RECS.get("fail_more"):
+            return route.fulfill(status=502, content_type="application/json", body=json.dumps({"detail": "Источник не ответил"}))
+        if page and RECS.get("paged"):
+            return js(route, {"tracks": [track(1 + page * 24 + i, "Подборка") for i in range(24)], "personalized": False, "radio": False,
+                              "page": page, "failed_sources": [], "source_status": {"yt": "ok"}})
         if mode == "failed":
             return js(route, {"tracks": [], "personalized": False, "radio": False, "page": page,
                               "failed_sources": ["yt"], "source_status": {"yt": "failed"}})
@@ -310,6 +330,14 @@ def handle(route: Route) -> None:
             return route.abort("failed")
         return js(route, {"query": "m11", "count": 20, "tracks": [track(100 + off + i) for i in range(20)] if off < 40 else [],
                           "failed_sources": [], "has_more": off + 20 < 40})
+    if path == "/api/search" and q.get("q") == "more12":              # «Загрузить ещё» (S12)
+        off = int(q.get("offset", 0))
+        if off and MORE["mode"] == "fail":
+            return route.abort("failed")
+        if off and MORE["mode"] == "hold":
+            MORE["held"].append(route)
+            return None
+        return js(route, more12_page(off))
     if path == "/api/search" and q.get("q") == "s10":                 # очередь из 10 треков (повтор и перемешивание, S10)
         return js(route, {"query": "s10", "count": 10, "tracks": [track(200 + i) for i in range(10)], "failed_sources": [],
                           "has_more": False})
@@ -1521,6 +1549,7 @@ def main() -> int:
                 return False
 
         print("Доступность (S12): поведение мышью сохраняется")
+        RECS["paged"] = True                                         # следующие страницы ленты — новые треки
         ax.wait_for_function("document.querySelectorAll('#new-grid .tcard').length >= 20")
         feed_n = ax.locator("#new-grid .tcard").count()
         ax.evaluate("document.querySelector('#main').scrollTo({top: 1e6})")
@@ -1530,6 +1559,43 @@ def main() -> int:
         except Exception:
             grown = False
         check(grown, "прокрутка до конца ленты главной подгружает следующую страницу (IntersectionObserver)")
+
+        print("Доступность (S12): «Загрузить ещё» на главной")
+        more_btn = """(s) => { const b = document.querySelector(s); return {tag: b.tagName, type: b.type, role: b.getAttribute('role'),
+            tabindex: b.getAttribute('tabindex'), disabled: b.disabled, ad: b.getAttribute('aria-disabled'), busy: b.getAttribute('aria-busy'),
+            state: b.dataset.state, text: b.textContent, hidden: b.hidden} }"""
+        to_bottom = "document.querySelector('#main').scrollTo({top: 1e6})"
+        RECS["fail_more"] = True
+        ax.evaluate(to_bottom)
+        ax.wait_for_function("document.querySelector('#home-more').dataset.state === 'error'")
+        hb = ax.evaluate(more_btn, "#home-more")
+        check(hb["tag"] == "BUTTON" and hb["type"] == "button" and hb["role"] is None and hb["tabindex"] is None
+              and not hb["disabled"] and hb["ad"] is None and hb["text"] == "Не удалось загрузить. Нажми, чтобы повторить"
+              and ax.get_by_role("button", name="Не удалось загрузить. Нажми, чтобы повторить").count() == 1,
+              f"#home-more — настоящая кнопка; ошибка подгрузки: текст на русском, кнопка доступна для повтора ({hb})")
+        RECS["fail_more"] = False
+        n = ax.locator("#new-grid .tcard").count()
+        ax.focus("#home-more")
+        ax.keyboard.press("Enter")
+        ax.wait_for_function("(n) => document.querySelectorAll('#new-grid .tcard').length >= n + 24", arg=n)
+        ax.wait_for_function("document.querySelector('#home-more').dataset.state === 'idle'")
+        hb = ax.evaluate(more_btn, "#home-more")
+        check(hb["text"] == "Загрузить ещё" and hb["busy"] is None and ax.evaluate("document.activeElement.id") == "home-more",
+              "Enter повторяет подгрузку ленты; после неё кнопка «Загрузить ещё», фокус на ней")
+        RECS["fail_more"] = True
+        ax.evaluate(to_bottom)
+        ax.wait_for_function("document.querySelector('#home-more').dataset.state === 'error'")
+        RECS["fail_more"] = False
+        n = ax.locator("#new-grid .tcard").count()
+        ax.focus("#home-more")
+        ax.keyboard.press("Space")
+        try:
+            ax.wait_for_function("(n) => document.querySelectorAll('#new-grid .tcard').length >= n + 24", arg=n, timeout=10000)
+            spaced = True
+        except Exception:
+            spaced = False
+        check(spaced, "пробел на «Загрузить ещё» тоже повторяет подгрузку ленты")
+        RECS.update(paged=False, fail_more=False)
         ax.evaluate("document.querySelector('#main').scrollTo({top: 0})")
         ax_search()
         before = audio_state(ax)
@@ -1844,6 +1910,46 @@ def main() -> int:
         ax.keyboard.press("Escape")
         check(opened and opened_hero and ax.evaluate(is_focused, hero_more),
               "меню карточки главной и баннера открываются с клавиатуры, Escape возвращает фокус")
+
+        print("Доступность (S12): «Загрузить ещё» в списке")
+        more_reqs: list[str] = []
+        on_more = lambda r: more_reqs.append(r.url) if "q=more12" in r.url and "offset=20" in r.url else None   # noqa: E731
+        ax.on("request", on_more)
+        MORE["mode"] = "fail"
+        ax_search("more12", 20)
+        ax.evaluate(to_bottom)
+        ax.wait_for_function("document.querySelector('#more').dataset.state === 'error'")
+        mb = ax.evaluate(more_btn, "#more")
+        check(mb["tag"] == "BUTTON" and mb["type"] == "button" and mb["role"] is None and mb["tabindex"] is None
+              and not mb["disabled"] and mb["text"] == "Не удалось загрузить. Нажми, чтобы повторить"
+              and ax.get_by_role("button", name="Не удалось загрузить. Нажми, чтобы повторить").count() == 1,
+              f"#more — настоящая кнопка с понятным именем; ошибка подгрузки: текст на русском, кнопка доступна для повтора ({mb})")
+        n = len(more_reqs)
+        ax.focus("#more")
+        ax.keyboard.press("Space")
+        for _ in range(50):                                          # запрос ушёл и снова оборвался
+            if len(more_reqs) > n and ax.evaluate("document.querySelector('#more').dataset.state") == "error":
+                break
+            ax.wait_for_timeout(100)
+        check(len(more_reqs) == n + 1 and ax.evaluate("document.activeElement.id") == "more",
+              f"пробел на «Загрузить ещё» повторяет запрос, фокус остаётся на кнопке ({len(more_reqs) - n})")
+        MORE["mode"] = "hold"
+        ax.keyboard.press("Enter")
+        ax.wait_for_function("document.querySelector('#more').dataset.state === 'loading'")
+        mb = ax.evaluate(more_btn, "#more")
+        ax.keyboard.press("Enter")
+        ax.click("#more", force=True)                                # aria-disabled: Playwright без force не нажимает
+        ax.wait_for_timeout(300)
+        check(mb["busy"] == "true" and mb["ad"] == "true" and not mb["disabled"] and mb["text"] == "Загружаем…"
+              and ax.evaluate("document.activeElement.id") == "more" and len(more_reqs) == n + 2,
+              f"запрос идёт: aria-busy, aria-disabled, «Загружаем…», фокус на кнопке; повторные Enter и клик второго запроса не шлют ({len(more_reqs) - n})")
+        more_release()
+        ax.wait_for_function(rows_ready, arg=40)
+        ax.wait_for_function("document.querySelector('#more').hidden")
+        f = ax.evaluate(active)
+        check(f["cls"] == "track__play" and f["row"] == 21, f"страниц больше нет: кнопка скрылась, фокус — на первой подгруженной строке ({f})")
+        ax.remove_listener("request", on_more)
+        MORE["mode"] = "fail"
 
         browser.close()
 

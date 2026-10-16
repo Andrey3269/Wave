@@ -5,7 +5,7 @@ import { el } from "../core/elements.js";
 import { state, nav } from "../state/store.js";
 import { loadMix } from "../state/mixes.js";
 import { renderRow, markMix } from "../components/cards.js";
-import { setBlock } from "../components/skeleton.js";
+import { setBlock, setMore } from "../components/skeleton.js";
 import { toast, hideToast } from "../components/toast.js";
 import { layout } from "./shell.js";
 import { resetList, setTracks, setStatus, showSkeleton, clearSkeleton, emptyText } from "./list.js";
@@ -39,7 +39,7 @@ export async function openArtist(source, id) {
     setTracks(d.tracks);
     state.offset = d.tracks.length;
     state.more = d.has_more && d.tracks.length > 0;
-    el.more.hidden = !state.more; el.more.textContent = "";
+    setMore(el.more, state.more ? "idle" : "none");
     setBlock(el.empty, d.tracks.length ? "" : emptyText());
     layout();
     el.main.scrollTo({ top: 0 });

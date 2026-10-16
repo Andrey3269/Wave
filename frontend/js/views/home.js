@@ -9,7 +9,8 @@ import { loadMix, buildMixes } from "../state/mixes.js";
 import { play, warmTrack, playerEvents } from "../player/controller.js";
 import { mixCard, miniCard, trackCard, markMix, bindTrackGrid } from "../components/cards.js";
 import { paintFav, markPlaying } from "../components/track-row.js";
-import { setBlock, skelCards } from "../components/skeleton.js";
+import { setBlock, skelCards, setMore } from "../components/skeleton.js";
+import { focusLost, focusSafely } from "../components/focus.js";
 import { toast, hideToast } from "../components/toast.js";
 import { layout } from "./shell.js";
 import { openMix } from "./detail.js";
@@ -25,7 +26,7 @@ export function goHome(refresh = true) {
   Object.assign(state, { view: "home", query: "", cards: [], albums: [], related: [], sort: "default" });
   state.list = [];
   el.tracks.replaceChildren(); el.cards.replaceChildren();
-  el.more.hidden = true;
+  setMore(el.more, "none");
   layout();
   if (refresh || !home.ready || Date.now() - home.at > HOME_TTL) { loadHome(); }
   else { renderHome(); refreshHistory().then(() => { if (state.view === "home") { renderContinue(); renderMixRow(); } }); }
@@ -98,7 +99,7 @@ function renderFeed() {
   if (home.loading && !items.length) {
     el.newGrid.replaceChildren(...skelCards(5));
     setBlock(el.homeEmpty, "");
-    el.homeMore.hidden = true;
+    setMore(el.homeMore, "none");
     return;
   }
   el.newGrid.replaceChildren(...items.map((t, i) => trackCard(t, i + 1)));
@@ -106,7 +107,7 @@ function renderFeed() {
   if (home.error) setBlock(el.homeEmpty, `Не удалось подобрать музыку. ${home.error}.`, () => loadHome());
   else if (home.partial && state.feed.length) setBlock(el.homeEmpty, `Подборка неполная: ${home.partial} ответил не на все запросы.`, () => loadHome());
   else setBlock(el.homeEmpty, state.feed.length ? "" : "Пока нечего предложить. Найди что-нибудь через поиск.");
-  el.homeMore.hidden = !state.more; el.homeMore.textContent = "";
+  setMore(el.homeMore, state.more ? "idle" : "none");
 }
 function appendFeedCards(from) {
   el.newGrid.append(...state.feed.slice(from).map((t, i) => trackCard(t, from + i)));
@@ -120,7 +121,9 @@ function appendFeedCards(from) {
 export async function loadMoreHome() {
   const my = home.seq;
   state.loadingMore = true;
-  el.homeMore.hidden = false; el.homeMore.textContent = "Подбираем ещё…";
+  const moreFocused = document.activeElement === el.homeMore;
+  setMore(el.homeMore, "loading", "Подбираем ещё…");
+  let firstNew = -1;                                     // индекс первой подгруженной карточки
   try {
     let added = false;
     for (let attempt = 0; attempt < 3 && !added; attempt++) {
@@ -136,16 +139,19 @@ export async function loadMoreHome() {
         const from = state.feed.length;
         state.feed.push(...fresh);
         appendFeedCards(from);
+        if (firstNew < 0) firstNew = from;
         added = true;
         if (queue.isFrom(state.feed)) queue.extend();     // очередь играет ленту: продолжается новыми треками
       }
     }
     state.more = added;
   } catch {
-    el.homeMore.textContent = "Не удалось загрузить. Нажми, чтобы повторить";
+    setMore(el.homeMore, "error");
     return;
   } finally { state.loadingMore = false; }
-  el.homeMore.hidden = !state.more; el.homeMore.textContent = "";
+  setMore(el.homeMore, state.more ? "idle" : "none");
+  // Подгрузка кнопкой, а ленте больше нечего добавить: кнопка скрылась вместе с фокусом — на первую новую карточку
+  if (moreFocused && focusLost() && firstNew >= 0) focusSafely(el.newGrid.querySelector(`.tcard[data-index="${firstNew}"] .tcard__open`));
 }
 
 /** Название ленты главной по тому, как она реально собрана (поля personalized и radio ответа). */

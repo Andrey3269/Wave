@@ -283,8 +283,11 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .row--skel { display: flex; align-items: center; gap: 16px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .card--skel { display: flex; flex-direction: column; gap: 8px; padding: 12px; pointer-events: none; }
 
-/* Подгрузка: невидимая зона, по достижении которой лента догружается */
-.more { display: grid; place-items: center; height: 56px; color: var(--muted); cursor: pointer; }
+/* «Загрузить ещё» (S12: настоящая кнопка). Она же — зона, по достижении которой лента догружается при прокрутке.
+   Высота блока прежняя: 40px + поля 8px (было 56px). */
+.more { display: block; width: fit-content; min-height: 40px; margin: 8px auto; padding: 0 20px; border-radius: 999px; color: var(--muted); font-weight: 600; transition: background-color .12s, color .12s; }
+.more:hover:not([aria-disabled="true"]) { color: var(--text); background: var(--surface); }
+.more[aria-busy="true"] { cursor: progress; }
 
 /* ---------- 7. Главная: лента рекомендаций ---------- */
 /* Баннер всегда тёмный (афиша), независимо от темы приложения */
