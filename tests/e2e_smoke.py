@@ -987,6 +987,11 @@ def main() -> int:
         page.wait_for_function(label_starts, arg=[row_dl(8), "Подготовка"])
         check(page.get_attribute(row_dl(8), "aria-disabled") == "true" and len(DL["posts"]) == posts + 1
               and len(DL["cancels"]) == cancels, "двойной клик «Скачать» до ответа backend: один запуск, без отмены")
+        page.click("#tracks .row:nth-child(8) .track__more")
+        check(page.inner_text("#menu [data-act=download]") == "Загрузка запускается…"
+              and page.get_attribute("#menu [data-act=download]", "aria-disabled") == "true",
+              "меню, пока запуск не подтверждён: «Загрузка запускается…», пункт неактивен")
+        page.keyboard.press("Escape")
         held_release()
         page.wait_for_function("(s) => (document.querySelector(s)?.getAttribute('aria-label') || '').includes('отменить')",
                                arg=row_dl(8))

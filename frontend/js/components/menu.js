@@ -37,13 +37,18 @@ export function openMenu(track, anchor, ctx = null) {
     const denied = !downloaded && state.dlDenied.has(trackKey(track));
     const job = state.jobs[trackKey(track)];
     const busy = !downloaded && job && BUSY.includes(job.state);      // S11: идущую или ждущую загрузку можно отменить
-    items.push(["download", downloaded ? "Удалить загрузку" : busy ? "Отменить загрузку" : denied ? "Скачивание недоступно" : "Скачать",
-      downloaded ? "i-trash" : busy ? "i-x" : "i-download"]);
+    if (!downloaded && state.dlStarting.has(trackKey(track))) {
+      items.push(["download", "Загрузка запускается…", "i-download", true]);   // отменять ещё нечего
+    } else {
+      items.push(["download", downloaded ? "Удалить загрузку" : busy ? "Отменить загрузку" : denied ? "Скачивание недоступно" : "Скачать",
+        downloaded ? "i-trash" : busy ? "i-x" : "i-download"]);
+    }
     items.push(["share", "Поделиться", "i-share"]);
   }
-  el.menu.replaceChildren(...items.map(([act, label, ico]) => {
+  el.menu.replaceChildren(...items.map(([act, label, ico, off]) => {
     const b = mk("button");
     b.type = "button"; b.setAttribute("role", "menuitem"); b.dataset.act = act;
+    if (off) b.setAttribute("aria-disabled", "true");
     b.append(icon(ico), mk("span", null, label));
     return b;
   }));
