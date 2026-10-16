@@ -5,6 +5,7 @@ import { clamp } from "../core/format.js";
 import { trackKey } from "../core/api.js";
 import { el } from "../core/elements.js";
 import { state, queue } from "../state/store.js";
+import { BUSY } from "./track-row.js";
 
 let menuTrack = null, menuCtx = null;
 
@@ -34,7 +35,10 @@ export function openMenu(track, anchor, ctx = null) {
     items.push(["artist", "Перейти к исполнителю", "i-user"]);
     if (track.album || track.album_id) items.push(["album", "Открыть альбом", "i-disc"]);
     const denied = !downloaded && state.dlDenied.has(trackKey(track));
-    items.push(["download", downloaded ? "Удалить загрузку" : denied ? "Скачивание недоступно" : "Скачать", downloaded ? "i-trash" : "i-download"]);
+    const job = state.jobs[trackKey(track)];
+    const busy = !downloaded && job && BUSY.includes(job.state);      // S11: идущую или ждущую загрузку можно отменить
+    items.push(["download", downloaded ? "Удалить загрузку" : busy ? "Отменить загрузку" : denied ? "Скачивание недоступно" : "Скачать",
+      downloaded ? "i-trash" : busy ? "i-x" : "i-download"]);
     items.push(["share", "Поделиться", "i-share"]);
   }
   el.menu.replaceChildren(...items.map(([act, label, ico]) => {

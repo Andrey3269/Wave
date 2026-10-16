@@ -144,7 +144,9 @@ JS_RUNTIME_DETAIL = "Компонент воспроизведения YouTube (
 # /api/downloads* отвечает этот скрипт: этапы задаёт тест (DL["stage"]), исходы — DL_OUTCOME. Вне раздела
 # запросы уходят в настоящий backend. Сама загрузка, какие треки скачиваются и воспроизведение с диска
 # проверяются API-тестами (tests/api/test_downloads.py, test_download_policy.py).
-DL = {"mock": False, "stage": {}, "posts": [], "done": {}}
+# S11: queued — id, для которых POST отвечает «в очереди»; cancels — запросы отмены; cancel_done — id, для которых отмена
+# опоздала (трек успел сохраниться, ответ done)
+DL = {"mock": False, "stage": {}, "posts": [], "done": {}, "queued": set(), "cancels": [], "cancel_done": set()}
 DL_OUTCOME = {"trk00000041": ("error", "unavailable", "Трек недоступен"),
               "trk00000042": ("error", "network", "Нет связи с YouTube Music. Проверьте подключение к интернету.")}
 
@@ -175,6 +177,8 @@ def dl_job(tid: str) -> dict:
         return {"state": "error", "progress": 0, "error": text, "code": code, "received": 0, "total": None,
                 "finished_at": 1.0}
     job = {"state": stage, "progress": 0, "error": None, "code": None, "received": 0, "total": None}
+    if stage == "cancelled":
+        job.update(code="cancelled", finished_at=3.0)
     if stage == "downloading":
         job.update(progress=40, received=400_000, total=1_000_000)
     elif stage == "processing":
@@ -193,8 +197,19 @@ def dl_mock(route: Route, path: str) -> bool:
             js(route, {"state": "done", "progress": 100})
             return True
         outcome = DL_OUTCOME.get(body["id"])
-        DL["stage"][body["id"]] = outcome if outcome else "preparing"
-        js(route, {"state": "preparing", "progress": 0, "error": None, "code": None}, 202)
+        first = "queued" if body["id"] in DL["queued"] else "preparing"
+        DL["stage"][body["id"]] = outcome if outcome else first
+        js(route, {"state": first, "progress": 0, "error": None, "code": None}, 202)
+        return True
+    m = re.match(r"^/api/downloads/jobs/yt/(\w+)$", path)
+    if m and req.method == "DELETE":                                   # S11: отмена
+        tid = m.group(1)
+        DL["cancels"].append(tid)
+        if tid not in DL["stage"]:
+            js(route, {"detail": "Этой загрузки уже нет."}, 404)
+            return True
+        DL["stage"][tid] = "done" if tid in DL["cancel_done"] else "cancelled"
+        js(route, dl_job(tid))
         return True
     if path == "/api/downloads/jobs":
         jobs = {f"yt:{tid}": dl_job(tid) for tid in DL["stage"]}
@@ -850,7 +865,10 @@ def main() -> int:
         ok_id = "trk00000040"
         page.click(row_dl(1))
         page.wait_for_function(label_starts, arg=[row_dl(1), "Подготовка"])
-        check(page.is_disabled(row_dl(1)) and DL["posts"] == [ok_id], "«Скачать»: запрос ушёл, этап «Подготовка», кнопка занята")
+        # S11: кнопка идущей загрузки не отключается — она отменяет загрузку (раньше: disabled, «кнопка занята»)
+        check(not page.is_disabled(row_dl(1)) and "Нажми, чтобы отменить загрузку" in page.get_attribute(row_dl(1), "aria-label")
+              and page.get_attribute(row_dl(1) + " use", "href") == "#i-x" and DL["posts"] == [ok_id],
+              "«Скачать»: запрос ушёл, этап «Подготовка», кнопка предлагает отмену и доступна")
         DL["stage"][ok_id] = "downloading"
         page.wait_for_function(label_starts, arg=[row_dl(1), "Скачивание: 40%"])
         check(page.inner_text(row_dl(1) + " .track__pct") == "40%", "этап «Скачивание» с реальным процентом от backend")
@@ -903,6 +921,65 @@ def main() -> int:
         page.click("#dc-ok")
         page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 1")
         check(ok_id not in DL["done"] and page.locator("#tracks .row").count() == 1, "удаление локальной копии с подтверждением")
+
+        print("Загрузки: очередь и отмена (S11)")
+        page.fill("#search-input", "gspd")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")
+        page.wait_for_selector("#tracks .row:not(.row--skel)")
+        q_id, late_id, wait_id, run_id = "trk00000043", "trk00000044", "trk00000045", "trk00000046"
+        DL["queued"].update({q_id, wait_id})
+        page.click(row_dl(4))
+        page.wait_for_function(label_starts, arg=[row_dl(4), "В очереди"])
+        page.wait_for_function(toast_has, arg="в очереди")
+        check(page.evaluate(has_class, [row_dl(4), "is-queued"]) and page.inner_text(row_dl(4) + " .track__pct") == ""
+              and not page.is_disabled(row_dl(4)) and "отменить" in page.get_attribute(row_dl(4), "aria-label"),
+              "лимит загрузок: «В очереди» без процента, отдельно от передачи данных; кнопка доступна для отмены")
+        DL["stage"][q_id] = "downloading"
+        page.wait_for_function(label_starts, arg=[row_dl(4), "Скачивание: 40%"])
+        check(not page.evaluate(has_class, [row_dl(4), "is-queued"]), "из очереди — в передачу данных с реальным процентом")
+        page.click("#tracks .row:nth-child(4) .track__more")
+        check(page.inner_text("#menu [data-act=download]") == "Отменить загрузку", "меню трека во время загрузки предлагает отмену")
+        page.keyboard.press("Escape")
+        page.focus(row_dl(4))
+        page.keyboard.press("Enter")
+        page.wait_for_function(toast_has, arg="отменена")
+        page.wait_for_function(label_starts, arg=[row_dl(4), "Скачать"])
+        check(DL["cancels"] == [q_id] and not page.is_disabled(row_dl(4))
+              and not page.evaluate(has_class, [row_dl(4), "is-busy"])
+              and page.evaluate("(s) => document.activeElement === document.querySelector(s)", row_dl(4)),
+              "отмена с клавиатуры: запрос отмены, сообщение, кнопка снова «Скачать», фокус на ней")
+        page.screenshot(path=str(SHOTS / "16e-download-cancelled.png"))
+        DL["queued"].discard(q_id)
+        posts = len(DL["posts"])
+        page.click(row_dl(4))
+        page.wait_for_function(label_starts, arg=[row_dl(4), "Подготовка"])
+        DL["stage"][q_id] = "done"
+        page.wait_for_function(has_class, arg=[row_dl(4), "is-done"])
+        check(len(DL["posts"]) == posts + 1, "после отмены тот же трек скачивается снова")
+
+        DL["cancel_done"].add(late_id)
+        page.click(row_dl(5))
+        page.wait_for_function(label_starts, arg=[row_dl(5), "Подготовка"])
+        page.click(row_dl(5))
+        page.wait_for_function(toast_has, arg="отменить не успели")
+        page.wait_for_function(has_class, arg=[row_dl(5), "is-done"])
+        check(DL["cancels"][-1] == late_id, "отмена опоздала (трек уже сохраняется): честное «уже сохранён», кнопка «Скачано»")
+
+        page.click(row_dl(6))
+        page.click(row_dl(7))
+        page.wait_for_function(label_starts, arg=[row_dl(6), "В очереди"])
+        DL["stage"][run_id] = "downloading"
+        page.wait_for_function(label_starts, arg=[row_dl(7), "Скачивание"])
+        page.screenshot(path=str(SHOTS / "16f-download-queue.png"))
+        page.click(".nav__item[data-view=downloads]")
+        page.wait_for_function("document.body.dataset.view === 'downloads'")
+        page.wait_for_function("(t) => document.querySelector('#status')?.innerText.includes(t)", arg="в очереди: 1")
+        check("загружается: 1 · в очереди: 1" in page.inner_text("#status"),
+              "«Скачанные»: идущие и ждущие места загрузки посчитаны отдельно")
+        DL["stage"][wait_id] = "cancelled"
+        DL["stage"][run_id] = "cancelled"
+        page.wait_for_function("(t) => !document.querySelector('#status')?.innerText.includes(t)", arg="в очереди")
         DL["mock"] = False
         DL["stage"].clear()
         DL["done"].clear()

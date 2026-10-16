@@ -1,5 +1,6 @@
-// Загрузки и офлайн: скачать, удалить, «Скачанные». Скачивается штатный поток трека — тот же, что играет плеер
-// (download_policy.py, S5); прогресс — опросом /api/downloads/jobs.
+// Загрузки и офлайн: скачать, отменить, удалить, «Скачанные». Скачивается штатный поток трека — тот же, что играет
+// плеер (download_policy.py, S5); прогресс — опросом /api/downloads/jobs. S11: идущую или ждущую в очереди загрузку
+// отменяет та же кнопка (DELETE /api/downloads/jobs/{source}/{id}); отменённую можно скачать снова.
 import { $$ } from "../core/dom.js";
 import { api, enc, jsonOpts, trackKey } from "../core/api.js";
 import { el, now } from "../core/elements.js";
@@ -37,6 +38,8 @@ function noteFinished(key, j) {
   seenFinished.add(id);
   const title = state.dlTitles.get(key);
   if (j.state === "done") { if (title) toast(`Готово: «${title}» сохранён на компьютер`); return; }
+  // Отмену пользователя сообщает сам обработчик кнопки; остановку backend (перезапуск) — здесь
+  if (j.state === "cancelled") { if (j.code === "shutdown") toast(`${title ? `«${title}»: з` : "З"}агрузка прервана перезапуском приложения. Можно скачать снова.`, 6000); return; }
   if (j.state !== "error") return;
   if (DL_FINAL.includes(j.code)) state.dlDenied.set(key, j.error);
   toast(title ? `«${title}»: ${j.error}` : j.error, 6000);
@@ -65,7 +68,9 @@ async function startDownload(t) {
   try {
     const j = await api("/api/downloads", jsonOpts("POST", { source: t.source, id: t.id, title: t.title, artist: t.artist, album: t.album, duration: t.duration, cover: t.cover }));
     if (j.state === "done") { await refreshDownloads(); toast(`«${t.title}» уже скачан`); return; }
-    toast("Загрузка началась");
+    state.jobs[key] = j;                                  // S11: сразу честный этап — «Подготовка» или «В очереди»
+    repaintDl();
+    toast(j.state === "queued" ? "Загрузка в очереди: начнётся, когда закончится одна из текущих" : "Загрузка началась");
     pollJobs();
   } catch (e) {
     delete state.jobs[key];
@@ -83,13 +88,36 @@ async function removeDownload(t) {
     if (state.view === "downloads") await showDownloads(); else repaintDl();
   } catch (e) { toast(e.message); }
 }
-/** Кнопка загрузки трека: скачать, удалить скачанное, объяснить отказ. */
+/** Отмена идущей или ждущей загрузки. Ответ backend — итог: cancelled или done (трек успел сохраниться). */
+async function cancelDownload(t) {
+  const key = trackKey(t);
+  if (state.dlCancelling.has(key)) return;              // запрос отмены уже в пути
+  state.dlCancelling.add(key);
+  repaintDl();
+  try {
+    const j = await api(`/api/downloads/jobs/${t.source}/${enc(t.id)}`, { method: "DELETE" });
+    state.jobs[key] = j;
+    if (j.finished_at) seenFinished.add(key + j.finished_at);    // итог уже сообщён здесь, опрос не повторит
+    if (j.state === "cancelled") toast(`Загрузка «${t.title}» отменена`);
+    else if (j.state === "done") toast(`«${t.title}» уже сохранён — отменить не успели. Удалить копию можно кнопкой «Скачано».`, 6000);
+    else if (j.state === "error") toast(`«${t.title}»: ${j.error}`, 6000);
+  } catch (e) {
+    toast(`Не удалось отменить загрузку: ${e.message}`);
+  } finally {
+    state.dlCancelling.delete(key);
+    try { state.jobs = await api("/api/downloads/jobs"); } catch { /* сервер недоступен: оставляем прежнее */ }
+    await refreshDownloads();                            // и перерисовка кнопок
+    if (state.view === "downloads") await showDownloads();
+    if (Object.values(state.jobs).some((j) => BUSY.includes(j.state))) pollJobs();
+  }
+}
+/** Кнопка загрузки трека: скачать, отменить идущую, удалить скачанное, объяснить отказ. */
 export function toggleDownload(t) {
   const key = trackKey(t);
   if (state.dl.has(key)) return removeDownload(t);
+  if (state.jobs[key] && BUSY.includes(state.jobs[key].state)) return cancelDownload(t);
   const denied = state.dlDenied.get(key);
   if (denied) { toast(`Скачивание недоступно. ${denied}`, 6000); return; }
-  if (state.jobs[key] && BUSY.includes(state.jobs[key].state)) return;
   return startDownload(t);
 }
 
@@ -103,7 +131,10 @@ export async function showDownloads() {
   el.resultsTitle.textContent = "Скачанные";
   setTracks(items);
   setBlock(el.empty, items.length ? "" : "Здесь появятся треки, которые ты скачал. Они играют без интернета.");
-  const active = Object.values(state.jobs).filter((j) => BUSY.includes(j.state)).length;
-  setStatus(items.length || active ? `Скачано: ${items.length}${active ? ` · загружается: ${active}` : ""}` : "");
+  const jobs = Object.values(state.jobs);
+  const queued = jobs.filter((j) => j.state === "queued").length;       // S11: ждут места — не путать с передачей
+  const active = jobs.filter((j) => BUSY.includes(j.state)).length - queued;
+  setStatus(items.length || active || queued
+    ? `Скачано: ${items.length}${active ? ` · загружается: ${active}` : ""}${queued ? ` · в очереди: ${queued}` : ""}` : "");
   layout();
 }

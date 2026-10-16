@@ -42,8 +42,11 @@ export function paintFav(btn, t) {
 }
 
 // ---------- Состояние загрузки трека ----------
-export const BUSY = ["preparing", "downloading", "processing"];
-const DL_STAGE = { preparing: "Подготовка", downloading: "Скачивание", processing: "Обработка" };
+// S11: queued — ждёт свободного места (backend выполняет не больше двух загрузок сразу); cancelled — отменена, это
+// не ошибка: кнопка снова «Скачать». Пока загрузка идёт или ждёт, нажатие на кнопку её отменяет.
+export const BUSY = ["queued", "preparing", "downloading", "processing"];
+const DL_STAGE = { queued: "В очереди", preparing: "Подготовка", downloading: "Скачивание", processing: "Обработка" };
+const CANCEL_HINT = "Нажми, чтобы отменить загрузку";
 const mb = (n) => `${(n / 1048576).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} МБ`;
 
 /** Что сейчас с загрузкой трека: done | busy | denied | error | idle (+ текст для кнопки и подсказки). */
@@ -51,10 +54,14 @@ function dlStatus(t) {
   const key = trackKey(t), job = state.jobs[key];
   if (state.dl.has(key)) return { kind: "done", short: "Скачано", label: "Скачано. Нажми, чтобы удалить локальную копию" };
   if (job && BUSY.includes(job.state)) {
+    if (state.dlCancelling.has(key)) return { kind: "busy", short: "Отмена…", pct: "", label: "Загрузка отменяется…", cancelling: true };
     const stage = DL_STAGE[job.state];
+    if (job.state === "queued") {
+      return { kind: "busy", queued: true, short: stage, pct: "", label: `${stage}: начнётся, когда закончится одна из текущих загрузок. ${CANCEL_HINT}` };
+    }
     let pct = "…";
     if (job.state === "downloading") pct = job.total ? `${job.progress || 0}%` : job.received ? mb(job.received) : "…";
-    return { kind: "busy", short: stage, pct, label: job.state === "downloading" ? `${stage}: ${pct}` : `${stage}…` };
+    return { kind: "busy", short: stage, pct, label: `${job.state === "downloading" ? `${stage}: ${pct}` : `${stage}…`} ${CANCEL_HINT}` };
   }
   const denied = state.dlDenied.get(key);
   if (denied) return { kind: "denied", short: "Недоступно", label: `Скачивание недоступно. ${denied}` };
@@ -62,18 +69,22 @@ function dlStatus(t) {
   return { kind: "idle", short: "Скачать", label: "Скачать" };
 }
 
-/** Рисует кнопку загрузки: скачать / этап и прогресс / скачано (клик = удалить) / недоступно / ошибка. */
+/** Рисует кнопку загрузки: скачать / этап и прогресс (клик = отменить) / скачано (клик = удалить) / недоступно / ошибка. */
 export function paintDl(btn, t) {
   const st = dlStatus(t);
   btn.classList.toggle("is-done", st.kind === "done");
   btn.classList.toggle("is-busy", st.kind === "busy");
+  btn.classList.toggle("is-queued", !!st.queued);
   btn.classList.toggle("is-denied", st.kind === "denied");
   btn.classList.toggle("is-error", st.kind === "error");
-  btn.disabled = st.kind === "busy";
+  // S11: кнопка идущей загрузки не отключается (disabled убрал бы её из обхода клавиатурой) — она отменяет загрузку.
+  // Пока запрос отмены в пути, повторное нажатие ничего не делает: aria-disabled, фокус остаётся на кнопке.
+  btn.disabled = false;
+  if (st.cancelling) btn.setAttribute("aria-disabled", "true"); else btn.removeAttribute("aria-disabled");
   btn.dataset.dl = st.kind;
   btn.title = st.label;
   btn.setAttribute("aria-label", st.label);
-  btn.querySelector("use").setAttribute("href", st.kind === "done" ? "#i-check" : "#i-download");
+  btn.querySelector("use").setAttribute("href", st.kind === "done" ? "#i-check" : st.kind === "busy" ? "#i-x" : "#i-download");
   btn.querySelector(".track__pct").textContent = st.kind === "busy" ? st.pct || "" : st.kind === "error" ? "!" : "";
   const txt = btn.querySelector(".abtn__t");
   if (txt) txt.textContent = st.short;

@@ -246,6 +246,10 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .tbtn.is-denied, .abtn.is-denied { color: var(--faint); }
 .tbtn.is-denied::after { content: ""; position: absolute; left: 50%; top: 50%; width: 20px; height: 2px; margin: -1px 0 0 -10px; border-radius: 1px; background: currentColor; transform: rotate(-45deg); pointer-events: none; }
 .tbtn.is-error, .abtn.is-error { color: var(--accent); }
+/* S11: идущая загрузка — акцент и крестик (нажатие отменяет); ждущая места в очереди — приглушённая, без процента */
+.tbtn.is-busy, .abtn.is-busy { color: var(--accent); }
+.tbtn.is-busy.is-queued, .abtn.is-busy.is-queued { color: var(--muted); }
+.tbtn[aria-disabled="true"], .abtn[aria-disabled="true"] { opacity: .7; cursor: progress; }
 /* Подпись прогресса резервирует место под «100%»: смена разрядов не сдвигает колонки строки */
 .track__dl .track__pct:not(:empty) { min-width: 4ch; text-align: left; }
 
