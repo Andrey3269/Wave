@@ -185,12 +185,67 @@ def test_clear_part_dir_refuses_a_link_and_accepts_missing(tmp_path):
 
 
 def test_is_link_recognises_windows_reparse_points():
-    """Junction в Windows не видна как symlink, но помечена атрибутом reparse point."""
+    """Junction в Windows не видна как symlink, но помечена атрибутом и тегом reparse point (name surrogate).
+    Плейсхолдер OneDrive — тоже reparse point, но не ссылка: такую папку .part можно удалить (находка ревью)."""
     plain = SimpleNamespace(st_mode=0o040755, st_file_attributes=0x10)
-    junction = SimpleNamespace(st_mode=0o040755, st_file_attributes=0x10 | 0x400)
+    junction = SimpleNamespace(st_mode=0o040755, st_file_attributes=0x10 | 0x400, st_reparse_tag=0xA0000003)
+    win_symlink = SimpleNamespace(st_mode=0o040755, st_file_attributes=0x10 | 0x400, st_reparse_tag=0xA000000C)
+    wsl_symlink = SimpleNamespace(st_mode=0o100644, st_file_attributes=0x400, st_reparse_tag=0xA000001D)
+    onedrive = SimpleNamespace(st_mode=0o040755, st_file_attributes=0x10 | 0x400, st_reparse_tag=0x9000601A)
+    dedup = SimpleNamespace(st_mode=0o100644, st_file_attributes=0x400, st_reparse_tag=0x80000013)
+    unknown = SimpleNamespace(st_mode=0o040755, st_file_attributes=0x10 | 0x400)          # тега нет — осторожно
     posix_link = SimpleNamespace(st_mode=0o120777)
     assert not download_io.is_link(plain)
-    assert download_io.is_link(junction) and download_io.is_link(posix_link)
+    assert all(download_io.is_link(s) for s in (junction, win_symlink, wsl_symlink, unknown, posix_link))
+    assert not download_io.is_link(onedrive) and not download_io.is_link(dedup)
+
+
+def test_clear_part_dir_continues_when_a_file_vanishes(tmp_path, monkeypatch):
+    """Антивирус или синхронизация удалили файл между чтением списка и удалением: очистка идёт дальше."""
+    part = tmp_path / "A - B [yt-AAAAAAAAAA1].part"
+    part.mkdir()
+    for n in ("a", "b", "c"):
+        (part / n).write_bytes(b"x")
+    real_unlink = os.unlink
+    calls = {"n": 0}
+
+    def vanishing(path, *a, **kw):
+        calls["n"] += 1
+        real_unlink(path, *a, **kw)
+        if calls["n"] == 1:
+            raise FileNotFoundError("уже удалён (тест)")
+
+    monkeypatch.setattr(download_io.os, "unlink", vanishing)
+    assert download_io.clear_part_dir(part) is True
+    assert not part.exists() and calls["n"] == 3
+
+
+def test_run_in_thread_waits_for_the_thread_when_the_loop_shuts_down():
+    """asyncio.run при выходе отменяет все задачи, в том числе внутреннюю обёртку to_thread: run_in_thread всё равно
+    возвращает управление только после конца записи в потоке (находка ревью)."""
+    log: list[str] = []
+    started = threading.Event()
+
+    def slow():
+        started.set()
+        time.sleep(0.3)
+        log.append("fn end")
+
+    async def worker():
+        try:
+            await download_io.run_in_thread(slow)
+        except asyncio.CancelledError:
+            log.append("returned (cancel)")
+            raise
+
+    async def main():
+        asyncio.get_running_loop().create_task(worker())
+        while not started.is_set():
+            await asyncio.sleep(0.005)
+        # выходим из main: asyncio.run отменяет worker и обёртку to_thread одновременно
+
+    asyncio.run(main())
+    assert log == ["fn end", "returned (cancel)"]
 
 
 # ---------------------------------------------------------------------------

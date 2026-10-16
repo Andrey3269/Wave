@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -70,13 +71,24 @@ MAX_TOTAL_BREAKS = 20                         # и всего обрывов з�
 # запросов (rate_limited, bot_check); две параллельные загрузки уже заполняют обычный домашний канал.
 MAX_PARALLEL = 2
 CANCEL_WAIT = 15.0                            # S11: сколько запрос отмены ждёт, пока задача освободит ресурсы
-SHUTDOWN_WAIT = 15.0                          # S11: сколько выход из lifespan ждёт остановки загрузок
+# S11: сколько выход из lifespan ждёт остановки загрузок. Меньше, чем лаунчер ждёт остановки backend (8 с,
+# launcher.Backend.stop), чтобы после загрузок успели закрыться резолвер и HTTP-клиенты
+SHUTDOWN_WAIT = 6.0
+# S11: сколько старт ждёт очистку `.part`. Недоступный сетевой диск может отвечать десятки секунд, а лаунчер ждёт
+# готовности backend 40 с: дальше очистка идёт в фоне и не трогает папки идущих загрузок (_live_parts)
+CLEANUP_STARTUP_WAIT = 5.0
 ACTIVE = {"queued", "preparing", "downloading", "processing"}
 COVER_HOSTS = ("googleusercontent.com", "ytimg.com", "ggpht.com", "sndcdn.com")   # откуда разрешено брать обложки
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
-# Временная папка загрузки: имя library.safe_folder() + ".part" — «… [источник-id].part» (S11: только такие
-# папки удаляет очистка при старте)
-PART_RE = re.compile(r"^.+ \[(?:" + "|".join(map(re.escape, SOURCES)) + r")-[^\[\]\\/]+\]\.part$")
+# Временная папка загрузки: имя library.safe_folder() + ".part" — «… [источник-id].part» с id, допустимым для
+# своего источника (S11: только такие папки удаляет очистка при старте)
+PART_RE = re.compile(r"^.+ \[(?:" + "|".join(f"{re.escape(k)}-(?:{cfg.id_re.pattern.strip('^$')})"
+                                              for k, cfg in SOURCES.items()) + r")\]\.part$")
+# Временные папки идущих загрузок и папки, которые сейчас удаляет очистка: фоновая очистка не трогает первые,
+# загрузка не начинает писать во вторые (S11)
+_parts_lock = threading.Lock()
+_live_parts: set[str] = set()
+_cleaning: set[str] = set()
 
 jobs: dict[str, dict] = {}
 
@@ -133,6 +145,11 @@ class _Slots:
         except asyncio.CancelledError:
             if fut.done() and not fut.cancelled():          # место успели передать перед отменой — отдаём дальше
                 self.release()
+            else:
+                try:
+                    self._waiters.remove(fut)               # отменённый ожидающий очередь не засоряет
+                except ValueError:
+                    pass
             raise
 
     def release(self) -> None:
@@ -170,6 +187,10 @@ class DownloadManager:
         self.slots = _Slots(limit)
         self.closing = False
         self._entries: dict[str, _Entry] = {}
+        # Сторож лаунчера поднимает backend заново в том же процессе: задачи прошлого запуска, оставшиеся
+        # «активными» в jobs (запуск упал без штатной остановки), уже не идут — честно помечаем их прерванными
+        for j in jobs.values():
+            _orphaned(j)
 
     def alive(self, key: str) -> bool:
         e = self._entries.get(key)
@@ -227,6 +248,8 @@ class DownloadManager:
             done, _ = await asyncio.wait({entry.task}, timeout=CANCEL_WAIT)
             if not done:
                 log.warning("Загрузка %s не остановилась за %.0f с после отмены", key, CANCEL_WAIT)
+        elif key in jobs:
+            _orphaned(jobs[key])                         # «активная» без задачи — от прошлого запуска
         return jobs.get(key)
 
     async def aclose(self) -> None:
@@ -243,6 +266,12 @@ class DownloadManager:
             if pending:
                 log.warning("При остановке не завершились загрузки: %d", len(pending))
             log.info("Остановка: прервано загрузок — %d", len(done))
+
+
+def _orphaned(job: dict) -> None:
+    """Задача без живого исполнителя (от прошлого запуска backend) не должна выглядеть идущей."""
+    if job.get("state") in ACTIVE:
+        job.update(state="cancelled", error=None, code="shutdown", finished_at=time.time())
 
 
 def manager(request: Request) -> DownloadManager:
@@ -379,11 +408,19 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
     target = library.folder_path(name)
     tmp = target.with_name(target.name + ".part")
     out: ThreadFile | None = None
+    part_key, own_part = _part_key(tmp), False
     outcome = {"state": "error", "error": "Не удалось скачать трек. Попробуйте ещё раз.", "code": "internal"}
     try:
         # preparing: поток получен штатно (тем же резолвером, что и для воспроизведения) и это не фрагмент
         res = await download_policy.check(rs, req.source, req.id)
 
+        while True:                                          # эту папку не удаляет сейчас фоновая очистка при старте
+            with _parts_lock:
+                if part_key not in _cleaning:
+                    _live_parts.add(part_key)
+                    own_part = True
+                    break
+            await asyncio.sleep(0.05)
         await run_in_thread(_fresh_dir, tmp)
         out = ThreadFile(tmp / "audio.part")
         await out.open()
@@ -433,12 +470,15 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
         # Файл закрывается и папка .part удаляется одной операцией в потоке — уже после того, как закончилась любая
         # запись в неё. Итог задачи публикуется последним: пока он «активный», повтор того же трека невозможен,
         # и новая загрузка не начнёт писать в папку, которую эта ещё удаляет.
-        try:
-            await run_in_thread(remove_partial, tmp, out)
-        except asyncio.CancelledError:
-            pass                                             # повторная отмена: удаление уже закончилось (run_in_thread)
-        except Exception as exc:
-            log.warning("Временная папка загрузки %s не очищена: %r", key, exc)
+        if own_part:
+            try:
+                await run_in_thread(remove_partial, tmp, out)
+            except asyncio.CancelledError:
+                pass                                         # повторная отмена: удаление уже закончилось (run_in_thread)
+            except Exception as exc:
+                log.warning("Временная папка загрузки %s не очищена: %r", key, exc)
+            with _parts_lock:
+                _live_parts.discard(part_key)
         job.update(outcome, finished_at=time.time())
 
 
@@ -448,17 +488,21 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
 def _cleanup_roots() -> list[Path]:
     """
     Где могли остаться `*.part`: текущий каталог загрузок (настройки или WAVE_DOWNLOADS_DIR), каталог по умолчанию
-    (если он есть) и каталоги из индекса, в которых Wave реально сохранял треки (library.verified_roots: строки базы
-    не доверенные, N3). Произвольные пути из базы сюда не попадают.
+    (при обычном запуске, без WAVE_DOWNLOADS_DIR) и каталоги из индекса, в которых Wave реально сохранял треки
+    (library.verified_roots: строки базы не доверенные, N3; источник и id проверяются как у POST, в папке должны
+    лежать аудиофайл и metadata.json). Произвольные пути из базы сюда не попадают.
     """
     found: list[Path] = []
     try:
         found.append(paths.downloads_dir())
     except OSError as exc:
         log.warning("Текущий каталог загрузок недоступен: %r", exc)
-    found.append(paths.default_downloads_dir())
+    # Каталог по умолчанию — только при обычном запуске. С WAVE_DOWNLOADS_DIR (тесты, e2e, отладка) backend
+    # работает с отдельным профилем и не должен трогать настоящий ~/Downloads/Wave пользователя
+    if not os.getenv("WAVE_DOWNLOADS_DIR"):
+        found.append(paths.default_downloads_dir())
     try:
-        found.extend(library.verified_roots())
+        found.extend(library.verified_roots(_valid_track))
     except Exception as exc:                                 # база недоступна — чистим то, что известно без неё
         log.warning("Каталоги загрузок из индекса не прочитаны: %r", exc)
     roots: dict[str, Path] = {}
@@ -488,8 +532,17 @@ def _clean_root(root: Path) -> int:
                 continue
         except OSError:
             continue
-        if clear_part_dir(Path(e.path)):
-            removed += 1
+        key = _part_key(Path(e.path))
+        with _parts_lock:
+            if key in _live_parts:                           # папка загрузки, идущей в этом запуске
+                continue
+            _cleaning.add(key)
+        try:
+            if clear_part_dir(Path(e.path)):
+                removed += 1
+        finally:
+            with _parts_lock:
+                _cleaning.discard(key)
     return removed
 
 
@@ -499,6 +552,34 @@ def cleanup_partial() -> None:
         n = _clean_root(root)
         if n:
             log.info("Удалено недокачанных загрузок: %d", n)
+
+
+async def startup_cleanup() -> asyncio.Future:
+    """
+    Очистка при старте (в потоке). Ждёт её не дольше CLEANUP_STARTUP_WAIT: недоступный сетевой каталог не задержит
+    запуск интерфейса — остаток очистки идёт в фоне и не трогает папки загрузок, начатых за это время.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(cleanup_partial))
+    task.add_done_callback(_log_cleanup_failure)
+    done, _ = await asyncio.wait({task}, timeout=CLEANUP_STARTUP_WAIT)
+    if not done:
+        log.warning("Очистка недокачанного не закончилась за %.0f с, продолжается в фоне", CLEANUP_STARTUP_WAIT)
+    return task
+
+
+def _log_cleanup_failure(t: asyncio.Future) -> None:
+    if not t.cancelled() and t.exception() is not None:
+        log.warning("Очистка недокачанного не удалась: %r", t.exception())
+
+
+def _part_key(p: Path) -> str:
+    return os.path.normcase(os.path.abspath(p))
+
+
+def _valid_track(source: str, track_id) -> bool:
+    """Пара источник + id допустима (как у POST): только такая строка индекса может подтвердить каталог загрузок."""
+    cfg = SOURCES.get(source)
+    return cfg is not None and isinstance(track_id, str) and bool(cfg.id_re.fullmatch(track_id))
 
 
 def _check(source: str, track_id: str) -> None:

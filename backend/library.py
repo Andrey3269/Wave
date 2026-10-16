@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -164,26 +165,41 @@ def add(**f) -> None:
     )
 
 
-def verified_roots() -> list[Path]:
+def verified_roots(valid_track) -> list[Path]:
     """
     Каталоги загрузок из индекса, в которых Wave действительно сохранял треки (S11: там может остаться `*.part`
     после закрытия приложения посреди загрузки). Строки базы не доверенные (N3), поэтому каталог засчитывается,
-    только если строка проходит те же проверки, что и при чтении (папка — одно имя внутри своего каталога,
-    без выхода наружу), папку создал загрузчик Wave для этого трека, а её аудиофайл реально лежит на диске.
-    Строка, указывающая, например, на C:\\Windows, каталогом загрузок не становится. Строки не удаляются.
+    только если строка подтверждает его целиком:
+      * источник и id трека допустимы — valid_track(source, track_id), те же правила, что у POST /api/downloads;
+      * строка проходит проверки чтения (папка — одно имя внутри своего каталога, без выхода наружу);
+      * имя папки оканчивается на «[источник-id]» этого трека (её создал загрузчик Wave);
+      * в папке лежат аудиофайл строки и metadata.json (их пишет загрузчик любой версии Wave).
+    Строка, указывающая, например, на C:\\Windows или на «Фото [2020-лето]», каталогом загрузок не становится.
+    Доступность каталога проверяется один раз на каталог (недоступный сетевой диск отвечает долго). Строки не удаляются.
     """
     roots: dict[str, Path] = {}
+    available: dict[str | None, bool] = {}
     for row in _q("SELECT * FROM downloads"):
+        root = row["root"]
+        if not valid_track(row["source"], row["track_id"]):
+            continue
+        if root not in available:
+            try:
+                available[root] = root is None or (Path(root).is_absolute() and os.path.isdir(root))
+            except (OSError, ValueError):
+                available[root] = False
+        if not available[root]:
+            continue
         folder = _row_dir(row)
-        if folder is None or not owns_folder(row):
+        if folder is None or not owns_folder(row) or str(folder.parent) in roots:
             continue
         audio = _row_file(row, "audio")
         try:
-            if audio is None or not audio.is_file():
+            if audio is None or not audio.is_file() or not (folder / "metadata.json").is_file():
                 continue
         except OSError:                          # диск недоступен
             continue
-        roots.setdefault(str(folder.parent), folder.parent)
+        roots[str(folder.parent)] = folder.parent
     return list(roots.values())
 
 

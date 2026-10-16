@@ -35,7 +35,7 @@ import providers
 import recs
 import userdata
 from domain.models import Track
-from downloads import DownloadManager, cleanup_partial, router as downloads_router
+from downloads import DownloadManager, router as downloads_router, startup_cleanup
 from lyrics import router as lyrics_router
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import ProviderError
@@ -157,8 +157,9 @@ async def lifespan(app: FastAPI):
     library.init()  # локальный индекс загрузок (SQLite)
     userdata.init()  # избранное, история, настройки
     playlists.init()  # локальные плейлисты
-    # Недокачанные загрузки прошлого запуска — во всех проверенных каталогах загрузок (S11); обход диска — в потоке
-    await asyncio.to_thread(cleanup_partial)
+    # Недокачанные загрузки прошлого запуска — во всех проверенных каталогах загрузок (S11). Обход диска — в потоке;
+    # старт ждёт его не дольше downloads.CLEANUP_STARTUP_WAIT (недоступный сетевой диск), остальное — в фоне
+    await startup_cleanup()
     # S11: менеджер загрузок этого запуска (лимит, очередь, отмена); объекты asyncio — в цикле этого запуска (M1)
     app.state.downloads = DownloadManager()
     try:

@@ -544,10 +544,21 @@ def test_event_loop_keeps_serving_while_a_write_is_blocked(harness, spy_open):
     assert answered == {"released_in_time": True} and state(tid) == "done"
 
 
-def test_cancel_waits_for_a_running_write_and_no_write_follows(harness, spy_open):
+BIG = audio_bytes(60_000, seed=3)
+
+
+def small_batches(monkeypatch, harness):
+    """Пачки записи по 1000 байт, порции CDN по 4096: на BIG приходится больше 60 записей — есть что «не записать»."""
+    monkeypatch.setattr(downloads, "WRITE_BATCH", 1000)
+    monkeypatch.setattr(downloads, "DL_CHUNK", 4096)
+    harness.net.chunk = 500
+
+
+def test_cancel_waits_for_a_running_write_and_no_write_follows(harness, spy_open, monkeypatch):
     """Отмена посреди записи в потоке: .part удаляется только после конца записи и не возникает заново."""
     tid = IDS[0]
-    harness.net.add_file(f"/yt/{tid}", DATA, "audio/mp4")
+    small_batches(monkeypatch, harness)
+    harness.net.add_file(f"/yt/{tid}", BIG, "audio/mp4")
     entered, release = threading.Event(), threading.Event()
 
     def block_first():
@@ -629,10 +640,11 @@ def test_no_new_downloads_while_shutting_down(harness):
     assert job(f"yt:{IDS[0]}") is None and harness.resolver.total() == 0
 
 
-def test_shutdown_mid_write_waits_for_the_write(harness, spy_open):
+def test_shutdown_mid_write_waits_for_the_write(harness, spy_open, monkeypatch):
     """Остановка во время записи в потоке: lifespan ждёт конца записи, затем удаляет .part; после — ни одной записи."""
     tid = IDS[0]
-    harness.net.add_file(f"/yt/{tid}", DATA, "audio/mp4")
+    small_batches(monkeypatch, harness)
+    harness.net.add_file(f"/yt/{tid}", BIG, "audio/mp4")
     entered = threading.Event()
 
     def slow_first():
@@ -729,6 +741,7 @@ def make_download(root: Path, tid: str, title: str = "Песня") -> str:
     name = library.safe_folder("Исполнитель", title, "yt", tid)
     (root / name).mkdir(parents=True)
     (root / name / "audio.m4a").write_bytes(b"audio")
+    (root / name / "metadata.json").write_text("{}", encoding="utf-8")
     library.add(source="yt", track_id=tid, title=title, artist="Исполнитель", album=None, duration=1, folder=name,
                 audio="audio.m4a", cover=None, lyrics=None, size=5, created_at=time.time(), root=str(root))
     return name
@@ -747,6 +760,9 @@ def test_startup_cleanup_covers_every_verified_root(harness, tmp_path, monkeypat
     default = tmp_path / "home-downloads" / "Wave"
     default.mkdir(parents=True)
     monkeypatch.setattr(paths, "default_downloads_dir", lambda: default, raising=False)
+    # обычный запуск: папка загрузок выбрана в настройках, WAVE_DOWNLOADS_DIR не задан
+    monkeypatch.delenv("WAVE_DOWNLOADS_DIR")
+    paths.set_downloads_dir(harness.profile.downloads)
     with harness.client():
         kept_current = make_download(harness.profile.downloads, IDS[0], "Текущая")
         kept_other = make_download(other, IDS[1], "Прошлая")
@@ -788,17 +804,49 @@ def test_startup_cleanup_ignores_roots_from_untrusted_index_rows(harness, tmp_pa
         ("AAAAAAAAAA3", "../victim/x [yt-AAAAAAAAAA3]", str(harness.profile.downloads)),   # выход наружу
         ("AAAAAAAAAA4", "x [yt-AAAAAAAAAA4]", "relative/root"),                     # относительный каталог
         ("AAAAAAAAAA5", "x [yt-AAAAAAAAAA5]", str(victim / "нет такого диска")),    # недоступный каталог
+        ("AAAAAAAAAA6", "Без метаданных [yt-AAAAAAAAAA6]", str(victim)),            # нет metadata.json
     ]
+    (victim / "Без метаданных [yt-AAAAAAAAAA6]").mkdir()
+    (victim / "Без метаданных [yt-AAAAAAAAAA6]" / "audio.m4a").write_bytes(b"x")
+    # Находка ревью: строка с выдуманным источником и id, совпадающими с обычной папкой пользователя
+    (victim / "Фото [2020-лето]").mkdir()
+    (victim / "Фото [2020-лето]" / "audio.m4a").write_bytes(b"jpeg")
+    (victim / "Фото [2020-лето]" / "metadata.json").write_text("{}")
+    archive = make_part(victim, "Архив [yt-backup].part", files=("важное.docx",))     # не id YouTube — не наше имя
     with harness.client():
         for tid, name, root in rows:
             library.add(source="yt", track_id=tid, title="t", artist="a", album=None, duration=1, folder=name,
                         audio="audio.m4a", cover=None, lyrics=None, size=1, created_at=time.time(), root=root)
-        assert library.verified_roots() == []                         # ни одна строка не подтверждает каталог
+        library.add(source="2020", track_id="лето", title="t", artist="a", album=None, duration=1,
+                    folder="Фото [2020-лето]", audio="audio.m4a", cover=None, lyrics=None, size=1,
+                    created_at=time.time(), root=str(victim))
+        assert library.verified_roots(downloads._valid_track) == []   # ни одна строка не подтверждает каталог
     with harness.client() as h:
         assert h.get("/api/health").status_code == 200
     assert stranger.is_dir() and (stranger / "audio.part").read_bytes() == b"half"
-    assert sorted(names(victim)) == sorted(["Исполнитель - Чужое [yt-AAAAAAAAAA7].part",
-                                            "Исполнитель - Пусто [yt-AAAAAAAAAA1]", "Не Wave"])
+    assert (archive / "важное.docx").read_bytes() == b"half"
+    assert sorted(names(victim)) == sorted(["Исполнитель - Чужое [yt-AAAAAAAAAA7].part", "Архив [yt-backup].part",
+                                            "Исполнитель - Пусто [yt-AAAAAAAAAA1]", "Не Wave", "Фото [2020-лето]",
+                                            "Без метаданных [yt-AAAAAAAAAA6]"])
+
+
+def test_part_names_must_carry_a_valid_source_id():
+    ok = ["A - B [yt-AAAAAAAAAA1].part", "A - B [sc-123456789].part", "Ёж - Ж [yt-a_b-C_d-E_f].part"]
+    bad = ["Архив [yt-backup].part", "A - B [yt-AAAAAAAAAA12].part", "A - B [sc-12a].part", "A - B [xx-1].part",
+           "A - B [yt-AAAAAAAAAA1]", "notes.part", "A - B [sc-1234567890123456].part"]
+    assert all(downloads.PART_RE.fullmatch(n) for n in ok)
+    assert not any(downloads.PART_RE.fullmatch(n) for n in bad)
+
+
+def test_default_folder_is_left_alone_with_an_explicit_downloads_dir(harness, tmp_path, monkeypatch):
+    """С WAVE_DOWNLOADS_DIR (тесты, e2e, отладка) настоящий ~/Downloads/Wave не трогается (находка ревью)."""
+    default = tmp_path / "home-downloads" / "Wave"
+    default.mkdir(parents=True)
+    monkeypatch.setattr(paths, "default_downloads_dir", lambda: default)
+    real = make_part(default, "Исполнитель - Идёт в настоящей Wave [yt-AAAAAAAAAA1].part")
+    with harness.client():
+        pass
+    assert (real / "audio.part").read_bytes() == b"half"
 
 
 def test_startup_cleanup_does_not_follow_links(harness, tmp_path):
@@ -845,7 +893,7 @@ def test_cleanup_survives_unavailable_roots(harness, tmp_path, monkeypatch):
     real_scandir = os.scandir
 
     def flaky_scandir(p="."):
-        if Path(p) == harness.profile.downloads:
+        if isinstance(p, (str, os.PathLike)) and Path(p) == harness.profile.downloads:   # fd каталога — как есть
             raise PermissionError("нет доступа (тест)")
         return real_scandir(p)
 
@@ -886,3 +934,98 @@ def test_cleanup_handles_a_very_long_root_path(harness, tmp_path, monkeypatch):
     with harness.client():
         pass
     assert not part.exists() and deep.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Находки независимого ревью (S11)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("batch, fail_after", [(700, 3), (1000, 5), (4096, 2), (1500, 1)])
+def test_batched_writes_keep_every_byte_across_cdn_breaks(harness, monkeypatch, batch, fail_after):
+    """Запись пачками (WRITE_BATCH) и обрывы CDN посреди порции: файл — точная копия, без потерь и дублей (N2)."""
+    tid = IDS[0]
+    monkeypatch.setattr(downloads, "WRITE_BATCH", batch)
+    monkeypatch.setattr(downloads, "DL_CHUNK", 4096)
+    harness.net.chunk = 500
+    harness.net.add_file(f"/yt/{tid}", BIG, "audio/mp4")
+    real = harness.net.serve_file
+
+    def broken(request):
+        harness.net.fail_after = fail_after
+        try:
+            return real(request)
+        finally:
+            harness.net.fail_after = None
+    harness.net.queue(f"/yt/{tid}", real, broken, real, broken)
+
+    async def scenario(c):
+        await c.post("/api/downloads", json=req(tid))
+        await until(lambda: finished(tid))
+
+    harness.run(scenario)
+    assert state(tid) == "done"
+    assert (harness.profile.downloads / folder(tid) / "audio.m4a").read_bytes() == BIG
+
+
+def test_jobs_left_active_by_a_crashed_run_are_marked_interrupted(harness):
+    """Сторож перезапустил backend в том же процессе без штатной остановки: «активные» задачи прошлого запуска
+    не выглядят идущими — ни в списке, ни в ответе на отмену (иначе интерфейс опрашивал бы их вечно)."""
+    downloads.jobs[f"yt:{IDS[0]}"] = {"state": "downloading", "progress": 40, "error": None, "code": None,
+                                      "received": 4, "total": 10}
+
+    async def scenario(c):
+        listed = (await c.get("/api/downloads/jobs")).json()[f"yt:{IDS[0]}"]
+        downloads.jobs[f"yt:{IDS[1]}"] = {"state": "queued", "progress": 0, "error": None, "code": None}
+        cancelled = (await c.delete(f"/api/downloads/jobs/yt/{IDS[1]}")).json()
+        return listed, cancelled
+
+    listed, cancelled = harness.run(scenario)
+    assert listed["state"] == "cancelled" and listed["code"] == "shutdown" and listed["finished_at"]
+    assert cancelled["state"] == "cancelled" and cancelled["code"] == "shutdown"
+
+
+def test_slow_startup_cleanup_does_not_block_start_or_touch_live_downloads(harness, monkeypatch):
+    """Недоступный сетевой каталог: старт ждёт очистку не дольше CLEANUP_STARTUP_WAIT, интерфейс отвечает, а
+    оставшаяся в фоне очистка не удаляет папку загрузки, начатой за это время."""
+    tid = IDS[0]
+    monkeypatch.setattr(downloads, "CLEANUP_STARTUP_WAIT", 0.2)
+    stuck, release = threading.Event(), threading.Event()
+    real_cleanup = downloads.cleanup_partial
+
+    def slow_cleanup():
+        stuck.set()
+        release.wait(10)                                          # «сетевой диск не отвечает»
+        real_cleanup()
+
+    monkeypatch.setattr(downloads, "cleanup_partial", slow_cleanup)
+    hold = Hold(harness.net, [tid])
+
+    async def scenario(c):
+        t0 = time.monotonic()
+        assert (await c.get("/api/health")).status_code == 200
+        await c.post("/api/downloads", json=req(tid))
+        await until(lambda: tid in hold.open)
+        part = harness.profile.downloads / (folder(tid) + ".part")
+        release.set()                                             # очистка доходит до каталога с живой загрузкой
+        await asyncio.sleep(0.2)
+        assert part.is_dir() and (part / "audio.part").exists()  # папку идущей загрузки очистка не тронула
+        hold.release(tid)
+        await until(lambda: finished(tid))
+        return t0
+
+    harness.run(scenario)
+    assert stuck.is_set() and state(tid) == "done"
+
+
+def test_cleanup_skips_parts_of_live_downloads_and_waits_for_cleaning(harness):
+    part = make_part(harness.profile.downloads, "Исполнитель - Живая [yt-AAAAAAAAAA1].part")
+    key = downloads._part_key(part)
+    with downloads._parts_lock:
+        downloads._live_parts.add(key)
+    try:
+        downloads.cleanup_partial()
+        assert part.is_dir()
+    finally:
+        with downloads._parts_lock:
+            downloads._live_parts.discard(key)
+    downloads.cleanup_partial()
+    assert not part.exists()
