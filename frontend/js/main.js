@@ -15,7 +15,6 @@ import { api, trackKey } from "./core/api.js";
 import { el, now, fs } from "./core/elements.js";
 import { state, queue, current, heroTrack, nav } from "./state/store.js";
 import { initSettingsSync, initThemeFollowSystem } from "./state/settings.js";
-import { toast } from "./components/toast.js";
 import { initEmptyRetry } from "./components/skeleton.js";
 import { initPickPlaylist } from "./components/dialogs.js";
 import { initLyrics } from "./components/lyrics.js";
@@ -41,6 +40,7 @@ import { showLiked, showHistory, initHistory, createPlaylistFlow, showPlaylists,
   addToPlaylistFlow, removeFromPlaylist, showCollection, initCollectionTiles } from "./views/collection.js";
 import { refreshDownloads, pollJobs, toggleDownload, showDownloads } from "./views/downloads.js";
 import { loadSettings, showSettings, renderProfile, initSettingsView } from "./views/settings.js";
+import { initOffline } from "./views/offline.js";
 
 initImageFallback();
 initSettingsSync();
@@ -218,8 +218,8 @@ document.addEventListener("keyup", (e) => {              // кнопка в фо
   if (e.code === "Space" && state.fs.open && !(e.target.closest && e.target.closest("input, textarea, select, #menu"))) e.preventDefault();
 });
 
-// Нет интернета: сразу показываем скачанное
-window.addEventListener("offline", () => { showDownloads().then(() => toast("Нет соединения. Доступны скачанные треки.")); });
+// Нет интернета (S10): сообщение с кнопкой «Скачанные» вместо перехода — текущий экран и плеер не меняются
+initOffline();
 
 // ==========================================================================
 // Старт

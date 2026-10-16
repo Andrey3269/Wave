@@ -187,6 +187,13 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
   display: flex; flex-wrap: wrap; align-items: center; gap: 16px;
   padding: 14px 32px; background: var(--bg);
 }
+/* Нет соединения (S10): строка во всю ширину закреплённой верхней панели, существующие цвета и кнопки */
+.offline { flex: 1 1 100%; display: flex; align-items: center; gap: 12px; padding: 6px 6px 6px 14px; background: var(--surface-2); border: 1px solid var(--line-2); border-radius: var(--r-s); font-size: 13px; }
+.offline[hidden] { display: none; }
+.offline > .icon { flex: none; color: var(--accent); }
+.offline__text { flex: 1; min-width: 0; }
+.offline__close { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); }
+.offline__close:hover, .offline__close:focus-visible { color: var(--text); background: var(--surface-3); }
 .search {
   display: flex; align-items: center; flex: 1 1 360px; max-width: 640px; height: 44px; padding-right: 5px;
   background: var(--surface); border: 1px solid var(--line); border-radius: 999px;

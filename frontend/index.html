@@ -137,6 +137,13 @@
         <button class="seg__btn" type="button" role="tab" data-source="yt" aria-selected="true">YouTube</button>
         <button class="seg__btn" type="button" role="tab" data-source="sc" aria-selected="false">SoundCloud</button>
       </div>
+      <!-- Нет соединения (S10): сообщение вместо перехода на «Скачанные»; переход — только по кнопке -->
+      <div class="offline" id="offline" role="status" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+        <span class="offline__text">Нет подключения к интернету. Скачанные треки доступны.</span>
+        <button class="btn btn--ghost btn--sm" id="offline-downloads" type="button" data-view="downloads">Скачанные</button>
+        <button class="offline__close" id="offline-close" type="button" aria-label="Скрыть сообщение" title="Скрыть сообщение"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
     </header>
 
     <div class="content">

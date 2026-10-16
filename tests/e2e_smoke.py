@@ -1202,6 +1202,47 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#d-kind').textContent === 'Альбом'")
         check(True, "«Назад» после альбома по id работает")
         page.remove_listener("request", on_album)
+
+        print("Нет соединения: сообщение вместо перехода на «Скачанные» (S10)")
+        page.fill("#search-input", "gspd")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 20")
+        page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        check(wait_track("trk00000040"), "перед потерей сети играет трек из поиска")
+        q_before = page.evaluate("[...document.querySelectorAll('#queue-list .q')].length")
+        ctx.set_offline(True)
+        page.wait_for_selector("#offline:not([hidden])")
+        check(page.get_attribute("body", "data-view") == "search" and page.locator("#tracks .row").count() == 20,
+              "без сети пользователь остаётся на открытом экране (поиск), список на месте")
+        check(page.get_attribute("#offline", "role") == "status" and "Скачанные треки доступны" in page.inner_text("#offline")
+              and visible(page, "#offline-downloads"), "видно сообщение (role=status) с кнопкой «Скачанные»")
+        check(audio_state(page)["src"].endswith("/trk00000040") and not page.is_disabled("#player [data-do=next]")
+              and page.evaluate("[...document.querySelectorAll('#queue-list .q')].length") == q_before,
+              "плеер и очередь не сброшены, управление доступно")
+        page.screenshot(path=str(SHOTS / "25-offline-banner.png"))
+        ctx.set_offline(False)
+        page.wait_for_selector("#offline", state="hidden")
+        check(True, "событие online скрывает сообщение")
+        for _ in range(3):                                           # повторные offline/online
+            ctx.set_offline(True)
+            page.wait_for_selector("#offline:not([hidden])")
+            ctx.set_offline(False)
+            page.wait_for_selector("#offline", state="hidden")
+        ctx.set_offline(True)
+        page.wait_for_selector("#offline:not([hidden])")
+        check(page.locator("#offline").count() == 1 and page.locator("#offline-downloads").count() == 1,
+              "повторные события не создают дубликатов сообщения")
+        page.click("#offline-close")
+        check(page.is_hidden("#offline") and page.evaluate("navigator.onLine") is False, "сообщение можно закрыть (сеть ещё не вернулась)")
+        ctx.set_offline(False); ctx.set_offline(True)
+        page.wait_for_selector("#offline:not([hidden])")
+        page.click("#offline-downloads")
+        page.wait_for_function("document.body.dataset.view === 'downloads'")
+        check(True, "переход в «Скачанные» — только по кнопке сообщения")
+        check(visible(page, "#offline"), "в «Скачанных» сообщение остаётся, пока браузер не сообщит о сети")
+        ctx.set_offline(False)
+        page.wait_for_selector("#offline", state="hidden")
         # Запись несохранённого при закрытии окна (sendBeacon) проверяет tests/api/test_playback_browser.py: здесь
         # все запросы идут через перехват Playwright (ctx.route), а он не доставляет запросы выгружаемой страницы.
 
