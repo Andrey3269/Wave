@@ -231,7 +231,9 @@ async function boot() {
     api("/api/favorites").then((d) => { state.fav = new Set(d.items.map(trackKey)); state.favItems = d.items; computeArtists(); renderArtistMixes(); repaintFav(); }),
     loadSettings(),
   ]);
-  if (navigator.onLine) goHome(true); else showDownloads();
+  // Первый экран — только если пользователь, пока шли запросы выше, сам ничего не открыл (каждый экран
+  // выставляет state.reopen). Иначе поиск, начатый в первые секунды, уводило на главную.
+  if (!state.reopen) { if (navigator.onLine) goHome(true); else showDownloads(); }
   refreshDownloads();
   pollJobs();                                            // подхватываем загрузки, которые шли до перезагрузки страницы
 }

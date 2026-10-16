@@ -39,7 +39,7 @@ export async function loadSettings() {
       const since = settingsGeneration();
       try { d = await migrateLocalUi(); applySettings(d.values, since); state.settingsPaths = d.paths; } catch { /* попробуем при следующем запуске */ }
     }
-    state.source = d.values.default_source;              // источник по умолчанию
+    if (!state.sourcePicked) state.source = d.values.default_source;   // источник по умолчанию, если пользователь ещё не выбрал
     syncTabs();
     applyUiSettings(d.values);
   } catch { flags.uiReady = true; document.body.dataset.settings = "default"; /* остаются значения по умолчанию */ }

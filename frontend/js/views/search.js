@@ -63,7 +63,9 @@ export function initSearchTabs() {
   });
   el.sourceSwitch.addEventListener("click", (e) => {
     const btn = e.target.closest(".seg__btn");
-    if (!btn || btn.dataset.source === state.source) return;
+    if (!btn) return;
+    state.sourcePicked = true;                           // выбор пользователя: настройки, пришедшие позже, его не меняют
+    if (btn.dataset.source === state.source) return;
     state.source = btn.dataset.source;
     syncTabs();
     if (state.query && state.view === "search") search(state.query);
