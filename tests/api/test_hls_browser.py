@@ -249,3 +249,36 @@ def test_undecodable_hls_stream_gives_decoder_message(harness):
             assert "yt-dlp" not in toast and "изменил формат" not in toast
         finally:
             browser.close()
+
+
+def test_repeat_one_replays_hls_track_without_new_session(harness):
+    """
+    S10: повтор трека (repeat "one") для HLS — через событие ended, как для обычного файла: трек начинается
+    сначала в том же <audio> и том же сеансе hls.js, без нового /playback и без audio.loop (с loop ended не
+    приходит, а MSE-поток не зацикливается сам).
+    """
+    with harness.serve() as c, sync_api.sync_playwright() as p:
+        browser, page = _open_single_hls_track(harness, c, p, SEGS[:2])
+        playbacks: list[str] = []
+        page.on("request", lambda r: playbacks.append(r.url) if r.url.endswith("/playback") else None)
+        try:
+            _row(page, "Only HLS").click()
+            page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 1"
+                                   " && Number.isFinite(a.duration) })()", timeout=20000)
+            btn = page.locator("[data-do=repeat]:visible").first
+            btn.click()
+            btn.click()                                                       # выкл → вся очередь → текущий трек
+            assert btn.get_attribute("data-mode") == "one"
+            src = _audio(page)["src"]
+            page.evaluate("(() => { const a = document.querySelector('#audio'); a.currentTime = a.duration - 1.2 })()")
+            page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.currentTime > a.duration - 0.8 })()",
+                                   timeout=15000)
+            page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 0.3"
+                                   " && a.currentTime < 5 })()", timeout=20000)
+            st = _audio(page)
+            assert st["src"] == src and st["src"].startswith("blob:"), st             # тот же поток hls.js
+            assert page.evaluate("document.querySelector('#audio').loop") is False
+            assert len(playbacks) == 1, playbacks                                     # без нового резолва
+            assert hls_proxy.stats()["sessions"] == 1
+        finally:
+            browser.close()

@@ -279,6 +279,9 @@ def handle(route: Route) -> None:
             return route.abort("failed")
         return js(route, {"query": "m11", "count": 20, "tracks": [track(100 + off + i) for i in range(20)] if off < 40 else [],
                           "failed_sources": [], "has_more": off + 20 < 40})
+    if path == "/api/search" and q.get("q") == "s10":                 # очередь из 10 треков (повтор и перемешивание, S10)
+        return js(route, {"query": "s10", "count": 10, "tracks": [track(200 + i) for i in range(10)], "failed_sources": [],
+                          "has_more": False})
     if path == "/api/search" and q.get("sources") == "sc":
         return js(route, {"query": q.get("q"), "count": 3, "tracks": [sc_track(i) for i in range(3)], "failed_sources": [],
                           "has_more": False, "source_status": {"sc": "ok"}})
@@ -934,6 +937,103 @@ def main() -> int:
               and sorted(queued2[20:]) == sorted(t for t in page.evaluate(row_titles) if t not in queued),
               "новая страница списка продолжила очередь в конце, прежний порядок очереди сохранён")
         page.click("#queue-close")
+
+        print("Повтор off / all / one (S10)")
+        cur_id = "document.querySelector('#audio').src.split('/').pop()"
+        rep_btn = "#player [data-do=repeat]"
+
+        def repeat_ui() -> list[dict]:
+            return page.evaluate("""[...document.querySelectorAll('[data-do=repeat]')].map(b => ({mode: b.dataset.mode,
+                pressed: b.getAttribute('aria-pressed'), label: b.getAttribute('aria-label'), title: b.title,
+                icon: b.querySelector('use').getAttribute('href')}))""")
+
+        def to_end() -> None:                                       # конец трека без ожидания 30 с
+            page.wait_for_function("(() => { const a = document.querySelector('#audio'); return Number.isFinite(a.duration) && a.currentTime > 0 })()")
+            page.evaluate("(() => { const a = document.querySelector('#audio'); a.currentTime = a.duration - 0.4 })()")
+
+        def wait_track(tid: str, timeout: int = 10000) -> bool:
+            try:
+                page.wait_for_function("(id) => { const a = document.querySelector('#audio'); return a.src.endsWith('/' + id) && !a.paused }",
+                                       arg=tid, timeout=timeout)
+                return True
+            except Exception:
+                return False
+
+        def set_autoplay(on: bool) -> None:                          # как пользователь: экран настроек
+            page.click(".nav__item[data-view=settings]")
+            page.wait_for_selector("#view-settings:not([hidden])")
+            page.set_checked("#set-autoplay", on)
+            page.wait_for_function("(v) => fetch('/api/settings').then(r => r.json()).then(d => d.values.autoplay === v)", arg=on)
+
+        set_autoplay(False)                                          # конец очереди — без автопродолжения похожими
+        page.fill("#search-input", "s10")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 10")
+        page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        check(wait_track("trk00000200"), "очередь из 10 треков запущена с первого")
+        ui = repeat_ui()
+        check(len(ui) == 3 and all(u == {"mode": "off", "pressed": "false", "label": "Повтор: выключен", "title": "Повтор: выключен",
+                                         "icon": "#i-repeat"} for u in ui), "повтор выключен: подпись, title, aria-pressed на всех кнопках")
+        page.click(rep_btn)
+        ui = repeat_ui()
+        check(all(u["mode"] == "all" and u["pressed"] == "true" and u["label"] == "Повтор: вся очередь" and u["icon"] == "#i-repeat" for u in ui),
+              "первое нажатие — повтор очереди (на всех экранах)")
+        page.click(rep_btn)
+        ui = repeat_ui()
+        check(all(u["mode"] == "one" and u["pressed"] == "true" and u["label"] == "Повтор: текущий трек" and u["icon"] == "#i-repeat-one" for u in ui),
+              "второе нажатие — повтор трека, значок с «1»")
+        to_end()
+        page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/trk00000200') && !a.paused && a.currentTime < 2 })()",
+                               timeout=10000)
+        check(page.evaluate("document.querySelector('#audio').loop") is False,
+              "repeat one: доигравший трек начинается сначала (через ended, без audio.loop)")
+        page.click("#player [data-do=next]")
+        check(wait_track("trk00000201"), "repeat one: кнопка «Следующий» переключает на следующий трек")
+        page.click(rep_btn)
+        check(all(u["mode"] == "off" and u["pressed"] == "false" for u in repeat_ui()), "третье нажатие — повтор выключен")
+        page.locator("#tracks .row").nth(9).click(position={"x": 260, "y": 20})
+        check(wait_track("trk00000209"), "последний трек очереди играет")
+        to_end()
+        page.wait_for_function("document.querySelector('#audio').paused && document.body.dataset.audio === 'paused'", timeout=10000)
+        check(page.evaluate(cur_id) == "trk00000209", "repeat off: после последнего трека очередь закончилась (без автопродолжения)")
+        page.click(rep_btn)                                          # all
+        page.click("#player [data-do=play]")
+        page.wait_for_function("!document.querySelector('#audio').paused")
+        to_end()
+        check(wait_track("trk00000200"), "repeat all: после последнего трека — снова первый")
+        page.click(rep_btn); page.click(rep_btn)                     # one → off
+        check(all(u["mode"] == "off" for u in repeat_ui()), "повтор снова выключен")
+
+        print("Перемешивание без повторов на 10 треках (S10)")
+        page.click("#player [data-do=shuffle]")
+        check(page.get_attribute("#player [data-do=shuffle]", "aria-pressed") == "true", "перемешивание включено")
+        order = [page.evaluate(cur_id)]
+        for _ in range(9):
+            before = order[-1]
+            page.click("#player [data-do=next]")
+            page.wait_for_function(f"(b) => {cur_id} !== b && !document.querySelector('#audio').paused", arg=before)
+            order.append(page.evaluate(cur_id))
+        check(len(set(order)) == 10 and set(order) == {f"trk{200 + i:08d}" for i in range(10)},
+              f"shuffle: 10 треков без повторов до конца круга ({order})")
+        page.click("#player [data-do=next]")
+        page.wait_for_timeout(500)
+        check(page.evaluate(cur_id) == order[-1], "shuffle, repeat off: круг сыгран — «Следующий» ничего не повторяет")
+        back = []
+        for _ in range(3):
+            before = page.evaluate(cur_id)
+            # «Назад» в первые 3 с трека — предыдущий трек (позже — перемотка в начало): условие задаём явно,
+            # чтобы проверка не зависела от скорости машины
+            page.evaluate("document.querySelector('#audio').currentTime = 0.5")
+            page.click("#player [data-do=prev]")
+            page.wait_for_function(f"(b) => {cur_id} !== b", arg=before)
+            back.append(page.evaluate(cur_id))
+        check(back == order[-2:-5:-1], f"«Назад» идёт по фактическому порядку перемешивания ({back} vs {order[-2:-5:-1]})")
+        page.click("#player [data-do=next]")
+        page.wait_for_function(f"(b) => {cur_id} !== b", arg=back[-1])
+        check(page.evaluate(cur_id) == order[-3], "после «Назад» «Вперёд» идёт по уже сыгранному порядку, без повтора трека")
+        page.click("#player [data-do=shuffle]")
+        set_autoplay(True)
 
         print("Узкое окно (980x640) и светлая тема")
         page.set_viewport_size({"width": 980, "height": 640})

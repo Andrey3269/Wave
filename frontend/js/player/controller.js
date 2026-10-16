@@ -6,7 +6,7 @@
 //   "track"   (track)       — начался новый трек: мини-плеер, баннер, страница трека, очередь
 //   "loading" (text|null)   — вместо исполнителя показать статус («Загрузка…», «Буферизация…») или вернуть имя
 //   "playing" (bool)        — играет / пауза
-//   "modes"   ("shuffle"|"repeat") — сменился режим перемешивания или повтора
+//   "modes"   ("shuffle"|"repeat") — сменился режим перемешивания или повтора (state.shuffle, state.repeat)
 //   "mix"     ()            — сменился микс, из которого играет очередь (state.mixId)
 // Что делать, если Play нажали, когда ничего не загружено, решает приложение: setIdleAction().
 import { clamp } from "../core/format.js";
@@ -14,6 +14,7 @@ import { api, jsonOpts, recsResult, trackKey, trackPayload } from "../core/api.j
 import { Emitter } from "../core/emitter.js";
 import { audio } from "../core/elements.js";
 import { state, queue, current } from "../state/store.js";
+import { nextRepeat, normRepeat } from "./queue.js";
 import { toast } from "../components/toast.js";
 import { getDuration, seekBy, resetProgress, updateProgress } from "./sliders.js";
 
@@ -130,7 +131,7 @@ function playDirect(url, at, kind) {
   player.pending = false;
   player.kind = kind;
   audio.src = url;
-  audio.loop = state.repeat;
+  audio.loop = false;                     // повтор трека — в обработчике ended (одинаково для файла и HLS)
   if (at > 0) audio.addEventListener("loadedmetadata", () => { audio.currentTime = at; }, { once: true });
   audio.play().catch(onPlayRejected);
 }
@@ -163,7 +164,7 @@ async function playHls(track, info, at, gen) {
   player.pending = false;
   h.on(Hls.Events.MANIFEST_PARSED, () => {
     if (gen !== player.gen) return;
-    audio.loop = state.repeat;
+    audio.loop = false;
     audio.play().catch(onPlayRejected);
   });
   h.on(Hls.Events.ERROR, (_e, data) => {
@@ -241,26 +242,50 @@ export function togglePlay() {
   return undefined;
 }
 
-export function nextIndex() {
-  return queue.nextIndex({ shuffle: state.shuffle });
+/** Следующая позиция очереди при текущих режимах; auto — трек доиграл сам (только тогда repeat "one" — тот же трек). */
+export function nextIndex(auto = false) {
+  return queue.nextIndex({ shuffle: state.shuffle, repeat: state.repeat, auto });
 }
+/** «Следующий» (кнопка, медиаклавиша, переход после ошибки). */
 export function playNext() {
   const j = nextIndex();
-  if (j >= 0) playIndex(j);
+  if (j < 0) return;
+  if (j === queue.index) replayCurrent();                // repeat "all" с одним треком: тот же трек сначала
+  else playIndex(j);
 }
 export function playPrev() {
-  // как в большинстве плееров: после 3 секунд «назад» перематывает в начало трека
-  if (audio.currentTime > 3 || queue.index <= 0) { audio.currentTime = 0; return; }
-  playIndex(queue.prevIndex());
+  // как в большинстве плееров: после 3 секунд «назад» перематывает в начало трека;
+  // при перемешивании «назад» идёт по истории воспроизведения (player/queue.js)
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  const j = queue.prevIndex({ shuffle: state.shuffle });
+  if (j < 0) { audio.currentTime = 0; return; }
+  playIndex(j);
 }
 export function setShuffle(on) {
-  state.shuffle = on;
+  state.shuffle = !!on;
+  if (state.shuffle) queue.restartCycle();               // новый круг без повторов — с текущего трека
   playerEvents.emit("modes", "shuffle");
 }
-export function setRepeat(on) {
-  state.repeat = on;
-  audio.loop = on;
+/** Повтор: "off" | "all" | "one". audio.loop не используется: с ним не приходит ended, и повтор не работал бы
+ *  одинаково для обычного файла и HLS. */
+export function setRepeat(mode) {
+  state.repeat = normRepeat(mode);
+  audio.loop = false;
   playerEvents.emit("modes", "repeat");
+}
+/** Кнопка повтора: выкл → вся очередь → текущий трек → выкл. */
+export function cycleRepeat() { setRepeat(nextRepeat(state.repeat)); }
+
+/** Тот же трек сначала (repeat "one" или единственный трек при repeat "all"): без нового резолва потока. */
+function replayCurrent() {
+  const t = current();
+  if (!t) return;
+  playerEvents.emit("replay", t);
+  audio.currentTime = 0;
+  audio.play().catch((err) => {
+    if (err.name === "AbortError" || current() !== t) return;
+    startTrack(t, 0);                                    // поток не продолжился с начала — запускаем трек заново
+  });
 }
 
 // ---------- Прогрев ----------
@@ -285,9 +310,10 @@ export function scheduleWarm(list) {
   warmTimers.forEach(clearTimeout);
   warmTimers = list.map((t, i) => setTimeout(() => warmTrack(t), i * 1500));
 }
-/** Прогреваем следующий трек очереди (при shuffle он заранее неизвестен). */
+/** Прогреваем следующий трек очереди (при перемешивании модель заранее выбирает его и запоминает выбор). */
 function warmNext() {
-  if (!state.shuffle) warmTrack(queue.peekNext());
+  const t = queue.peekNext({ shuffle: state.shuffle, repeat: state.repeat });
+  if (t) warmTrack(t);
 }
 
 // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
@@ -380,8 +406,9 @@ export function initPlayer() {
   audio.addEventListener("seeked", updatePositionState);
   audio.addEventListener("ratechange", updatePositionState);
   audio.addEventListener("ended", () => {
-    const j = nextIndex();
-    if (j >= 0) playIndex(j);
+    const j = nextIndex(true);
+    if (j >= 0 && j === queue.index) replayCurrent();
+    else if (j >= 0) playIndex(j);
     else if (state.settings.autoplay && navigator.onLine) continueWithRecs();
     else stopAtEnd();
   });

@@ -119,7 +119,11 @@ export function renderFsQueue() {
   const rest = Math.max(0, q.length - cur - 1);
   nodes.push(mk("li", "fq__h", rest ? `Далее · ${rest}` : "Далее"));
   if (state.shuffle && rest) nodes.push(mk("li", "fq__note", "Включено перемешивание: следующий трек выбирается случайно, порядок ниже не гарантирован."));
-  if (!rest) nodes.push(mk("li", "fq__note", state.settings.autoplay ? "Дальше ничего нет. Когда очередь закончится, Wave продолжит похожими треками." : "Дальше ничего нет."));
+  if (!rest) {
+    const note = state.repeat === "all" ? "Это последний трек: дальше очередь начнётся сначала (повтор очереди)."
+      : state.settings.autoplay ? "Дальше ничего нет. Когда очередь закончится, Wave продолжит похожими треками." : "Дальше ничего нет.";
+    nodes.push(mk("li", "fq__note", note));
+  }
   for (let i = cur + 1; i < Math.min(q.length, cur + 1 + FQ_MAX); i++) nodes.push(fqRow(q[i], i));
   if (rest > FQ_MAX) nodes.push(mk("li", "fq__note", `Показаны первые ${FQ_MAX} из ${rest}.`));
   fs.qList.replaceChildren(...nodes);
@@ -127,6 +131,7 @@ export function renderFsQueue() {
 
 export function initQueueDrawer() {
   playerEvents.on("track", () => renderQueue());
+  playerEvents.on("modes", () => renderQueue());          // подсказки о перемешивании и повторе
   // Один обработчик на весь список очереди
   el.queueList.addEventListener("click", (e) => {
     const b = e.target.closest("button");

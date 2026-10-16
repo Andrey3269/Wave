@@ -32,10 +32,24 @@ function setLoading(text) {
   const t = current();
   if (t) renderArtists(el.artist, t);
 }
+// Повтор (S10): три режима на одной кнопке. Нажатое состояние — прежнее (акцентный цвет), повтор трека
+// дополнительно отличается значком с «1». Подпись называет текущий режим.
+const REPEAT_UI = {
+  off: { label: "Повтор: выключен", icon: "#i-repeat" },
+  all: { label: "Повтор: вся очередь", icon: "#i-repeat" },
+  one: { label: "Повтор: текущий трек", icon: "#i-repeat-one" },
+};
 /** Режимы перемешивания и повтора: кнопки на всех экранах. */
 function paintModes() {
   ctl.shuffle.forEach((b) => b.setAttribute("aria-pressed", String(state.shuffle)));
-  ctl.repeat.forEach((b) => b.setAttribute("aria-pressed", String(state.repeat)));
+  const ui = REPEAT_UI[state.repeat] || REPEAT_UI.off;
+  ctl.repeat.forEach((b) => {
+    b.dataset.mode = state.repeat;
+    b.setAttribute("aria-pressed", String(state.repeat !== "off"));
+    b.setAttribute("aria-label", ui.label);
+    b.title = ui.label;
+    b.querySelector("use")?.setAttribute("href", ui.icon);
+  });
 }
 
 export function initPlayerBar() {
@@ -44,4 +58,5 @@ export function initPlayerBar() {
   playerEvents.on("playing", setPlayingUI);
   playerEvents.on("modes", paintModes);
   playerEvents.on("mix", () => markMix());
+  paintModes();
 }

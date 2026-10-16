@@ -26,7 +26,8 @@ export const state = {
   dlDenied: new Map(),   // "source:id" -> причина окончательного отказа источника (на время сессии)
   dlTitles: new Map(),   // "source:id" -> название (для сообщений о готовности и ошибке)
   query: "", offset: 0, more: false, loadingMore: false,
-  shuffle: false, repeat: false, seeking: false, errors: 0,
+  shuffle: false, seeking: false, errors: 0,
+  repeat: "off",     // повтор: "off" | "all" | "one" (player/queue.js; до S10 — булево «повторять трек»)
   searchCtl: null, baseStatus: "",
   // главная
   feed: [], feedPage: 1, salt: 0, featured: null, personalized: false, feedRadio: false,

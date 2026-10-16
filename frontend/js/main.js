@@ -24,7 +24,7 @@ import { openMenu, closeMenu, initMenu } from "./components/menu.js";
 import { repaintFav, toggleFav } from "./components/favorites.js";
 import { shareTrack } from "./components/share.js";
 import { toggleMute, initSliders } from "./player/sliders.js";
-import { setIdleAction, playIndex, togglePlay, playNext, playPrev, setShuffle, setRepeat,
+import { setIdleAction, playIndex, togglePlay, playNext, playPrev, setShuffle, cycleRepeat,
   initPlayer } from "./player/controller.js";
 import { fetchPage, playFromList, initList, initListWarm } from "./views/list.js";
 import { syncTabs } from "./views/shell.js";
@@ -122,7 +122,7 @@ const ACTIONS = {
   prev: () => playPrev(),
   next: () => playNext(),
   shuffle: () => setShuffle(!state.shuffle),
-  repeat: () => setRepeat(!state.repeat),
+  repeat: () => cycleRepeat(),                           // выкл → вся очередь → текущий трек → выкл
   like: (b) => { const t = b.closest("#hero") ? heroTrack() : current(); if (t) toggleFav(t); },
   queue: () => toggleQueue(),
   now: () => openNowFromUi(),
