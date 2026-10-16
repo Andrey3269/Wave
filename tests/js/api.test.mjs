@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { api, jsonOpts, recsResult, trackKey, trackPayload } from "../../frontend/js/core/api.js";
 
 const full = {
-  id: "abc", source: "yt", title: "Т", artist: "А", artists: ["А", "Б"], album: "Альбом", duration: 200,
+  id: "abc", source: "yt", title: "Т", artist: "А", artists: ["А", "Б"], album: "Альбом", album_id: "MPREb_1", duration: 200,
   cover: "https://lh3.googleusercontent.com/x=w544-h544", explicit: true, stream_url: "/api/stream/yt/abc",
   artist_id: "UC1", artist_ids: ["UC1", "UC2"], plays: 12345, released: "2025-03-01T10:00:00Z",
   url: "https://music.youtube.com/watch?v=abc", reason: "Похоже на …", _i: 7,
@@ -18,8 +18,10 @@ test("trackKey: источник и id вместе", () => {
 
 test("trackPayload: все поля Track, без служебных полей интерфейса", () => {
   const p = trackPayload(full);
-  assert.deepEqual(Object.keys(p).sort(), ["album", "artist", "artist_id", "artist_ids", "artists", "cover", "duration",
+  // S10: + album_id (аддитивно)
+  assert.deepEqual(Object.keys(p).sort(), ["album", "album_id", "artist", "artist_id", "artist_ids", "artists", "cover", "duration",
     "explicit", "id", "plays", "released", "source", "stream_url", "title", "url"]);
+  assert.equal(p.album_id, "MPREb_1");
   assert.equal(p.plays, 12345);
   assert.equal(p.released, "2025-03-01T10:00:00Z");
   assert.equal(p.explicit, true);
@@ -28,7 +30,7 @@ test("trackPayload: все поля Track, без служебных полей 
 test("trackPayload: пропуски заменяются значениями по умолчанию контракта", () => {
   const p = trackPayload({ id: "1", source: "sc", title: "x", artist: "y", stream_url: "/api/stream/sc/1", plays: 1.5, released: 2025 });
   assert.deepEqual(p.artists, ["y"]);
-  assert.equal(p.album, null); assert.equal(p.duration, null); assert.equal(p.cover, null);
+  assert.equal(p.album, null); assert.equal(p.album_id, null); assert.equal(p.duration, null); assert.equal(p.cover, null);
   assert.equal(p.explicit, false); assert.equal(p.artist_id, null); assert.deepEqual(p.artist_ids, []);
   assert.equal(p.plays, null);                      // не целое — не прослушивания
   assert.equal(p.released, null);                   // не строка — не дата

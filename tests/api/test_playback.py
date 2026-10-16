@@ -46,7 +46,7 @@ def test_put_get_roundtrip(api):
         {"index": 1, "position": 42.5, "shuffle": True, "repeat": "all", "label": "Альбом 1",
          "history": [0, 2, 1], "cursor": 2, "cycle": [0, 2, 1]}
     assert st["tracks"][0] == {**track_payload(id_=YT[0]), "plays": None, "released": None,
-                               "artist_ids": ["UCartist"], "url": None}
+                               "artist_ids": ["UCartist"], "url": None, "album_id": None}
     assert isinstance(st["saved_at"], float)
 
 
@@ -266,3 +266,12 @@ def test_beacon_endpoints_behave_like_put_and_patch(api):
     assert api.post("/api/player/state/position", json={"key": f"yt:{YT[0]}", "index": 1, "position": 9}).status_code == 409
     assert api.post("/api/player/state", json=_state(index=9)).status_code == 400
     assert api.get("/api/player/state").json()["state"]["position"] == 8
+
+
+
+def test_album_id_is_restored_only_if_it_is_an_album(api):
+    t1 = {**track_payload(id_=YT[0]), "album_id": "MPREb_alb00000001"}
+    t2 = {**track_payload(id_=YT[1]), "album_id": "OLAK5uy_polar"}
+    api.put("/api/player/state", json={"tracks": [t1, t2], "index": 0})
+    a, b = api.get("/api/player/state").json()["state"]["tracks"]
+    assert a["album_id"] == "MPREb_alb00000001" and b["album_id"] is None

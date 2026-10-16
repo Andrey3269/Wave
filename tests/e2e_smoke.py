@@ -104,6 +104,7 @@ def wav(seconds: int = 30, rate: int = 8000) -> bytes:
 
 AUDIO = wav()
 AUDIO6 = wav(6)                        # короткие треки раздела «История» (S10): порог прослушивания 3 с
+E2E_ALBUM_ID = "MPREb_e2eAlbum0001"    # id альбома у треков страницы альбома (S10: «Открыть альбом» по id)
 
 
 def cover_svg(url: str) -> str:
@@ -309,7 +310,7 @@ def handle(route: Route) -> None:
     m = re.match(r"^/api/album/(\w+)/([\w-]+)$", path)
     if m:
         return js(route, {"album": {"id": m.group(2), "source": "yt", "kind": "album", "title": "Альбом 1", "artist": "GSPD", "year": "2025", "cover": track(2)["cover"], "track_count": 8},
-                          "tracks": [track(80 + i) for i in range(8)], "unavailable": 0})
+                          "tracks": [{**track(80 + i), "album_id": E2E_ALBUM_ID} for i in range(8)], "unavailable": 0})
 
     if path == "/api/lyrics":
         lines = [{"t": i * 3.0, "text": f"Строка текста номер {i + 1}"} for i in range(9)]
@@ -1175,6 +1176,32 @@ def main() -> int:
               "повтор трека: каждый проигрыш — одна запись после своего порога, пропусков нет")
         page.click(rep_btn)                                          # one → off
         page.remove_listener("request", on_history)
+
+        print("«Открыть альбом»: по ID и резервный поиск по названию (S10)")
+        album_reqs: list[str] = []
+        on_album = lambda r: album_reqs.append(urlparse(r.url).path) if "/api/album/" in r.url or "/api/search/albums" in r.url else None   # noqa: E731
+        page.on("request", on_album)
+        page.fill("#search-input", "gspd")
+        page.keyboard.press("Enter")
+        page.click("#tabs [data-tab=tracks]")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 20")
+        page.click("#tracks .row:nth-child(1) .track__more")
+        page.click("#menu [data-act=album]")
+        page.wait_for_function("document.querySelector('#d-kind').textContent === 'Альбом' && document.querySelectorAll('#tracks .row:not(.row--skel)').length === 8")
+        check(album_reqs[:2] == ["/api/search/albums", "/api/album/yt/MPRE0"],
+              f"трек без id альбома: альбом найден поиском по исполнителю и названию, как раньше ({album_reqs})")
+        album_reqs.clear()
+        page.click("#tracks .row:nth-child(2) .track__more")
+        page.click("#menu [data-act=album]")
+        page.wait_for_function("(p) => performance.getEntriesByType('resource').some((e) => e.name.endsWith(p))",
+                               arg=f"/api/album/yt/{E2E_ALBUM_ID}")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 8")
+        page.wait_for_timeout(300)
+        check(album_reqs == [f"/api/album/yt/{E2E_ALBUM_ID}"], f"трек с id альбома: альбом открыт по id, без поиска ({album_reqs})")
+        page.click("#back")
+        page.wait_for_function("document.querySelector('#d-kind').textContent === 'Альбом'")
+        check(True, "«Назад» после альбома по id работает")
+        page.remove_listener("request", on_album)
         # Запись несохранённого при закрытии окна (sendBeacon) проверяет tests/api/test_playback_browser.py: здесь
         # все запросы идут через перехват Playwright (ctx.route), а он не доставляет запросы выгружаемой страницы.
 

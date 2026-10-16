@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import library
 import paths
@@ -38,6 +38,7 @@ class TrackIn(BaseModel):
     artist: str
     artists: list[str] = []
     album: str | None = None
+    album_id: str | None = Field(None, pattern=r"^MPRE[\w-]{1,80}$")   # S10, аддитивно (domain.models.ALBUM_ID_RE)
     duration: int | None = None
     cover: str | None = None
     explicit: bool = False

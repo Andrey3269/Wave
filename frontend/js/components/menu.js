@@ -32,7 +32,7 @@ export function openMenu(track, anchor, ctx = null) {
     ];
     if (state.view === "playlist" && anchor.closest("#tracks")) items.push(["unlist", "Убрать из плейлиста", "i-trash"]);
     items.push(["artist", "Перейти к исполнителю", "i-user"]);
-    if (track.album) items.push(["album", "Открыть альбом", "i-disc"]);
+    if (track.album || track.album_id) items.push(["album", "Открыть альбом", "i-disc"]);
     const denied = !downloaded && state.dlDenied.has(trackKey(track));
     items.push(["download", downloaded ? "Удалить загрузку" : denied ? "Скачивание недоступно" : "Скачать", downloaded ? "i-trash" : "i-download"]);
     items.push(["share", "Поделиться", "i-share"]);

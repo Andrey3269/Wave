@@ -156,6 +156,7 @@ def test_album_page_yt(api):
     cover = "https://lh3.googleusercontent.com/alb1=w544-h544-l90-rj"
     assert all(t["cover"] == cover and t["album"] == "Polar Nights" for t in body["tracks"])
     assert body["tracks"][1]["artist"] == "Aurora Wave"                  # у трека нет артистов -> артист альбома
+    assert all(t["album_id"] == "MPREb_alb00000001" for t in body["tracks"])   # S10: «Открыть альбом» по id
 
 
 def test_album_page_yt_falls_back_to_playlist(api):
@@ -181,6 +182,7 @@ def test_album_page_sc_fills_stub_tracks(api):
     assert r.status_code == 200
     assert [t["id"] for t in r.json()["tracks"]] == ["1000000001", "1000000011"]
     assert r.json()["unavailable"] == 2                                   # превью Go+ и трек, не пришедший из API
+    assert all(t["album_id"] is None for t in r.json()["tracks"])         # S10: плейлист SoundCloud за альбом не выдаём
     assert ("api_get", "tracks", {"ids": "1000000011,1000000012,1000000013"}) in api.sc.calls
 
 

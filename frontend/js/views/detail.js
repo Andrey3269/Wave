@@ -80,8 +80,10 @@ export async function openAlbum(source, id, pl) {
   }
 }
 
-/** «Открыть альбом» из меню трека: альбом ищется по исполнителю и названию альбома. */
+/** «Открыть альбом» из меню трека. Если источник дал id альбома (S10: YouTube Music, поле album_id) — открываем
+ *  альбом по id. Иначе (SoundCloud, снимки треков до S10) — как раньше: ищем по исполнителю и названию альбома. */
 export async function goAlbum(t) {
+  if (t.album_id) { nav.to(() => openAlbum(t.source, t.album_id)); return; }
   toast("Ищем альбом…");
   try {
     const q = `${(t.artists && t.artists[0]) || t.artist} ${t.album}`;

@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, HTTPException, Request
 
 import library
+from domain.models import album_id_or_none
 from streaming.resolver import SC_ID_RE, VIDEO_ID_RE
 
 log = logging.getLogger("musicmeta.playback")
@@ -122,6 +123,7 @@ def _track(t: Any) -> dict:
         "artist": _text(t.get("artist"), 500, required=True),
         "artists": [a for a in (_soft_text(x, 300) for x in artists) if a],
         "album": _soft_text(t.get("album"), 500),
+        "album_id": album_id_or_none(t.get("album_id")),
         "duration": duration if isinstance(duration, int) and not isinstance(duration, bool) and 0 <= duration <= MAX_POSITION else None,
         "cover": _cover(t.get("cover")),
         "explicit": t.get("explicit") is True,

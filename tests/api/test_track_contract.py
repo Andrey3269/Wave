@@ -12,7 +12,8 @@ import library
 import main
 from wavetest.fakes import load_fixture
 
-TRACK_FIELDS = {"id", "source", "title", "artist", "artists", "album", "duration", "cover", "explicit",
+# S10: + album_id (аддитивно, необязательное: id альбома YouTube Music; план миграции — reports/S10.md)
+TRACK_FIELDS = {"id", "source", "title", "artist", "artists", "album", "album_id", "duration", "cover", "explicit",
                 "stream_url", "artist_id", "artist_ids", "plays", "released", "url"}
 REQUIRED = {"id", "source", "title", "artist", "artists", "stream_url"}
 

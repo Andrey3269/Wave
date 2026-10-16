@@ -27,7 +27,7 @@ export const trackKey = (t) => `${t.source}:${t.id}`;
 // Снимок трека для избранного, истории и плейлистов — все поля Track (S6, находка M6: explicit, plays и
 // released раньше терялись, и в «Нравится» не было сортировки по прослушиваниям и дате выхода)
 export const trackPayload = (t) => ({ id: t.id, source: t.source, title: t.title, artist: t.artist, artists: t.artists || [t.artist],
-  album: t.album || null, duration: t.duration || null, cover: t.cover || null, explicit: !!t.explicit,
+  album: t.album || null, album_id: t.album_id || null, duration: t.duration || null, cover: t.cover || null, explicit: !!t.explicit,
   stream_url: t.stream_url, artist_id: t.artist_id || null, artist_ids: t.artist_ids || [],
   plays: Number.isInteger(t.plays) ? t.plays : null, released: typeof t.released === "string" ? t.released : null,
   url: t.url || null });

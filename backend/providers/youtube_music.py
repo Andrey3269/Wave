@@ -27,7 +27,7 @@ import requests
 from ytmusicapi import YTMusic
 from ytmusicapi.exceptions import YTMusicGatedError, YTMusicServerError, YTMusicUserError
 
-from domain.models import Track, album_card, artist_card
+from domain.models import Track, album_card, album_id_or_none, artist_card
 from providers.base import Capabilities, Provider, ProviderError
 
 log = logging.getLogger("musicmeta.providers.yt")
@@ -95,8 +95,9 @@ def normalize_track(item: dict) -> Track | None:
     artists = [a["name"] for a in (item.get("artists") or []) if a.get("name")]
     artist_id = next((a["id"] for a in (item.get("artists") or []) if a.get("name") and a.get("id")), None)
     artist_ids = [a.get("id") for a in (item.get("artists") or []) if a.get("name")]
-    raw_album = item.get("album")       # в поиске это {"name": ...}, а в get_album() просто строка с названием
+    raw_album = item.get("album")       # в поиске это {"name": ..., "id": "MPRE…"}, а в get_album() просто строка с названием
     album = raw_album.get("name") if isinstance(raw_album, dict) else (raw_album if isinstance(raw_album, str) else None)
+    album_id = album_id_or_none(raw_album.get("id")) if isinstance(raw_album, dict) else None   # S10
 
     return Track(
         id=video_id,
@@ -105,6 +106,7 @@ def normalize_track(item: dict) -> Track | None:
         artist=", ".join(artists) or "Неизвестный исполнитель",
         artists=artists,
         album=album,
+        album_id=album_id,
         duration=parse_duration(item),
         cover=best_cover(item.get("thumbnails")),
         explicit=bool(item.get("isExplicit")),
@@ -312,6 +314,7 @@ class YouTubeMusicProvider(Provider):
                 continue
             t.cover = t.cover or cover
             t.album = t.album or meta.get("title")
+            t.album_id = t.album_id or album_id_or_none(album_id)          # S10: трек этой страницы альбома
             if not t.artists and who:
                 t.artists, t.artist = [who], who
             tracks.append(t)

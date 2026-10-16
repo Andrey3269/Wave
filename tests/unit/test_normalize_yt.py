@@ -22,6 +22,7 @@ def test_full_song_item():
         "artist": "Aurora Wave, Guest Singer, Third Feat",
         "artists": ["Aurora Wave", "Guest Singer", "Third Feat"],
         "album": "Polar Nights",
+        "album_id": "MPREb_alb00000001",             # S10: browseId альбома из {"name", "id"}
         "duration": 225,
         "cover": "https://lh3.googleusercontent.com/song1=w544-h544-l90-rj",
         "explicit": True,
@@ -115,3 +116,20 @@ def test_watch_playlist_radio_items_normalize():
     assert tracks[0].duration == 225 and tracks[1].duration == 241
     assert tracks[0].cover == "https://lh3.googleusercontent.com/song1=w544-h544-l90-rj"
     assert tracks[1].album is None
+
+
+
+@pytest.mark.parametrize("album, expected", [
+    ({"name": "A", "id": "MPREb_alb00000001"}, "MPREb_alb00000001"),
+    ({"name": "A", "id": None}, None),                                 # «Singles» без id
+    ({"name": "A"}, None),
+    ({"name": "A", "id": "OLAK5uy_polar"}, None),                       # плейлист альбома — не id альбома
+    ({"name": "A", "id": "VLPLxxxx"}, None),
+    ({"name": "A", "id": "MPRE../x"}, None),
+    ({"name": "A", "id": 12}, None),
+    ("String Album", None),                                            # get_album(): только название
+])
+def test_album_id_only_for_album_browse_ids(album, expected):
+    """S10: id альбома берётся, только если источник его даёт и это id альбома (MPRE…), иначе None."""
+    t = main._normalize_yt({"videoId": "AAAAAAAAAA1", "title": "t", "album": album})
+    assert t.album_id == expected

@@ -20,6 +20,7 @@ def test_full_track_item():
         "artist": "Indie Artist",                # publisher_metadata.artist приоритетнее username
         "artists": ["Indie Artist"],
         "album": "Mornings EP",
+        "album_id": None,                        # S10: трек SoundCloud не ссылается на альбом — id не выдумываем
         "duration": 188,                         # full_duration 187 500 мс, а не 30-секундный duration
         "cover": "https://i1.sndcdn.com/artworks-abc-t500x500.jpg",
         "explicit": True,

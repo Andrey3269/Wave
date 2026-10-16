@@ -56,7 +56,7 @@ def test_favorite_stored_snapshot_fields(api):
     # S6 (M6): снимок содержит все поля Track, в том числе explicit, plays, released
     assert stored == {**{k: body[k] for k in ("id", "source", "title", "artist", "artists", "album", "duration", "cover",
                                               "explicit", "stream_url", "artist_id", "artist_ids", "url")},
-                      "plays": None, "released": None}
+                      "plays": None, "released": None, "album_id": None}            # S10: + album_id (аддитивно)
     assert api.profile.sql("SELECT key FROM favorites") == [(f"yt:{A}",)]
 
 
@@ -284,3 +284,14 @@ def test_skip_records_are_trimmed_with_history(api, monkeypatch):
     for i in range(4):
         api.post("/api/history/skip", json={"source": "yt", "id": f"EEEEEEEEEE{i}", "track": track_payload(id_=f"EEEEEEEEEE{i}")})
     assert api.profile.sql("SELECT key FROM history ORDER BY id") == [("yt:EEEEEEEEEE2",), ("yt:EEEEEEEEEE3",)]
+
+
+
+def test_album_id_is_kept_in_snapshots_and_validated(api):
+    """S10: album_id сохраняется в избранном и истории; не id альбома — 422 (как и другие поля Track)."""
+    api.post("/api/favorites", json=track_payload(id_=A, album_id="MPREb_alb00000001"))
+    assert api.get("/api/favorites").json()["items"][0]["album_id"] == "MPREb_alb00000001"
+    for bad in ("OLAK5uy_polar", "MPRE/../x", 5):
+        assert api.post("/api/favorites", json=track_payload(id_=B, album_id=bad)).status_code == 422
+    old = track_payload(id_=C)                                             # снимок до S10: поля нет вовсе
+    assert "album_id" not in old and api.post("/api/history", json=old).status_code == 200

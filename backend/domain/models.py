@@ -7,9 +7,18 @@ main.Track остаётся тем же классом (main импортиру�
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel
+
+# browseId альбома YouTube Music. Плейлисты (VL…, PL…, OLAK5uy_…) сюда не подходят: их за альбом не выдаём.
+ALBUM_ID_RE = re.compile(r"^MPRE[\w-]{1,80}$")
+
+
+def album_id_or_none(value) -> str | None:
+    """id альбома YouTube Music или None (нет, не строка, не альбом)."""
+    return value if isinstance(value, str) and ALBUM_ID_RE.fullmatch(value) else None
 
 
 class Track(BaseModel):
@@ -19,6 +28,9 @@ class Track(BaseModel):
     artist: str                              # для отображения: "A, B"
     artists: list[str]
     album: str | None = None
+    # S10, аддитивно: id альбома в источнике, только если источник его даёт и это точно альбом (YouTube Music:
+    # browseId вида MPRE…). У SoundCloud трек не ссылается на альбом — None. «Открыть альбом» без id ищет по названию.
+    album_id: str | None = None
     duration: int | None = None              # секунды
     cover: str | None = None                 # URL обложки (крупная версия)
     explicit: bool = False
