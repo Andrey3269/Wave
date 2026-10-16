@@ -346,3 +346,42 @@ def test_slots_under_random_cancellation_never_exceed_the_limit():
     s, inside = asyncio.run(main())
     assert inside["max"] <= 3 and s.busy == 0 and inside["n"] == 0
     assert time.monotonic() - start < 10
+
+
+@pytest.mark.skipif(not download_io._DIR_FD, reason="удаление относительно дескриптора каталога — POSIX")
+def test_clear_part_dir_detects_a_swapped_directory(tmp_path, monkeypatch):
+    """Папку .part подменили другим каталогом между проверкой и открытием: ничего не удаляется (TOCTOU)."""
+    part = tmp_path / "A - B [yt-AAAAAAAAAA1].part"
+    part.mkdir()
+    (part / "audio.part").write_bytes(b"half")
+    precious = tmp_path / "precious"
+    precious.mkdir()
+    (precious / "keep.txt").write_text("x")
+    real_open = os.open
+
+    def swapping_open(path, flags, *a, **kw):
+        if str(path) == str(part):
+            os.rename(part, tmp_path / "moved-away")
+            os.rename(precious, part)                     # на месте .part — чужой каталог
+        return real_open(path, flags, *a, **kw)
+
+    monkeypatch.setattr(download_io.os, "open", swapping_open)
+    assert download_io.clear_part_dir(part) is False
+    assert (part / "keep.txt").read_text() == "x"
+
+
+def test_cancelled_waiter_leaves_the_queue_at_once():
+    async def main():
+        s = downloads._Slots(1)
+        assert s.try_take()
+        waiters = [asyncio.create_task(s.take()) for _ in range(5)]
+        await asyncio.sleep(0)
+        for w in waiters:
+            w.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+        assert len(s._waiters) == 0                        # отменённые не копятся до следующего release
+        assert s.try_take() is False and s.busy == 1
+        s.release()
+        assert s.busy == 0 and s.try_take()
+
+    asyncio.run(main())

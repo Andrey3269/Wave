@@ -248,8 +248,10 @@ class DownloadManager:
             done, _ = await asyncio.wait({entry.task}, timeout=CANCEL_WAIT)
             if not done:
                 log.warning("Загрузка %s не остановилась за %.0f с после отмены", key, CANCEL_WAIT)
+        elif entry is not None:
+            await asyncio.sleep(0)                       # задача только что закончилась: итог запишет _finished
         elif key in jobs:
-            _orphaned(jobs[key])                         # «активная» без задачи — от прошлого запуска
+            _orphaned(jobs[key])                         # «активная» без задачи этого запуска — от прошлого запуска
         return jobs.get(key)
 
     async def aclose(self) -> None:
@@ -408,11 +410,13 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
     target = library.folder_path(name)
     tmp = target.with_name(target.name + ".part")
     out: ThreadFile | None = None
-    part_key, own_part = _part_key(tmp), False
+    part_key, own_part = None, False
     outcome = {"state": "error", "error": "Не удалось скачать трек. Попробуйте ещё раз.", "code": "internal"}
     try:
         # preparing: поток получен штатно (тем же резолвером, что и для воспроизведения) и это не фрагмент
         res = await download_policy.check(rs, req.source, req.id)
+
+        part_key = await run_in_thread(_part_key, tmp)       # канонический путь — обращение к диску, в потоке
 
         while True:                                          # эту папку не удаляет сейчас фоновая очистка при старте
             with _parts_lock:
@@ -488,7 +492,7 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
 def _cleanup_roots() -> list[Path]:
     """
     Где могли остаться `*.part`: текущий каталог загрузок (настройки или WAVE_DOWNLOADS_DIR), каталог по умолчанию
-    (при обычном запуске, без WAVE_DOWNLOADS_DIR) и каталоги из индекса, в которых Wave реально сохранял треки
+    (при обычном запуске, без WAVE_DATA_DIR и WAVE_DOWNLOADS_DIR) и каталоги из индекса, в которых Wave реально сохранял треки
     (library.verified_roots: строки базы не доверенные, N3; источник и id проверяются как у POST, в папке должны
     лежать аудиофайл и metadata.json). Произвольные пути из базы сюда не попадают.
     """
@@ -497,9 +501,9 @@ def _cleanup_roots() -> list[Path]:
         found.append(paths.downloads_dir())
     except OSError as exc:
         log.warning("Текущий каталог загрузок недоступен: %r", exc)
-    # Каталог по умолчанию — только при обычном запуске. С WAVE_DOWNLOADS_DIR (тесты, e2e, отладка) backend
-    # работает с отдельным профилем и не должен трогать настоящий ~/Downloads/Wave пользователя
-    if not os.getenv("WAVE_DOWNLOADS_DIR"):
+    # Каталог по умолчанию — только при обычном запуске. С WAVE_DATA_DIR или WAVE_DOWNLOADS_DIR (тесты, e2e, отладка)
+    # backend работает с отдельным профилем и не должен трогать настоящий ~/Downloads/Wave пользователя
+    if not _isolated_profile():
         found.append(paths.default_downloads_dir())
     try:
         found.extend(library.verified_roots(_valid_track))
@@ -572,8 +576,18 @@ def _log_cleanup_failure(t: asyncio.Future) -> None:
         log.warning("Очистка недокачанного не удалась: %r", t.exception())
 
 
+def _isolated_profile() -> bool:
+    """Backend запущен с отдельным профилем (тесты, e2e, отладка): заданы WAVE_DATA_DIR или WAVE_DOWNLOADS_DIR."""
+    return bool(os.getenv("WAVE_DATA_DIR") or os.getenv("WAVE_DOWNLOADS_DIR"))
+
+
 def _part_key(p: Path) -> str:
-    return os.path.normcase(os.path.abspath(p))
+    """
+    Один ключ папки `.part` для загрузки и очистки при любом написании пути: каталог — канонический (symlink,
+    junction, subst, сетевой диск Z:\\ → UNC разрешены), имя — как есть (сама папка может ещё не существовать).
+    """
+    p = Path(p)
+    return os.path.normcase(os.path.join(os.path.realpath(p.parent), p.name))
 
 
 def _valid_track(source: str, track_id) -> bool:

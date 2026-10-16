@@ -471,6 +471,7 @@ class SpyOpen:
 
     def __init__(self):
         self.threads: list[int] = []
+        self.sizes: list[int] = []
         self.on_write = None
 
     def __call__(self, path, mode="r", *a, **kw):
@@ -482,6 +483,7 @@ class SpyOpen:
         class Spy:
             def write(self, data):
                 spy.threads.append(threading.get_ident())
+                spy.sizes.append(len(data))
                 if spy.on_write:
                     spy.on_write()
                 return f.write(data)
@@ -760,9 +762,8 @@ def test_startup_cleanup_covers_every_verified_root(harness, tmp_path, monkeypat
     default = tmp_path / "home-downloads" / "Wave"
     default.mkdir(parents=True)
     monkeypatch.setattr(paths, "default_downloads_dir", lambda: default, raising=False)
-    # обычный запуск: папка загрузок выбрана в настройках, WAVE_DOWNLOADS_DIR не задан
-    monkeypatch.delenv("WAVE_DOWNLOADS_DIR")
-    paths.set_downloads_dir(harness.profile.downloads)
+    # обычный запуск: папка загрузок выбрана в настройках, WAVE_DATA_DIR и WAVE_DOWNLOADS_DIR не заданы
+    monkeypatch.setattr(downloads, "_isolated_profile", lambda: False)
     with harness.client():
         kept_current = make_download(harness.profile.downloads, IDS[0], "Текущая")
         kept_other = make_download(other, IDS[1], "Прошлая")
@@ -838,15 +839,53 @@ def test_part_names_must_carry_a_valid_source_id():
     assert not any(downloads.PART_RE.fullmatch(n) for n in bad)
 
 
-def test_default_folder_is_left_alone_with_an_explicit_downloads_dir(harness, tmp_path, monkeypatch):
-    """С WAVE_DOWNLOADS_DIR (тесты, e2e, отладка) настоящий ~/Downloads/Wave не трогается (находка ревью)."""
+@pytest.mark.parametrize("unset", ["WAVE_DATA_DIR", "WAVE_DOWNLOADS_DIR", None])
+def test_default_folder_is_left_alone_with_an_isolated_profile(harness, tmp_path, monkeypatch, unset):
+    """С WAVE_DATA_DIR или WAVE_DOWNLOADS_DIR (тесты, e2e, отладка) настоящий ~/Downloads/Wave не трогается."""
     default = tmp_path / "home-downloads" / "Wave"
     default.mkdir(parents=True)
     monkeypatch.setattr(paths, "default_downloads_dir", lambda: default)
     real = make_part(default, "Исполнитель - Идёт в настоящей Wave [yt-AAAAAAAAAA1].part")
+    env = {"WAVE_DATA_DIR": os.environ["WAVE_DATA_DIR"], "WAVE_DOWNLOADS_DIR": os.environ["WAVE_DOWNLOADS_DIR"]}
+    if unset:
+        env.pop(unset)
+    with monkeypatch.context() as m:                      # проверка самой функции при каждой комбинации переменных
+        for k in ("WAVE_DATA_DIR", "WAVE_DOWNLOADS_DIR"):
+            m.delenv(k)
+        for k, v in env.items():
+            m.setenv(k, v)
+        assert downloads._isolated_profile()
+        m.delenv("WAVE_DATA_DIR", raising=False)
+        m.delenv("WAVE_DOWNLOADS_DIR", raising=False)
+        assert not downloads._isolated_profile()
     with harness.client():
         pass
     assert (real / "audio.part").read_bytes() == b"half"
+
+
+def test_cleanup_and_download_agree_on_the_part_folder_through_a_symlinked_root(harness, tmp_path, monkeypatch):
+    """Каталог загрузок указан через ссылку (как Z:\\ → \\\\server\\share, subst, junction): фоновая очистка узнаёт
+    папку идущей загрузки по тому же ключу и не удаляет её (находка повторного ревью)."""
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    link_root = tmp_path / "link-root"
+    symlink(link_root, real_root, is_dir=True)
+    monkeypatch.setenv("WAVE_DOWNLOADS_DIR", str(link_root))
+    tid = IDS[0]
+    hold = Hold(harness.net, [tid])
+
+    async def scenario(c):
+        await c.post("/api/downloads", json=req(tid))
+        await until(lambda: tid in hold.open)
+        part = real_root / (folder(tid) + ".part")
+        assert part.is_dir()
+        await asyncio.to_thread(downloads.cleanup_partial)        # очистка видит каталог как link-root/…
+        assert part.is_dir() and (part / "audio.part").exists()
+        hold.release(tid)
+        await until(lambda: finished(tid))
+
+    harness.run(scenario)
+    assert state(tid) == "done" and (real_root / folder(tid) / "audio.m4a").read_bytes() == DATA
 
 
 def test_startup_cleanup_does_not_follow_links(harness, tmp_path):
@@ -1000,8 +1039,9 @@ def test_slow_startup_cleanup_does_not_block_start_or_touch_live_downloads(harne
     hold = Hold(harness.net, [tid])
 
     async def scenario(c):
-        t0 = time.monotonic()
         assert (await c.get("/api/health")).status_code == 200
+        seen["health_after"] = time.monotonic() - started             # lifespan + первый ответ, очистка ещё висит
+        assert not release.is_set()
         await c.post("/api/downloads", json=req(tid))
         await until(lambda: tid in hold.open)
         part = harness.profile.downloads / (folder(tid) + ".part")
@@ -1010,10 +1050,12 @@ def test_slow_startup_cleanup_does_not_block_start_or_touch_live_downloads(harne
         assert part.is_dir() and (part / "audio.part").exists()  # папку идущей загрузки очистка не тронула
         hold.release(tid)
         await until(lambda: finished(tid))
-        return t0
 
+    seen: dict[str, float] = {}
+    started = time.monotonic()
     harness.run(scenario)
     assert stuck.is_set() and state(tid) == "done"
+    assert seen["health_after"] < 3.0                                 # старт не ждал зависшую очистку (её 10 с)
 
 
 def test_cleanup_skips_parts_of_live_downloads_and_waits_for_cleaning(harness):
@@ -1029,3 +1071,69 @@ def test_cleanup_skips_parts_of_live_downloads_and_waits_for_cleaning(harness):
             downloads._live_parts.discard(key)
     downloads.cleanup_partial()
     assert not part.exists()
+
+
+def test_download_waits_while_cleanup_removes_its_part_folder(harness):
+    """Фоновая очистка как раз удаляет оставшуюся .part этого трека: загрузка ждёт, а не пишет в удаляемую папку."""
+    tid = IDS[0]
+    harness.net.add_file(f"/yt/{tid}", DATA, "audio/mp4")
+    part = harness.profile.downloads / (folder(tid) + ".part")
+    key = downloads._part_key(part)
+
+    async def scenario(c):
+        with downloads._parts_lock:
+            downloads._cleaning.add(key)
+        try:
+            await c.post("/api/downloads", json=req(tid))
+            await until(lambda: harness.resolver.calls[f"yt:{tid}"] == 1)
+            await asyncio.sleep(0.3)
+            assert state(tid) == "preparing" and not part.exists()   # ждёт: ни папки, ни передачи данных
+            assert not harness.net.cdn_requests(f"/yt/{tid}")
+        finally:
+            with downloads._parts_lock:
+                downloads._cleaning.discard(key)
+        await until(lambda: finished(tid))
+
+    harness.run(scenario)
+    assert state(tid) == "done"
+
+
+def test_batches_bound_the_buffered_bytes(harness, spy_open, monkeypatch):
+    """Полученное копится в памяти не больше WRITE_BATCH (+ один чанк сети): запись идёт по ходу порции."""
+    tid = IDS[0]
+    small_batches(monkeypatch, harness)
+    harness.net.add_file(f"/yt/{tid}", BIG, "audio/mp4")
+
+    async def scenario(c):
+        await c.post("/api/downloads", json=req(tid))
+        await until(lambda: finished(tid))
+
+    harness.run(scenario)
+    assert state(tid) == "done"
+    assert spy_open.sizes and max(spy_open.sizes) <= 1000 + harness.net.chunk
+    assert sum(spy_open.sizes) == len(BIG)
+
+
+def test_second_cancel_in_the_completion_window_keeps_the_user_cancel(harness):
+    """Задача уже закончилась, а её колбэк итога ещё не выполнен: повторная отмена в это окно не выдаёт отмену
+    пользователя за «прерванную перезапуском» (находка повторного ревью)."""
+    hold = Hold(harness.net, IDS[:3])
+
+    async def scenario(c):
+        for t in IDS[:3]:
+            await c.post("/api/downloads", json=req(t))
+        await until(lambda: len(hold.open) == 2)
+        mgr, key = harness.app.state.downloads, f"yt:{IDS[2]}"
+        entry = mgr._entries[key]
+        entry.task.cancel()
+        await asyncio.sleep(0)                                   # задача обработала отмену, колбэк ещё в очереди
+        window = entry.task.done() and state(IDS[2]) == "queued"
+        result = await mgr.cancel(key)
+        for t in IDS[:2]:
+            hold.release(t)
+        await until(lambda: finished(IDS[0]) and finished(IDS[1]))
+        return window, dict(result)
+
+    window, result = harness.run(scenario)
+    assert window                                                # сценарий действительно попал в окно
+    assert result["state"] == "cancelled" and result["code"] == "cancelled"
