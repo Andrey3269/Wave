@@ -341,6 +341,55 @@ def queue_rows(page) -> list:
     return page.evaluate("[...document.querySelectorAll('#fs-q-list .fq__row')].map(r => ({i: +r.dataset.index, t: r.querySelector('.fq__title').textContent, cur: r.classList.contains('is-current')}))")
 
 
+# Media Session (WIN-11, автоматическая часть): обработчики, которые приложение регистрирует через
+# navigator.mediaSession.setActionHandler, запоминаются, чтобы тест мог вызвать их как системные медиаклавиши.
+# Настоящие медиаклавиши и оверлей Windows этим не проверяются (ручной чек-лист S10_WINDOWS_CHECK.md).
+MEDIA_SESSION_SPY = """
+(() => {
+  window.__ms = {};
+  const ms = navigator.mediaSession;
+  if (!ms) return;
+  const real = ms.setActionHandler.bind(ms);
+  ms.setActionHandler = (name, fn) => { window.__ms[name] = fn; return real(name, fn); };
+})();
+"""
+
+
+# Тост показывает одно сообщение: следующее (например «Очередь закончилась…», когда трек доиграл) затирает
+# прежнее. Проверки «сообщение было показано» смотрят журнал всех показанных тостов, а не только последний.
+TOAST_LOG = """
+document.addEventListener("DOMContentLoaded", () => {
+  window.__toasts = [];
+  const t = document.querySelector("#toast");
+  new MutationObserver(() => { if (!t.hidden && t.textContent) window.__toasts.push(t.textContent); })
+    .observe(t, {childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["hidden"]});
+});
+"""
+
+
+def shown_toast(page, text: str) -> bool:
+    return page.evaluate("(x) => (window.__toasts || []).some((t) => t.includes(x))", text)
+
+
+def wait_toast(page, text: str, timeout: int = 10000) -> bool:
+    """Тост с этим текстом был показан (дожидается его, даже если потом его затёр другой)."""
+    try:
+        page.wait_for_function("(x) => (window.__toasts || []).some((t) => t.includes(x))", arg=text, timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
+def media_session(page) -> dict:
+    return page.evaluate("""(() => { const ms = navigator.mediaSession, m = ms.metadata;
+        return {state: ms.playbackState, title: m && m.title, artist: m && m.artist, album: m && m.album,
+                art: m ? m.artwork.length : 0, handlers: Object.keys(window.__ms || {}).sort()}; })()""")
+
+
+def ms_action(page, name: str, details: dict | None = None) -> None:
+    page.evaluate("([n, d]) => window.__ms[n]({action: n, ...(d || {})})", [name, details])
+
+
 def audio_state(page) -> dict:
     return page.evaluate("(() => { const a = document.querySelector('#audio'); return {paused: a.paused, t: a.currentTime, vol: a.volume, muted: a.muted, src: a.src} })()")
 
@@ -353,6 +402,8 @@ def main() -> int:
         browser = p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
         ctx = browser.new_context(viewport={"width": 1440, "height": 900}, color_scheme="dark")
         ctx.route(re.compile(r".*"), handle)
+        ctx.add_init_script(MEDIA_SESSION_SPY)
+        ctx.add_init_script(TOAST_LOG)
         page = ctx.new_page()
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
@@ -618,6 +669,36 @@ def main() -> int:
         check(page.text_content("#h-mixes") == "Миксы по вашим трекам", "с историей ряд называется «Миксы по вашим трекам»")
         page.screenshot(path=str(SHOTS / "03c-home-with-history.png"))
 
+        print("Media Session: медиаклавиши и системный оверлей (WIN-11, автоматическая часть)")
+        ms = media_session(page)
+        check({"play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto", "stop"} <= set(ms["handlers"]),
+              "Media Session: зарегистрированы Play, Pause, Previous, Next, Seek Backward/Forward, Seek To, Stop")
+        check(ms["title"] == page.text_content("#hero-title") and ms["artist"] and ms["art"] == 1,
+              "Media Session: название, исполнитель и обложка текущего трека")
+        check(ms["state"] == "playing", "Media Session: состояние «играет»")
+        ms_action(page, "pause")
+        page.wait_for_function("document.querySelector('#audio').paused && navigator.mediaSession.playbackState === 'paused'")
+        check(True, "Media Session: Pause ставит паузу, состояние «пауза»")
+        ms_action(page, "play")
+        page.wait_for_function("!document.querySelector('#audio').paused && navigator.mediaSession.playbackState === 'playing'")
+        check(True, "Media Session: Play продолжает воспроизведение")
+        ms_action(page, "seekto", {"seekTime": 12})
+        page.wait_for_function("Math.abs(document.querySelector('#audio').currentTime - 12) < 1.5")
+        ms_action(page, "seekbackward", {"seekOffset": 5})
+        page.wait_for_function("Math.abs(document.querySelector('#audio').currentTime - 7) < 1.5")
+        ms_action(page, "seekforward", {})
+        page.wait_for_function("Math.abs(document.querySelector('#audio').currentTime - 17) < 1.5")
+        check(True, "Media Session: Seek To, Seek Backward и Seek Forward (по умолчанию 10 с) перематывают")
+        ms_title = ms["title"]
+        ms_action(page, "nexttrack")
+        page.wait_for_function("(t) => navigator.mediaSession.metadata && navigator.mediaSession.metadata.title !== t", arg=ms_title)
+        check(media_session(page)["title"] == page.text_content("#hero-title"), "Media Session: Next переключает трек и обновляет название")
+        page.wait_for_function("!document.querySelector('#audio').paused")
+        ms_action(page, "previoustrack")
+        page.wait_for_function("(t) => navigator.mediaSession.metadata && navigator.mediaSession.metadata.title === t", arg=ms_title)
+        check(page.text_content("#hero-title") == ms_title, "Media Session: Previous возвращает предыдущий трек")
+        page.wait_for_function("!document.querySelector('#audio').paused")
+
         print("Поиск и мини-плеер")
         page.fill("#search-input", "gspd")
         page.keyboard.press("Enter")
@@ -659,8 +740,8 @@ def main() -> int:
         page.wait_for_selector("#dlg[open]")
         page.fill("#dlg-input", "Тестовый плейлист")
         page.click("#dlg-ok")
-        page.wait_for_selector("#toast:not([hidden])")
-        check("Добавлено в плейлист" in page.inner_text("#toast"), "создание плейлиста и добавление трека через диалоги")
+        # Ждём именно это сообщение: другой тост (например «Очередь закончилась…») мог быть уже виден
+        check(wait_toast(page, "Добавлено в плейлист"), "создание плейлиста и добавление трека через диалоги")
         page.click(".nav__item[data-view=playlists]")
         page.wait_for_selector("#cards .card--playlist")
         page.screenshot(path=str(SHOTS / "09-playlists.png"))
