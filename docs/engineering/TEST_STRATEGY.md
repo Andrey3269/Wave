@@ -143,14 +143,14 @@
 | `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 211 + 33 (12 + 13 + 8); было 152 + 27. Новые разделы: Media Session, повтор off/all/one, перемешивание на 10 треках, восстановление после перезагрузки, порог истории и пропуски, альбом по id, нет соединения; в `verify` — восстановление после перезапуска backend на другом порту | Linux Chromium 141; CI Linux, Windows и e2e против установленного `Wave.exe` |
 | `python tests/run_checks.py` | **PASS** 8/8 перед каждым коммитом кода и на HEAD | Linux; CI Linux и Windows |
 | `tests/ui_snapshots.py` (база `ae44731` против HEAD) | **PASS**: 76/76 при допуске 20/255 | Linux Chromium 141 headless |
-| Окно WebView2, ручной чек-лист [checklists/S10_WINDOWS_CHECK.md](checklists/S10_WINDOWS_CHECK.md) (WIN-11) | **NOT RUN** — ожидает владельца | Windows 11, WebView2 |
+| Окно WebView2, ручной чек-лист [checklists/S10_WINDOWS_CHECK.md](checklists/S10_WINDOWS_CHECK.md) (WIN-11) | **PASS** — владелец подтвердил 15/15 пунктов 2026-10-16 | Windows 11, WebView2 |
 
 Особенности инструментов, найденные в S10 (учитывать в новых браузерных тестах):
 - перехват запросов Playwright (любой `ctx.route`/`page.route`) не доставляет запросы, которые страница отправляет при выгрузке (`sendBeacon`, `fetch keepalive` в `pagehide`). Такие сценарии проверяются без перехвата: `tests/api/test_playback_browser.py` (настоящий backend `harness.serve()`, внешних адресов не нужно);
 - `page.wait_for_function` не ждёт значение Promise: выражение с `fetch(...)` «выполняется» сразу. Ждать ответ backend — опросом из Python (`poll()` в `tests/e2e_smoke.py`). Такое же пустое ожидание осталось в `e2e_settings.py migrate` (S2) — кандидат на отдельную правку;
 - e2e на общем профиле: с S10 новая вкладка восстанавливает очередь прошлых разделов. Сценарий «запуск, ничего не играет» сначала очищает сохранённое состояние (`clear_playback()`).
 
-Приёмка S10 — решение владельца; статус этапа — READY FOR OWNER ACCEPTANCE.
+Приёмка S10: **ACCEPTED BY OWNER — 2026-10-16**. Владелец подтвердил прохождение всех 15 пунктов ручного чек-листа Windows 11/WebView2. `main` не менялся, merge/PR не выполнялись; S11 начинается только по отдельной команде владельца.
 
 ## 3. Изоляция данных (обязательно с этапа S0)
 
