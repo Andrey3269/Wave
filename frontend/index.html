@@ -501,12 +501,14 @@
 
   <!-- ===== Мини-плеер: только вне главной и страницы трека, и только если выбран трек ===== -->
   <footer class="player" id="player" aria-label="Плеер">
-    <div class="mp" id="player-now" data-do="now" role="button" tabindex="0" title="Открыть страницу трека">
+    <!-- S12: блок мини-плеера — не кнопка (в нём есть кнопка «В избранное» и ссылки на исполнителей). С клавиатуры
+         страница трека открывается кнопкой с названием; мышью — кликом в любом месте блока (data-do="now"). -->
+    <div class="mp" id="player-now" data-do="now" title="Открыть страницу трека">
       <span class="cv mp__thumb"><img id="player-cover" alt="" width="56" height="56" referrerpolicy="no-referrer"></span>
       <div class="mp__text">
-        <span class="mp__title" id="player-title">Ничего не играет</span>
+        <button class="mp__open" id="player-open" type="button" data-do="now" aria-label="Открыть страницу трека"><span class="mp__title" id="player-title">Ничего не играет</span></button>
         <span class="mp__sub">
-          <span class="src" id="player-src" role="img" hidden><svg class="icon"><use href="#i-src-yt"/></svg></span>
+          <span class="src" id="player-src" role="img" hidden><svg class="icon" aria-hidden="true"><use href="#i-src-yt"/></svg></span>
           <span class="mp__artist" id="player-artist"></span>
         </span>
       </div>
@@ -544,25 +546,28 @@
     <audio id="audio" preload="auto"></audio>
   </footer>
 
-  <!-- Шаблон строки трека: клонируется в js/components/track-row.js -->
+  <!-- Шаблон строки трека: клонируется в js/components/track-row.js.
+       S12: строка — не кнопка. Кнопка трека (.track__play) — название, ссылки на исполнителей — отдельные кнопки
+       рядом с ней (интерактивные элементы не вкладываются друг в друга). Клик мышью в любом месте .track по-прежнему
+       запускает трек: его обрабатывает общий обработчик списка (views/list.js). -->
   <template id="track-template">
     <li class="row">
-      <button class="track" type="button">
+      <div class="track">
         <span class="track__num">
           <span class="track__idx"></span>
-          <svg class="icon icon--fill track__icon"><use href="#i-play"/></svg>
+          <svg class="icon icon--fill track__icon" aria-hidden="true"><use href="#i-play"/></svg>
         </span>
         <span class="cv track__cover"><img alt="" width="44" height="44" loading="lazy" decoding="async"></span>
         <span class="track__meta">
-          <span class="track__title"></span>
+          <button class="track__play" type="button"><span class="track__title"></span></button>
           <span class="track__sub">
-            <span class="src" role="img"><svg class="icon"><use href="#i-src-yt"/></svg></span>
+            <span class="src" role="img"><svg class="icon" aria-hidden="true"><use href="#i-src-yt"/></svg></span>
             <span class="track__artist"></span>
           </span>
         </span>
         <span class="track__album"></span>
         <span class="track__time"></span>
-      </button>
+      </div>
       <div class="track__tools">
         <button class="tbtn track__fav" type="button" aria-label="В избранное" title="В избранное"><svg class="icon"><use href="#i-heart"/></svg></button>
         <button class="tbtn track__dl" type="button" aria-label="Скачать" title="Скачать"><svg class="icon"><use href="#i-download"/></svg><span class="track__pct"></span></button>

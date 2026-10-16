@@ -11,6 +11,7 @@ import { paintLike } from "../components/favorites.js";
 /** Новый трек: мини-плеер, заголовок окна, подсветка трека во всех списках, «в избранном». */
 function showNowPlaying(t) {
   el.title.textContent = t.title;
+  el.playerOpen.setAttribute("aria-label", `Открыть страницу трека: ${t.title}`);
   renderArtists(el.artist, t);
   setSource(el.playerSrc, t.source);
   setCover(el.cover, t.cover, 120);

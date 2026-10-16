@@ -137,12 +137,11 @@ const ACTIONS = {
   expand: () => openFs(),
   mute: () => toggleMute(),
 };
+// Мини-плеер (#player-now) — не кнопка: с клавиатуры страницу трека открывает кнопка с названием (#player-open,
+// data-do="now"), своего обработчика клавиш ему не нужно (S12)
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-do]");
   if (b && ACTIONS[b.dataset.do]) ACTIONS[b.dataset.do](b, e);
-});
-el.playerNow.addEventListener("keydown", (e) => {
-  if ((e.key === "Enter" || e.key === " ") && e.target === el.playerNow) { e.preventDefault(); openNowFromUi(); }
 });
 
 initSearchForm();

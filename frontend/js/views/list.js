@@ -184,6 +184,7 @@ export function initList({ onArtist, onDownload }) {
     if (more) { openMenu(t, more); return; }
     const who = e.target.closest(".who.is-link");
     if (who) { onArtist(t.source, who.dataset.aid); return; }   // имя автора: на его страницу, трек не запускаем
+    // Остальное — кнопка .track__play (клавиатура: Enter/Space дают click) или любое место строки (мышь)
     if (queue.isFrom(state.list) && queue.current === t) togglePlay(); else playFromList(i);
   });
 }

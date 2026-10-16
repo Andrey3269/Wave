@@ -316,6 +316,11 @@ def handle(route: Route) -> None:
     if path == "/api/search" and q.get("q") == "s10h":                # короткие треки по 6 с (история, S10)
         return js(route, {"query": "s10h", "count": 4, "tracks": [{**track(300 + i), "duration": 6} for i in range(4)],
                           "failed_sources": [], "has_more": False})
+    if path == "/api/search" and q.get("q") == "feat":                # несколько исполнителей, у одного нет id (S12)
+        duo = {**track(400), "artist": "GSPD, Vtornik", "artists": ["GSPD", "Vtornik"], "artist_ids": ["UCart0001", "UCart0002"]}
+        no_id = {**track(401), "artist": "Кино, Безымянный", "artists": ["Кино", "Безымянный"], "artist_id": "UCart0008",
+                 "artist_ids": ["UCart0008"]}
+        return js(route, {"query": "feat", "count": 2, "tracks": [duo, no_id], "failed_sources": [], "has_more": False})
     if path == "/api/search" and q.get("sources") == "sc":
         return js(route, {"query": q.get("q"), "count": 3, "tracks": [sc_track(i) for i in range(3)], "failed_sources": [],
                           "has_more": False, "source_status": {"sc": "ok"}})
@@ -1558,6 +1563,110 @@ def main() -> int:
         ax.click("#search-input")
         check(ax.is_hidden("#menu") and ax.evaluate("document.activeElement === document.querySelector('#search-input')"),
               "мышь: клик вне меню закрывает его, фокус остаётся там, куда нажал пользователь")
+
+        print("Доступность (S12): ссылки на исполнителей")
+        active = "() => { const a = document.activeElement; return {cls: a.className, label: a.getAttribute('aria-label'), tag: a.tagName," \
+                 " row: a.closest('.row') ? [...a.closest('#tracks').children].indexOf(a.closest('.row')) + 1 : 0} }"
+        # Интерактивные элементы внутри других: кнопка в кнопке, ссылка в кнопке, что угодно в role=button и т. п.
+        nested = """() => [...document.querySelectorAll('button, a[href], input, select, textarea, [tabindex], [role=button], [role=link], [role=menuitem], [role=tab], [role=slider]')]
+            .filter(n => n.parentElement?.closest('button, a[href], [role=button], [role=link], [role=menuitem], [role=tab]'))
+            .map(n => n.outerHTML.slice(0, 90))"""
+        check(ax.evaluate(nested) == [] and ax.locator("button.track").count() == 0
+              and ax.locator("#tracks .row .track__play").count() == 20
+              and ax.locator("#tracks .row .track__play button, #tracks .row .track__play .who").count() == 0,
+              "нет интерактивных элементов внутри кнопок: кнопка трека (.track__play) отдельно от ссылок исполнителей")
+        a2 = ARTISTS[41 % len(ARTISTS)]
+        ax.focus("#tracks .row:nth-child(2) .track__play")
+        ax.keyboard.press("Tab")
+        f1 = ax.evaluate(active)
+        ax.keyboard.press("Tab")
+        f2 = ax.evaluate(active)
+        ax.keyboard.press("Shift+Tab")
+        ax.keyboard.press("Shift+Tab")
+        f0 = ax.evaluate(active)
+        check(f1 == {"cls": "who is-link", "label": f"Исполнитель: {a2}", "tag": "BUTTON", "row": 2}
+              and "track__fav" in f2["cls"] and f2["row"] == 2 and f0["cls"] == "track__play" and f0["row"] == 2,
+              f"Tab: кнопка трека → «Исполнитель: {a2}» → «В избранное»; Shift+Tab обратно ({f1}, {f2}, {f0})")
+        check(ax.get_by_role("button", name=f"Исполнитель: {a2}").count() >= 1
+              and ax.get_by_role("button", name=re.compile(r"^Играть: ")).count() == 20,
+              "роли и имена: ссылка исполнителя — кнопка «Исполнитель: …», у каждой строки кнопка «Играть: …»")
+        before = audio_state(ax)
+        ax.focus("#tracks .row:nth-child(3) .who.is-link")
+        ax.keyboard.press("Enter")
+        ax.wait_for_function(is_artist_page)
+        after = audio_state(ax)
+        check(after["src"] == before["src"] and after["paused"] == before["paused"] and not after["paused"],
+              "Enter на ссылке исполнителя открывает его страницу, трек продолжает играть (не запускается и не ставится на паузу)")
+        ax.click("#back")
+        ax.wait_for_function(rows_ready, arg=20)
+        ax.focus("#tracks .row:nth-child(4) .who.is-link")
+        ax.keyboard.press("Space")
+        ax.wait_for_function(is_artist_page)
+        after = audio_state(ax)
+        check(after["src"] == before["src"] and not after["paused"], "пробел на ссылке исполнителя — тоже переход, пауза не срабатывает")
+        ax.click("#back")
+        ax.wait_for_function(rows_ready, arg=20)
+        ax.focus("#tracks .row:nth-child(6) .track__play")
+        ax.keyboard.press("Enter")
+        check(ax_playing("trk00000045"), "Enter на кнопке трека запускает этот трек")
+        ax.focus("#tracks .row:nth-child(6) .track__play")
+        ax.keyboard.press("Space")
+        ax.wait_for_function("document.querySelector('#audio').paused")
+        ax.keyboard.press("Enter")
+        check(ax_playing("trk00000045"), "пробел на играющей строке — пауза (один раз), Enter — продолжить")
+
+        ax_search("feat", 2)
+        names = "(s) => [...document.querySelectorAll(s)].map(n => [n.tagName, n.textContent, n.getAttribute('aria-label')])"
+        check(ax.evaluate(names, "#tracks .row:nth-child(1) .track__artist .who") == [["BUTTON", "GSPD", "Исполнитель: GSPD"], ["BUTTON", "Vtornik", "Исполнитель: Vtornik"]]
+              and ax.inner_text("#tracks .row:nth-child(1) .track__artist") == "GSPD, Vtornik",
+              "несколько исполнителей — раздельные ссылки, видимый текст «GSPD, Vtornik»")
+        check(ax.evaluate(names, "#tracks .row:nth-child(2) .track__artist .who") == [["BUTTON", "Кино", "Исполнитель: Кино"], ["SPAN", "Безымянный", None]],
+              "исполнитель без id — обычный текст, ложной ссылки нет")
+
+        print("  мини-плеер, страница трека, полноэкранный плеер, очередь")
+        cur_title = track(45)["title"]
+        check(ax.get_attribute("#player-now", "role") is None and ax.get_attribute("#player-now", "tabindex") is None
+              and ax.get_by_role("button", name=f"Открыть страницу трека: {cur_title}").count() == 1,
+              "мини-плеер: блок не кнопка; страницу трека открывает кнопка «Открыть страницу трека: …»")
+        ax.focus("#player-open")
+        ax.keyboard.press("Tab")
+        f = ax.evaluate(active)
+        check(f["cls"] == "who is-link" and f["label"] == f"Исполнитель: {ARTISTS[5]}", f"мини-плеер: после названия Tab ведёт к ссылке исполнителя ({f})")
+        ax.keyboard.press("Enter")
+        ax.wait_for_function("document.querySelector('#d-kind').textContent === 'Артист'")
+        check(ax_playing("trk00000045"), "мини-плеер: Enter на исполнителе открывает его страницу, трек играет")
+        ax.focus("#player-open")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#view-now:not([hidden])")
+        check(ax.get_attribute("body", "data-view") == "now", "мини-плеер: Enter на названии открывает страницу трека")
+        check(ax.evaluate(names, "#now-artist .who") == [["BUTTON", ARTISTS[5], f"Исполнитель: {ARTISTS[5]}"]],
+              "страница трека: исполнитель — кнопка-ссылка")
+        ax.click("[data-do=expand]")
+        ax.wait_for_selector("#fs:not([hidden])")
+        ax.focus("#fs-artist .who.is-link")
+        ax.keyboard.press("Enter")
+        ax.wait_for_function("document.querySelector('#d-kind').textContent === 'Артист'")
+        check(ax.is_hidden("#fs") and ax.get_attribute("body", "data-focus") == "0" and ax_playing("trk00000045"),
+              "полноэкранный плеер: Enter на исполнителе закрывает режим и открывает страницу, трек играет")
+        ax.click("#btn-queue")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        check(ax.locator("#queue-list .q__artist button, #queue-list .q__artist [tabindex]").count() == 0 and ax.evaluate(nested) == [],
+              "очередь: имя исполнителя — текст внутри кнопки строки, без вложенных ссылок")
+        ax.click("#queue-close")
+
+        ax_search()
+        ring_room = """() => { const b = document.querySelector('#tracks .row:nth-child(2) .who.is-link'), c = b.parentElement;
+            const r = b.getBoundingClientRect(), p = c.getBoundingClientRect();
+            return r.top - p.top >= 1.9 && p.bottom - r.bottom >= 1.9 && r.left - p.left >= 1.9 }"""
+        for (w, h) in [(980, 640), (1920, 1080)]:
+            ax.set_viewport_size({"width": w, "height": h})
+            ax.wait_for_timeout(150)
+            meta = rect(ax, "#tracks .row:nth-child(2) .track__meta")
+            link = rect(ax, "#tracks .row:nth-child(2) .who.is-link")
+            check(visible(ax, "#tracks .row:nth-child(2) .who.is-link") and link["l"] >= meta["l"] - 4 and link["r"] <= meta["r"] + 4
+                  and ax.evaluate(ring_room) and ax.evaluate("document.querySelector('#main').scrollWidth <= document.querySelector('#main').clientWidth + 1"),
+                  f"{w}px: ссылка исполнителя под названием, рамке фокуса хватает места, переполнения нет")
+        ax.set_viewport_size({"width": 1440, "height": 900})
 
         browser.close()
 

@@ -26,7 +26,7 @@ export const el = {
   dlgConfirm: $("#dlg-confirm"), dcTitle: $("#dc-title"), dcText: $("#dc-text"), dcOk: $("#dc-ok"),
   dlgPick: $("#dlg-pick"), pickList: $("#pick-list"),
   // мини-плеер
-  audio: $("#audio"), playerNow: $("#player-now"), cover: $("#player-cover"), title: $("#player-title"),
+  audio: $("#audio"), playerNow: $("#player-now"), playerOpen: $("#player-open"), cover: $("#player-cover"), title: $("#player-title"),
   artist: $("#player-artist"), playerSrc: $("#player-src"), btnLike: $("#btn-like"),
   progress: $("#progress"), volume: $("#volume"), tCur: $("#time-current"), tTotal: $("#time-total"),
 };

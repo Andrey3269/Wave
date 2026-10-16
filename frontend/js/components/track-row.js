@@ -16,16 +16,25 @@ export function setSource(node, source) {
   node.querySelector("use").setAttribute("href", `#i-src-${source}`);
 }
 
-/** Имена авторов трека: каждый отдельным элементом; со ссылкой, если известен его id. */
+/**
+ * Имена авторов трека: каждый отдельным элементом. Если источник дал id автора — это кнопка-ссылка на его страницу
+ * (S12: доступна с клавиатуры, Enter и Space открывают страницу, трек не трогают); без id — обычный текст, ложной
+ * ссылки нет. Узел node не должен лежать внутри другой кнопки: вложенные интерактивные элементы запрещены.
+ */
 export function renderArtists(node, t) {
   const names = t.artists && t.artists.length ? t.artists : [t.artist];
   const ids = t.artist_ids && t.artist_ids.length ? t.artist_ids : (t.artist_id ? [t.artist_id] : []);
   node.replaceChildren();
   names.forEach((name, i) => {
     if (i) node.append(", ");
-    const span = mk("span", "who", name);
-    if (ids[i]) { span.classList.add("is-link"); span.dataset.aid = ids[i]; }
-    node.append(span);
+    if (!ids[i]) { node.append(mk("span", "who", name)); return; }
+    const b = mk("button", "who is-link", name);
+    b.type = "button";
+    b.dataset.aid = ids[i];
+    const label = `Исполнитель: ${name}`;
+    b.setAttribute("aria-label", label);
+    b.title = label;
+    node.append(b);
   });
 }
 
@@ -98,11 +107,11 @@ export function buildRow(t, i) {
   const li = $(".row", node);
   li.dataset.index = i;
   li.dataset.key = trackKey(t);
-  $(".track", node).setAttribute("aria-label", `Играть: ${t.artist} — ${t.title}`);
+  $(".track__play", node).setAttribute("aria-label", `Играть: ${t.artist} — ${t.title}`);
   $(".track__idx", node).textContent = i + 1;
   setCover($(".track__cover img", node), t.cover, 120);
   $(".track__title", node).textContent = t.title;
-  renderArtists($(".track__artist", node), t);          // каждый автор отдельной ссылкой на его страницу
+  renderArtists($(".track__artist", node), t);          // каждый автор отдельной ссылкой на его страницу (вне .track__play)
   setSource($(".src", node), t.source);
   $(".track__album", node).textContent = t.reason || t.album || "";   // у рекомендаций здесь причина
   $(".track__time", node).textContent = t.duration ? fmtTime(t.duration) : "";
