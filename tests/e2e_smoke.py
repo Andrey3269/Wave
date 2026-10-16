@@ -1488,6 +1488,76 @@ def main() -> int:
               "нет компонента воспроизведения YouTube: пользователь видит отдельное сообщение, а не «Трек недоступен»")
         rt_page.screenshot(path=str(SHOTS / "24-js-runtime-missing.png"))
         STREAM["mode"] = "normal"
+        rt_page.close()
+
+        # ------------------------------------------------------------ S12: доступность
+        # Отдельная вкладка (общий профиль и подмена сети). Сначала — поведение мышью, которое правки доступности
+        # не должны изменить; затем клавиатура, роли и имена, фокус, контраст.
+        ax = ctx.new_page()
+        ax.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        ax.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        clear_playback()                                             # вкладка без восстановленной очереди (S10)
+        ax.goto(BASE)
+        ax.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+        rows_ready = "(n) => document.querySelectorAll('#tracks .row:not(.row--skel)').length === n"
+        is_artist_page = "document.querySelector('#d-kind').textContent === 'Артист' && document.querySelector('#d-title').textContent === 'GSPD'"
+
+        def ax_search(q: str = "gspd", n: int = 20) -> None:
+            ax.fill("#search-input", q)
+            ax.keyboard.press("Enter")
+            ax.wait_for_function(rows_ready, arg=n)
+
+        def ax_playing(tid: str) -> bool:
+            try:
+                ax.wait_for_function("(id) => { const a = document.querySelector('#audio'); return a.src.endsWith('/' + id) && !a.paused }",
+                                     arg=tid, timeout=10000)
+                return True
+            except Exception:
+                return False
+
+        print("Доступность (S12): поведение мышью сохраняется")
+        ax.wait_for_function("document.querySelectorAll('#new-grid .tcard').length >= 20")
+        feed_n = ax.locator("#new-grid .tcard").count()
+        ax.evaluate("document.querySelector('#main').scrollTo({top: 1e6})")
+        try:
+            ax.wait_for_function("(n) => document.querySelectorAll('#new-grid .tcard').length > n", arg=feed_n, timeout=10000)
+            grown = True
+        except Exception:
+            grown = False
+        check(grown, "прокрутка до конца ленты главной подгружает следующую страницу (IntersectionObserver)")
+        ax.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        ax_search()
+        before = audio_state(ax)
+        ax.click("#tracks .row:nth-child(3) .who.is-link")
+        ax.wait_for_function(is_artist_page)
+        after = audio_state(ax)
+        check(after["src"] == before["src"] and after["paused"] == before["paused"],
+              "мышь: имя исполнителя в строке открывает его страницу и не запускает трек")
+        ax.click("#back")
+        ax.wait_for_function(rows_ready, arg=20)
+        ax.locator("#tracks .row").nth(4).click(position={"x": 260, "y": 20})
+        check(ax_playing("trk00000044"), "мышь: клик по строке трека запускает этот трек")
+        ax.click("#player-artist .who.is-link")
+        ax.wait_for_function(is_artist_page)
+        check(ax_playing("trk00000044"), "мышь: имя исполнителя в мини-плеере открывает его страницу, трек продолжает играть")
+        ax.click("#back")
+        ax.wait_for_function(rows_ready, arg=20)
+        q_count = "document.querySelectorAll('#queue-list .q').length"
+        ax.click("#btn-queue")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        q_before = ax.evaluate(q_count)
+        ax.click("#queue-close")
+        ax.click("#tracks .row:nth-child(7) .track__more")
+        ax.click("#menu [data-act=add]")
+        ax.click("#btn-queue")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        check(ax.evaluate(q_count) == q_before + 1 and ax.is_hidden("#menu"),
+              "мышь: пункт меню «Добавить в очередь» выполняется один раз, меню закрывается")
+        ax.click("#queue-close")
+        ax.click("#tracks .row:nth-child(7) .track__more")
+        ax.click("#search-input")
+        check(ax.is_hidden("#menu") and ax.evaluate("document.activeElement === document.querySelector('#search-input')"),
+              "мышь: клик вне меню закрывает его, фокус остаётся там, куда нажал пользователь")
 
         browser.close()
 
