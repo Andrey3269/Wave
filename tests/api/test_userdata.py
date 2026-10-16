@@ -242,3 +242,45 @@ def test_history_and_favorites_share_one_database_file(api):
     api.post("/api/favorites", json=track_payload(id_=A))
     tables = {r[0] for r in api.profile.sql("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"favorites", "history", "settings", "downloads", "playlists", "playlist_tracks"} <= tables
+
+
+# ---------------------------------------------------------------------------
+# S10: пропуск до порога — отдельная запись со снимком трека
+# ---------------------------------------------------------------------------
+def test_skip_with_track_adds_own_record_and_keeps_earlier_full_play(api):
+    _play(api, A)                                                       # прежнее полноценное прослушивание
+    r = api.post("/api/history/skip", json={"source": "yt", "id": A, "track": track_payload(id_=A, title="A сейчас")})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    rows = api.profile.sql("SELECT key, skipped FROM history ORDER BY id")
+    assert rows == [(f"yt:{A}", 0), (f"yt:{A}", 1)], "прежнее прослушивание не помечено пропуском"
+    stored = json.loads(api.profile.sql("SELECT data FROM history ORDER BY id DESC LIMIT 1")[0][0])
+    assert stored["title"] == "A сейчас" and stored["stream_url"] == f"/api/stream/yt/{A}"
+    plays = userdata.recent_plays()
+    assert [(p["key"], p["skipped"]) for p in plays] == [(f"yt:{A}", True), (f"yt:{A}", False)]
+
+
+def test_skip_without_earlier_play_is_still_recorded(api):
+    """Короткий запуск нового трека: прослушивания нет, но сигнал пропуска сохраняется (раньше UPDATE ничего не менял бы)."""
+    api.post("/api/history/skip", json={"source": "sc", "id": "1000000001", "track": track_payload("sc", "1000000001")})
+    assert api.profile.sql("SELECT key, skipped FROM history") == [("sc:1000000001", 1)]
+    assert [p["skipped"] for p in userdata.recent_plays()] == [True]
+
+
+def test_skip_track_must_match_key(api):
+    r = api.post("/api/history/skip", json={"source": "yt", "id": A, "track": track_payload(id_=B)})
+    assert r.status_code == 400
+    assert api.profile.sql("SELECT COUNT(*) FROM history")[0][0] == 0
+
+
+def test_skip_with_invalid_track_is_422(api):
+    r = api.post("/api/history/skip", json={"source": "yt", "id": A, "track": {"id": A, "source": "yt"}})
+    assert r.status_code == 422
+    assert api.profile.sql("SELECT COUNT(*) FROM history")[0][0] == 0
+
+
+def test_skip_records_are_trimmed_with_history(api, monkeypatch):
+    monkeypatch.setattr(userdata, "HISTORY_LIMIT_MIN", 2)
+    api.put("/api/settings", json={"history_limit": 2})
+    for i in range(4):
+        api.post("/api/history/skip", json={"source": "yt", "id": f"EEEEEEEEEE{i}", "track": track_payload(id_=f"EEEEEEEEEE{i}")})
+    assert api.profile.sql("SELECT key FROM history ORDER BY id") == [("yt:EEEEEEEEEE2",), ("yt:EEEEEEEEEE3",)]

@@ -103,6 +103,7 @@ def wav(seconds: int = 30, rate: int = 8000) -> bytes:
 
 
 AUDIO = wav()
+AUDIO6 = wav(6)                        # короткие треки раздела «История» (S10): порог прослушивания 3 с
 
 
 def cover_svg(url: str) -> str:
@@ -246,12 +247,13 @@ def handle(route: Route) -> None:
         if STREAM["mode"] == "js_runtime":
             return route.fulfill(status=503, content_type="application/json", headers={"X-Wave-Error": "js_runtime"},
                                  body=json.dumps({"detail": JS_RUNTIME_DETAIL}, ensure_ascii=False))
+        audio = AUDIO6 if re.search(r"/trk000003\d\d$", path) else AUDIO
         rng = re.match(r"bytes=(\d+)-(\d*)", req.headers.get("range", ""))
         if rng:
-            a = int(rng.group(1)); b = min(int(rng.group(2) or len(AUDIO) - 1), len(AUDIO) - 1)
-            return route.fulfill(status=206, body=AUDIO[a:b + 1], headers={
-                "Content-Type": "audio/wav", "Accept-Ranges": "bytes", "Content-Range": f"bytes {a}-{b}/{len(AUDIO)}"})
-        return route.fulfill(status=200, body=AUDIO, headers={"Content-Type": "audio/wav", "Accept-Ranges": "bytes"})
+            a = int(rng.group(1)); b = min(int(rng.group(2) or len(audio) - 1), len(audio) - 1)
+            return route.fulfill(status=206, body=audio[a:b + 1], headers={
+                "Content-Type": "audio/wav", "Accept-Ranges": "bytes", "Content-Range": f"bytes {a}-{b}/{len(audio)}"})
+        return route.fulfill(status=200, body=audio, headers={"Content-Type": "audio/wav", "Accept-Ranges": "bytes"})
 
     if path == "/api/recommendations":
         if q.get("id"):                                               # «радио» трека
@@ -282,6 +284,9 @@ def handle(route: Route) -> None:
     if path == "/api/search" and q.get("q") == "s10":                 # очередь из 10 треков (повтор и перемешивание, S10)
         return js(route, {"query": "s10", "count": 10, "tracks": [track(200 + i) for i in range(10)], "failed_sources": [],
                           "has_more": False})
+    if path == "/api/search" and q.get("q") == "s10h":                # короткие треки по 6 с (история, S10)
+        return js(route, {"query": "s10h", "count": 4, "tracks": [{**track(300 + i), "duration": 6} for i in range(4)],
+                          "failed_sources": [], "has_more": False})
     if path == "/api/search" and q.get("sources") == "sc":
         return js(route, {"query": q.get("q"), "count": 3, "tracks": [sc_track(i) for i in range(3)], "failed_sources": [],
                           "has_more": False, "source_status": {"sc": "ok"}})
@@ -920,7 +925,8 @@ def main() -> int:
         page.wait_for_function("document.querySelector('#audio').src.endsWith('/api/stream/yt/trk00000081')")
         page.wait_for_timeout(400)
         page.remove_listener("request", on_skip)
-        check(skips == [{"source": "yt", "id": "trk00000040"}],
+        # S10: в теле ещё и снимок трека (пропуск до порога — отдельная запись истории)
+        check([(x["source"], x["id"], (x.get("track") or {}).get("id")) for x in skips] == [("yt", "trk00000040", "trk00000040")],
               f"сигнал «пропуск» — для прерванного трека, а не для трека нового списка с тем же номером ({skips})")
 
         print("Очередь не зависит от списка на экране (M11)")
@@ -1116,6 +1122,59 @@ def main() -> int:
         page.click("#player [data-do=next]")
         check(wait_track("trk00000204"), "«Следующий» — следующий трек восстановленной очереди")
         page.click(rep_btn)                                          # one → off
+
+        print("История: запись после порога, сигнал пропуска (S10)")
+        played: list[str] = []
+        skipped: list[dict] = []
+
+        def on_history(r) -> None:
+            if r.method == "POST" and r.url.endswith("/api/history"):
+                played.append(r.post_data_json["id"])
+            elif r.url.endswith("/api/history/skip"):
+                skipped.append(r.post_data_json)
+
+        def wait_played(tid: str, n: int, timeout: float = 10.0) -> bool:
+            import time
+            deadline = time.monotonic() + timeout
+            while played.count(tid) < n and time.monotonic() < deadline:
+                page.wait_for_timeout(100)
+            return played.count(tid) >= n
+
+        page.on("request", on_history)
+        page.fill("#search-input", "s10h")
+        page.keyboard.press("Enter")
+        page.wait_for_function("document.querySelectorAll('#tracks .row:not(.row--skel)').length === 4")
+        page.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/trk00000300') && a.currentTime > 0.6 })()")
+        page.click("#player [data-do=next]")
+        check(wait_track("trk00000301"), "короткие треки (6 с, порог прослушивания 3 с) играют")
+        page.wait_for_timeout(300)
+        s300 = [(x["source"], x["id"], (x.get("track") or {}).get("id")) for x in skipped if x["id"] == "trk00000300"]
+        check("trk00000300" not in played and s300 == [("yt", "trk00000300", "trk00000300")],
+              f"запуск короче порога — не прослушивание, а один сигнал пропуска со снимком трека ({played}, {s300})")
+        check(wait_played("trk00000301", 1) and played.count("trk00000301") == 1, "после 3 с прослушивания (50 % от 6 с) — одна запись в историю")
+        page.evaluate("document.querySelector('#audio').currentTime = 0.2")       # назад и снова через порог
+        page.click("#player [data-do=play]"); page.wait_for_timeout(400); page.click("#player [data-do=play]")   # пауза и продолжение
+        page.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 3.6 })()", timeout=10000)
+        check(played.count("trk00000301") == 1, "перемотка назад и пауза не дают второй записи того же запуска")
+        page.click("#player [data-do=next]")
+        check(wait_track("trk00000302"), "следующий трек")
+        page.wait_for_timeout(200)
+        check(not [x for x in skipped if x["id"] == "trk00000301"], "переключение после порога — не пропуск")
+        page.wait_for_function("Number.isFinite(document.querySelector('#audio').duration)")
+        page.evaluate("document.querySelector('#audio').currentTime = 5")         # перемотка почти в конец
+        check(wait_track("trk00000303"), "трек с перемоткой доиграл, очередь продолжилась")
+        check("trk00000302" not in played and not [x for x in skipped if x["id"] == "trk00000302"],
+              "перемотка вперёд не обходит порог; естественный конец трека — не пропуск")
+        page.click(rep_btn); page.click(rep_btn)                      # повтор трека
+        check(wait_played("trk00000303", 1), "первый проигрыш трека с повтором записан после порога")
+        page.wait_for_function("(() => { const a = document.querySelector('#audio'); return a.src.endsWith('/trk00000303') && a.currentTime < 1.5 && !a.paused })()",
+                               timeout=10000)
+        check(played.count("trk00000303") == 1, "повтор трека: новый проигрыш до порога ещё не записан")
+        check(wait_played("trk00000303", 2) and played.count("trk00000303") == 2 and not [x for x in skipped if x["id"] == "trk00000303"],
+              "повтор трека: каждый проигрыш — одна запись после своего порога, пропусков нет")
+        page.click(rep_btn)                                          # one → off
+        page.remove_listener("request", on_history)
         # Запись несохранённого при закрытии окна (sendBeacon) проверяет tests/api/test_playback_browser.py: здесь
         # все запросы идут через перехват Playwright (ctx.route), а он не доставляет запросы выгружаемой страницы.
 

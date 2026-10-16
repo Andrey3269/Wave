@@ -18,6 +18,7 @@ import { nextRepeat, normRepeat } from "./queue.js";
 import { toast } from "../components/toast.js";
 import { getDuration, seekBy, seekTo, resetProgress, updateProgress } from "./sliders.js";
 import { currentPosition, saveSoon, withoutSaving } from "./persist.js";
+import { ListenTracker } from "./listen.js";
 
 export const playerEvents = new Emitter();
 
@@ -33,24 +34,54 @@ export function setIdleAction(fn) { idleAction = fn; }
  */
 export function play(tracks, i, { label = "", mixId = null } = {}) {
   if (!tracks[i]) return;
-  const prev = current();                                // играющий трек — до замены очереди
+  // Прерванный трек для сигнала «пропуск» помнит сам запуск (listenTrack), а не очередь: её сейчас заменят (S9)
   queue.load(tracks, { label, source: tracks, continuation: async () => tracks });
   state.mixId = mixId;
   playerEvents.emit("mix");
-  playIndex(i, prev);
+  playIndex(i);
 }
 
-/** prev — трек, который играл до этого. Если очередь только что заменили, current() уже указывает в новую
- *  очередь, поэтому вызывающий передаёт прерванный трек сам. at — с какой секунды начать (восстановленная
- *  позиция после перезапуска, S10). */
-export function playIndex(i, prev = current(), { at = 0 } = {}) {
+// ---------- История прослушивания (S10) ----------
+// Прослушивание записывается, когда фактически проиграно min(30 с, 50 % длительности) — player/listen.js;
+// один запуск трека — не больше одной записи. Пропуск — запуск, прерванный пользователем после начала звука,
+// но до порога: сигнал уходит для прерванного трека (S9: не для трека нового списка) один раз. Естественный
+// конец трека и ошибка потока пропуском не считаются.
+const listen = new ListenTracker();
+let listenTrack = null;                  // трек текущего запуска (его прослушивание или пропуск записываются)
+
+function startListen(track) {
+  listenTrack = track;
+  listen.start(trackKey(track));
+}
+/** Запуск прерван: пользователь переключил трек (user) — пропуск, если порог не достигнут. */
+function endListen(user) {
+  if (user && listenTrack && listen.isSkip()) reportSkip(listenTrack);
+  listen.stop();
+  listenTrack = null;
+}
+/** Длительность для порога: реальная из <audio>, пока её нет — из метаданных трека; 0 — неизвестна. */
+function listenDuration() {
+  if (Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+  return listenTrack?.duration || 0;
+}
+function onListenProgress() {
+  if (!audio.getAttribute("src") || audio.paused && !audio.ended) return;
+  if (listen.progress(audio.currentTime, performance.now(), { rate: audio.playbackRate || 1, duration: listenDuration() }) && listenTrack) {
+    recordPlay(listenTrack);
+  }
+}
+
+/** Играть трек i очереди. at — с какой секунды начать (восстановленная позиция после перезапуска, S10).
+ *  auto — переход без участия пользователя (трек доиграл, ошибка потока): прерванный запуск — не пропуск.
+ *  Прерванный трек (для сигнала «пропуск») берётся из текущего запуска, а не из очереди: при play() очередь уже
+ *  заменена новой (исправление S9 теперь следует из устройства, а не из переданного параметра). */
+export function playIndex(i, { at = 0, auto = false } = {}) {
   const track = queue.at(i);
   if (!track) return;
   state.resumeAt = null;
-  const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : prev?.duration || 0;
-  if (prev && audio.currentTime > 0 && !audio.ended && audio.currentTime < Math.min(30, (dur || 999) * 0.4)) reportSkip(prev);   // переключили почти сразу = пропуск
+  endListen(!auto && !audio.ended);
   queue.select(i);
-  recordPlay(track);
+  startListen(track);
 
   resetProgress(track.duration);
   updateMediaMetadata(track);
@@ -89,7 +120,8 @@ function applySaved(saved) {
 }
 
 function recordPlay(t) { api("/api/history", jsonOpts("POST", trackPayload(t))).catch(() => {}); }
-function reportSkip(t) { api("/api/history/skip", jsonOpts("POST", { source: t.source, id: t.id })).catch(() => {}); }
+// С S10 — со снимком трека: пропуск до порога — отдельная запись истории (backend/userdata.py)
+function reportSkip(t) { api("/api/history/skip", jsonOpts("POST", { source: t.source, id: t.id, track: trackPayload(t) })).catch(() => {}); }
 
 // ==========================================================================
 // Источник звука трека (S8): обычный файл через <audio src> или HLS через hls.js — в тот же <audio>.
@@ -250,12 +282,13 @@ function onHlsFatal(track, h, data, Hls) {
 function failTrack(track, detail) {
   if (current() !== track) return;        // пользователь уже переключил трек: старая ошибка не мешает новому
   detachHls();
+  endListen(false);                       // ошибка потока — не пропуск и не прослушивание
   // Одно сообщение с трек-названием и настоящей причиной (тост показывает одно сообщение: второе затирало первое)
   toast(detail ? `Не удалось воспроизвести «${track.title}»: ${detail}` : `Не удалось воспроизвести: ${track.title}`,
     detail ? 6000 : 3600);
   clearLoading();
   setPlaying(false);
-  if (state.errors++ < 3 && nextIndex() >= 0) setTimeout(playNext, 800);
+  if (state.errors++ < 3 && nextIndex() >= 0) setTimeout(() => playNext({ auto: true }), 800);
 }
 
 function onPlayRejected(err) {
@@ -270,7 +303,7 @@ export function togglePlay() {
   if (player.pending) return undefined;   // трек ещё готовится (/playback): Play не запускает ничего другого
   if (!audio.getAttribute("src")) {
     // восстановленный после перезапуска трек — с сохранённой позиции (S10); иначе решает приложение
-    if (state.resumeAt != null && current()) return playIndex(queue.index, null, { at: state.resumeAt });
+    if (state.resumeAt != null && current()) return playIndex(queue.index, { at: state.resumeAt });
     return idleAction();
   }
   if (audio.paused) audio.play().catch(onPlayRejected); else audio.pause();
@@ -281,12 +314,12 @@ export function togglePlay() {
 export function nextIndex(auto = false) {
   return queue.nextIndex({ shuffle: state.shuffle, repeat: state.repeat, auto });
 }
-/** «Следующий» (кнопка, медиаклавиша, переход после ошибки). */
-export function playNext() {
+/** «Следующий» (кнопка, медиаклавиша; auto — переход после ошибки потока). */
+export function playNext({ auto = false } = {}) {
   const j = nextIndex();
   if (j < 0) return;
-  if (j === queue.index) replayCurrent();                // repeat "all" с одним треком: тот же трек сначала
-  else playIndex(j);
+  if (j === queue.index) replayCurrent(!auto);           // repeat "all" с одним треком: тот же трек сначала
+  else playIndex(j, { auto });
 }
 export function playPrev() {
   // как в большинстве плееров: после 3 секунд «назад» перематывает в начало трека;
@@ -313,10 +346,13 @@ export function setRepeat(mode) {
 /** Кнопка повтора: выкл → вся очередь → текущий трек → выкл. */
 export function cycleRepeat() { setRepeat(nextRepeat(state.repeat)); }
 
-/** Тот же трек сначала (repeat "one" или единственный трек при repeat "all"): без нового резолва потока. */
-function replayCurrent() {
+/** Тот же трек сначала (repeat "one" или единственный трек при repeat "all"): без нового резолва потока.
+ *  Новый запуск для истории: свой порог, своя запись. user — по кнопке (прерванный проигрыш может быть пропуском). */
+function replayCurrent(user = false) {
   const t = current();
   if (!t) return;
+  endListen(user && !audio.ended);
+  startListen(t);
   playerEvents.emit("replay", t);
   audio.currentTime = 0;
   audio.play().catch((err) => {
@@ -403,7 +439,7 @@ async function continueWithRecs() {
     if (!fresh.length) return stopAtEnd();
     queue.label = "Похожие треки";
     toast("Очередь закончилась. Продолжаем похожими треками.");
-    return playIndex(from);
+    return playIndex(from, { auto: true });          // очередь доиграла сама: не пропуск
   } catch { return stopAtEnd(); }
 }
 
@@ -439,13 +475,14 @@ export function initPlayer() {
   });
   audio.addEventListener("loadedmetadata", () => { updateProgress(); updatePositionState(); });
   audio.addEventListener("durationchange", updateProgress);
-  audio.addEventListener("timeupdate", () => { if (!state.seeking) updateProgress(); });
+  audio.addEventListener("timeupdate", () => { if (!state.seeking) updateProgress(); onListenProgress(); });
+  audio.addEventListener("seeking", () => listen.seeking());      // перемотка не засчитывается в прослушивание
   audio.addEventListener("seeked", updatePositionState);
   audio.addEventListener("ratechange", updatePositionState);
   audio.addEventListener("ended", () => {
     const j = nextIndex(true);
     if (j >= 0 && j === queue.index) replayCurrent();
-    else if (j >= 0) playIndex(j);
+    else if (j >= 0) playIndex(j, { auto: true });
     else if (state.settings.autoplay && navigator.onLine) continueWithRecs();
     else stopAtEnd();
   });
@@ -457,8 +494,8 @@ export function initPlayer() {
     const actions = {
       play: () => (audio.getAttribute("src") ? audio.play().catch(onPlayRejected) : togglePlay()),
       pause: () => audio.pause(),
-      previoustrack: playPrev,
-      nexttrack: playNext,
+      previoustrack: () => playPrev(),
+      nexttrack: () => playNext(),
       stop: () => { audio.pause(); seekTo(0); },
       seekbackward: (d) => seekBy(-(d.seekOffset || 10)),
       seekforward: (d) => seekBy(d.seekOffset || 10),

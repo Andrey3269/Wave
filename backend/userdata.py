@@ -406,7 +406,10 @@ def trim_history() -> int:
 
 @router.post("/history")
 def add_history(t: TrackIn):
-    """Запись прослушивания и обрезка истории до лимита — одной транзакцией."""
+    """
+    Запись прослушивания и обрезка истории до лимита — одной транзакцией. С S10 фронтенд вызывает её, когда
+    прослушано min(30 с, 50 % длительности) (frontend/js/player/listen.js), один раз за запуск трека.
+    """
     with library.transaction() as db:
         db.execute("INSERT INTO history (key, data, played_at) VALUES (?, ?, ?)",
                    (f"{t.source}:{t.id}", json.dumps(_dump(t), ensure_ascii=False), time.time()))
@@ -414,10 +417,31 @@ def add_history(t: TrackIn):
     return {"ok": True}
 
 
+class SkipIn(KeyIn):
+    """Пропуск. С S10 фронтенд присылает и снимок трека (track): прослушивание до порога не записывается, поэтому
+    пропуск — отдельная запись истории со skipped = 1. Без track — прежний контракт (до S10)."""
+    track: TrackIn | None = None
+
+
 @router.post("/history/skip")
-def mark_skip(k: KeyIn):
-    """Трек переключили почти сразу: последняя запись о нём считается пропуском (учитывается в рекомендациях)."""
-    _q("UPDATE history SET skipped = 1 WHERE id = (SELECT MAX(id) FROM history WHERE key = ?)", (f"{k.source}:{k.id}",))
+def mark_skip(k: SkipIn):
+    """
+    Трек переключили до порога прослушивания (S10: min(30 с, 50 % длительности); учитывается в рекомендациях).
+    * С track: новая запись истории со skipped = 1 и обрезка до лимита — одной транзакцией. Помечать последнюю
+      запись о треке нельзя: прерванный запуск в историю не попал, и пометилось бы прежнее полноценное прослушивание.
+    * Без track (фронтенд до S10, который записывал прослушивание при старте): последняя запись о треке
+      считается пропуском, как раньше.
+    """
+    key = f"{k.source}:{k.id}"
+    if k.track is None:
+        _q("UPDATE history SET skipped = 1 WHERE id = (SELECT MAX(id) FROM history WHERE key = ?)", (key,))
+        return {"ok": True}
+    if (k.track.source, k.track.id) != (k.source, k.id):
+        raise HTTPException(400, "Трек пропуска не совпадает с source и id.")
+    with library.transaction() as db:
+        db.execute("INSERT INTO history (key, data, played_at, skipped) VALUES (?, ?, ?, 1)",
+                   (key, json.dumps(_dump(k.track), ensure_ascii=False), time.time()))
+        _trim(db, history_limit(db))
     return {"ok": True}
 
 
