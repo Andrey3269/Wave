@@ -146,7 +146,9 @@ class CircuitBreaker:
         self._lock = threading.Lock()
 
     def remaining(self) -> float:
-        return max(0.0, self.until - self._clock())
+        # Не больше cooldown: если часы между trip() и этим вызовом не сдвинулись (грубое разрешение monotonic
+        # на Windows), (now + cooldown) - now в float бывает на 1e-14 больше cooldown (сбой CI 38850258034).
+        return min(self.cooldown, max(0.0, self.until - self._clock()))
 
     def is_open(self) -> bool:
         return self.remaining() > 0

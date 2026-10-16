@@ -180,6 +180,18 @@ def test_zero_cooldown_never_opens():
     assert b.trip("timeout") is False and not b.is_open()
 
 
+@pytest.mark.parametrize("now", [107.07835250545195, 0.1, 1234.567])
+def test_remaining_never_exceeds_cooldown(now):
+    """
+    Сбой CI 38850258034 (windows-latest): часы между trip() и remaining() не сдвинулись (грубое разрешение
+    time.monotonic() на Windows), а (now + 45) - now в float даёт 45.000000000000014. Оставшаяся пауза не может
+    быть больше самой паузы. Первое значение `now` — то, при котором прежний код возвращал больше cooldown.
+    """
+    b = CircuitBreaker(45.0, clock=lambda: now)
+    assert b.trip("timeout")
+    assert 0 < b.remaining() <= b.cooldown and b.is_open()
+
+
 # ---------------------------------------------------------------------------
 # Пул: пределы, таймауты, отмена, брошенные задачи
 # ---------------------------------------------------------------------------
