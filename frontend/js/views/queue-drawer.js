@@ -11,6 +11,7 @@ import { toast } from "../components/toast.js";
 import { openMenu } from "../components/menu.js";
 import { paintFav } from "../components/track-row.js";
 import { toggleFav } from "../components/favorites.js";
+import { focusSafely, rescueFocus } from "../components/focus.js";
 
 // Правки очереди — методами модели (player/queue.js); здесь — то, что видит пользователь.
 // Баннер главной показывает «Далее»: после добавления и переноса он перерисовывается (bus "hero").
@@ -78,7 +79,29 @@ function renderDrawer() {
   el.queueList.replaceChildren(...(rows.length ? rows : [mk("li", "lyrics__empty", "Очередь пуста")]));
   el.queueList.querySelector(".is-current")?.scrollIntoView?.({ block: "nearest" });
 }
-export function toggleQueue() { el.queue.hidden = !el.queue.hidden; if (!el.queue.hidden) renderQueue(); }
+// S12: панель очереди помнит, откуда её открыли. Если при закрытии (кнопка, Esc) фокус был в панели, он
+// возвращается на открывшую кнопку, а не пропадает вместе со скрытой панелью.
+let queueOpener = null;
+export function toggleQueue() {
+  if (!el.queue.hidden) { closeQueue(); return; }
+  queueOpener = document.activeElement;
+  el.queue.hidden = false;
+  renderQueue();
+}
+export function closeQueue() {
+  if (el.queue.hidden) return;
+  const inside = el.queue.contains(document.activeElement);
+  el.queue.hidden = true;
+  const opener = queueOpener;
+  queueOpener = null;
+  if (inside && !focusSafely(opener)) rescueFocus();
+}
+/** Куда вернуть фокус после действия меню строки полноэкранной очереди: «⋯» того же трека, иначе строки на его
+ *  месте (трек убран), иначе кнопка Play/Pause. Строки перерисовываются целиком, прежний узел «⋯» уже не годится. */
+function fqRefocus(t, i) {
+  const j = queue.tracks.indexOf(t);
+  return fs.qList.querySelector(`.fq__more[data-index="${j >= 0 ? j : i}"]`) || [...fs.qList.querySelectorAll(".fq__more")].pop() || fs.play;
+}
 
 // ---------- очередь в полноэкранном плеере: «Сейчас играет» и «Далее» ----------
 const FQ_MAX = 300;                                      // длинную очередь не рисуем целиком
@@ -143,7 +166,7 @@ export function initQueueDrawer() {
     else if (b.dataset.q === "rm") queueRemove(i);
     else if (b.classList.contains("q__main")) playIndex(i);   // «играть сейчас»
   });
-  $("#queue-close").addEventListener("click", () => { el.queue.hidden = true; });
+  $("#queue-close").addEventListener("click", closeQueue);
   $("#queue-clear").addEventListener("click", queueClearFlow);
 
   // Один набор обработчиков на весь список полноэкранной очереди: клик, меню «⋯», перетаскивание за «ручку»
@@ -151,7 +174,7 @@ export function initQueueDrawer() {
     const more = e.target.closest(".fq__more");
     if (more) {
       const i = Number(more.dataset.index), t = queue.at(i);
-      if (t) openMenu(t, more, { queueIndex: i });
+      if (t) openMenu(t, more, { queueIndex: i, refocus: () => fqRefocus(t, i) });
       return;
     }
     const main = e.target.closest(".fq__main");

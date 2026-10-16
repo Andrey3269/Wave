@@ -1,9 +1,10 @@
 // Каркас: какой раздел главной области виден, активный пункт меню, вкладки поиска и переключатель источника.
 import { $$ } from "../core/dom.js";
-import { el, views } from "../core/elements.js";
+import { el, views, hero, now } from "../core/elements.js";
 import { state, current, DETAIL_VIEWS, sectionOf, isCards } from "../state/store.js";
 import { updateSort } from "./list.js";
 import { closeFs } from "./fullscreen.js";
+import { setFocusFallback, keepFocus } from "../components/focus.js";
 
 const NAV_OF = { home: "home", search: "search", playlists: "playlists", playlist: "playlists", collection: "collection",
   liked: "liked", downloads: "downloads", history: "history", settings: "settings" };
@@ -31,7 +32,18 @@ export function layout() {
   document.body.dataset.track = current() ? "1" : "0";
   if (v !== "now" && state.fs.open) closeFs();
   updateSort();
+  keepFocus();                                           // S12: фокус из скрытого или удалённого элемента — на заголовок
 }
+
+/** Заголовок открытого экрана (tabindex="-1" в index.html): сюда переходит фокус, если его элемент скрылся (S12). */
+function viewHeading() {
+  const v = state.view, sec = sectionOf(v);
+  if (sec === "home") return hero.title;
+  if (sec === "now") return now.title;
+  if (sec === "collection" || sec === "settings") return views[sec].querySelector(".page-h");
+  return DETAIL_VIEWS.includes(v) ? el.dTitle : el.resultsTitle;
+}
+setFocusFallback(viewHeading);
 
 export function syncTabs() {
   $$(".tab", el.tabs).forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === state.tab)));

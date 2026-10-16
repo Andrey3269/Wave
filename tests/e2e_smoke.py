@@ -1668,6 +1668,183 @@ def main() -> int:
                   f"{w}px: ссылка исполнителя под названием, рамке фокуса хватает места, переполнения нет")
         ax.set_viewport_size({"width": 1440, "height": 900})
 
+        print("Доступность (S12): меню трека с клавиатуры")
+        act = "document.activeElement.dataset.act || ''"
+
+        def menu_to(pg, name: str) -> None:                          # стрелкой вниз до пункта name (не больше круга)
+            for _ in range(12):
+                if pg.evaluate(act) == name:
+                    return
+                pg.keyboard.press("ArrowDown")
+            raise AssertionError(f"в меню нет пункта {name}")
+        more3 = "#tracks .row:nth-child(3) .track__more"
+        is_focused = "(s) => document.activeElement === document.querySelector(s)"
+        ax.focus(more3)
+        ax.keyboard.press("ArrowDown")
+        check(ax.is_hidden("#menu") and ax.evaluate(is_focused, more3), "закрытое меню: стрелки ничего не открывают и фокус не двигают")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#menu:not([hidden])")
+        acts = ax.evaluate("[...document.querySelectorAll('#menu [role=menuitem]')].map(b => b.dataset.act)")
+        check(ax.evaluate(act) == acts[0] == "next" and ax.get_attribute(more3, "aria-expanded") == "true"
+              and ax.get_attribute("#menu", "role") == "menu" and ax.get_attribute("#menu", "aria-label").startswith("Действия с треком: ")
+              and ax.evaluate("[...document.querySelectorAll('#menu > *')].every(b => b.getAttribute('role') === 'menuitem' && b.tabIndex === -1)"),
+              "Enter на «⋯»: меню с ролью и именем, фокус на первом пункте, у «⋯» aria-expanded=true")
+        seq = []
+        for key in ["ArrowDown", "ArrowDown", "ArrowUp", "ArrowUp", "ArrowUp", "ArrowDown", "End", "Home"]:
+            ax.keyboard.press(key)
+            seq.append(ax.evaluate(act))
+        check(seq == [acts[1], acts[2], acts[1], acts[0], acts[-1], acts[0], acts[-1], acts[0]],
+              f"стрелки вниз/вверх по кругу, Home и End — крайние пункты ({seq})")
+        ax.keyboard.press("Escape")
+        check(ax.is_hidden("#menu") and ax.evaluate(is_focused, more3) and ax.get_attribute(more3, "aria-expanded") is None,
+              "Escape закрывает меню и возвращает фокус на «⋯», aria-expanded снят")
+        ax.click("#btn-queue")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        q_before = ax.evaluate(q_count)
+        ax.click("#queue-close")
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        ax.keyboard.press("ArrowDown")
+        ax.keyboard.press("Enter")
+        check(ax.is_hidden("#menu") and ax.evaluate(is_focused, more3), "Enter на пункте закрывает меню, фокус снова на «⋯»")
+        ax.click("#btn-queue")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        check(ax.evaluate(q_count) == q_before + 1, "действие пункта с клавиатуры выполнено ровно один раз")
+        ax.click("#queue-close")
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        ax.keyboard.press("Tab")
+        tab_next = ax.evaluate(active)
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        ax.keyboard.press("Shift+Tab")
+        tab_prev = ax.evaluate(active)
+        check(ax.is_hidden("#menu") and tab_next["cls"] == "track__play" and tab_next["row"] == 4
+              and "track__dl" in tab_prev["cls"] and tab_prev["row"] == 3,
+              f"Tab в меню закрывает его и продолжает обход от «⋯» (вперёд и назад: {tab_next['cls']}, {tab_prev['cls']})")
+        ax.click(more3)
+        ax.click(more3)
+        check(ax.is_hidden("#menu") and ax.get_attribute(more3, "aria-expanded") is None, "повторное нажатие на ту же «⋯» закрывает меню")
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        ax.click("#search-input")
+        check(ax.is_hidden("#menu") and ax.evaluate(is_focused, "#search-input") and ax.get_attribute(more3, "aria-expanded") is None,
+              "меню, открытое с клавиатуры: клик вне закрывает его, фокус остаётся на поле поиска")
+
+        ax.focus(more3)
+        ax.keyboard.press("Enter")
+        ax.keyboard.press("ArrowDown")
+        ax.keyboard.press("ArrowDown")
+        ax.keyboard.press("Enter")                                   # «Добавить в плейлист…»
+        ax.wait_for_selector("#dlg-pick[open] .pick__item")
+        ax.keyboard.press("Escape")
+        ax.wait_for_selector("#dlg-pick", state="hidden")
+        check(ax.evaluate(is_focused, more3), "диалог выбора плейлиста из меню: Escape закрывает его, фокус возвращается на «⋯»")
+
+        artist_reqs: list[str] = []
+        on_artist = lambda r: artist_reqs.append(r.url) if re.search(r"/api/artist/yt/[\w-]+$", urlparse(r.url).path) else None   # noqa: E731
+        ax.on("request", on_artist)
+        ax.focus("#tracks .row:nth-child(2) .track__more")
+        ax.keyboard.press("Enter")
+        menu_to(ax, "artist")
+        ax.keyboard.press("Enter")                                   # «Перейти к исполнителю»
+        ax.wait_for_function(is_artist_page)
+        ax.wait_for_timeout(300)
+        ax.remove_listener("request", on_artist)
+        focus_ok = ax.evaluate("""() => { const a = document.activeElement;
+            return a.id === 'd-title' && a.checkVisibility() && !a.closest('[hidden]') }""")
+        check(len(artist_reqs) == 1 and focus_ok,
+              f"«Перейти к исполнителю» с клавиатуры: переход один раз, фокус на заголовке новой страницы, не в скрытом DOM ({len(artist_reqs)})")
+        ax.click("#back")
+        ax.wait_for_function(rows_ready, arg=20)
+
+        dis_row, dis_id = 9, "trk00000048"
+        more9 = f"#tracks .row:nth-child({dis_row}) .track__more"
+        DL["mock"] = True
+        DL["hold"].add(dis_id)
+        posts, cancels = len(DL["posts"]), len(DL["cancels"])
+        ax.click(f"#tracks .row:nth-child({dis_row}) .track__dl")
+        ax.wait_for_function("(s) => document.querySelector(s)?.getAttribute('aria-disabled') === 'true'", arg=f"#tracks .row:nth-child({dis_row}) .track__dl")
+        ax.focus(more9)
+        ax.keyboard.press("Enter")
+        ax.keyboard.press("End")
+        end_act = ax.evaluate(act)
+        ax.keyboard.press("ArrowUp")
+        on_disabled = ax.evaluate("[document.activeElement.dataset.act, document.activeElement.getAttribute('aria-disabled')]")
+        ax.keyboard.press("Enter")
+        ax.wait_for_timeout(300)
+        check(end_act == "share" and on_disabled == ["download", "true"] and not ax.is_hidden("#menu")
+              and ax.evaluate(act) == "download" and len(DL["posts"]) == posts + 1 and len(DL["cancels"]) == cancels,
+              "недоступный пункт: стрелки его фокусируют, Enter ничего не делает (меню открыто, запросов нет); End — последний доступный")
+        ax.keyboard.press("Escape")
+        check(ax.evaluate(is_focused, more9), "Escape с недоступного пункта — фокус на «⋯»")
+        held_release()
+        DL["hold"].discard(dis_id)
+        DL["stage"][dis_id] = "cancelled"
+        ax.wait_for_function("(s) => (document.querySelector(s)?.getAttribute('aria-label') || '') === 'Скачать'", arg=f"#tracks .row:nth-child({dis_row}) .track__dl")
+        DL["mock"] = False
+        DL["stage"].clear()
+
+        print("  очередь полноэкранного плеера, панель очереди, карточки")
+        ax.click("#player-open")
+        ax.wait_for_selector("#view-now:not([hidden])")
+        ax.click("[data-do=expand]")
+        ax.wait_for_selector("#fs:not([hidden])")
+        ax.click("#fs-queue-btn")
+        ax.wait_for_selector("#fs-q-list .fq__row")
+        rows = queue_rows(ax)
+        mover = [r for r in rows if not r["cur"]][1]
+        ax.focus(f"#fs-q-list .fq__more[data-index='{mover['i']}']")
+        ax.keyboard.press("Enter")
+        menu_to(ax, "down")
+        ax.keyboard.press("Enter")                                   # «Ниже»
+        ax.wait_for_function("([i, t]) => document.querySelector(`#fs-q-list .fq__row[data-index='${i}'] .fq__title`)?.textContent === t",
+                             arg=[mover["i"] + 1, mover["t"]])
+        moved = ax.evaluate("""() => { const a = document.activeElement, r = a.closest('.fq__row');
+            return a.classList.contains('fq__more') && r ? {i: +a.dataset.index, t: r.querySelector('.fq__title').textContent} : null }""")
+        check(moved == {"i": mover["i"] + 1, "t": mover["t"]}, f"очередь: «Ниже» с клавиатуры — фокус на «⋯» того же трека на новом месте ({moved})")
+        ax.keyboard.press("Enter")
+        menu_to(ax, "rm")
+        ax.keyboard.press("Enter")                                   # «Убрать из очереди»
+        ax.wait_for_function("(t) => ![...document.querySelectorAll('#fs-q-list .fq__title')].some(n => n.textContent === t)", arg=mover["t"])
+        after_rm = ax.evaluate("[document.activeElement.classList.contains('fq__more'), +document.activeElement.dataset.index]")
+        check(after_rm == [True, mover["i"] + 1], f"очередь: после «Убрать» фокус на «⋯» строки, вставшей на это место ({after_rm})")
+        ax.keyboard.press("Escape")                                  # панель очереди
+        ax.keyboard.press("Escape")                                  # полноэкранный режим
+        ax.wait_for_selector("#fs", state="hidden")
+        ax.click("[data-do=back]")
+        ax.wait_for_function("document.body.dataset.view !== 'now'")
+        ax.wait_for_selector("#player:not([hidden])")
+        ax.focus("#btn-queue")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        ax.focus("#queue-list .q__main")
+        ax.keyboard.press("Escape")
+        check(ax.is_hidden("#queue") and ax.evaluate(is_focused, "#btn-queue"), "панель очереди: Escape из панели — фокус на кнопке «Очередь»")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#queue:not([hidden]) .q")
+        ax.focus("#queue-close")
+        ax.keyboard.press("Enter")
+        check(ax.is_hidden("#queue") and ax.evaluate(is_focused, "#btn-queue"), "панель очереди: «Закрыть» с клавиатуры — фокус на кнопке «Очередь»")
+        ax.focus(".nav__item[data-view=home]")
+        ax.keyboard.press("Enter")
+        ax.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        check(ax.evaluate(is_focused, ".nav__item[data-view=home]"), "переход по пункту меню: фокус остаётся на видимом пункте навигации")
+        card_more = "#new-grid .tcard:nth-child(2) .tcard__more"
+        ax.focus(card_more)
+        ax.wait_for_timeout(250)                                     # переход opacity .12s
+        check(ax.evaluate("(s) => getComputedStyle(document.querySelector(s)).opacity", card_more) == "1", "«⋯» карточки видна при фокусе с клавиатуры")
+        ax.keyboard.press("Enter")
+        opened = ax.evaluate(act) == "next"
+        ax.keyboard.press("Escape")
+        hero_more = "#hero [data-do=more]"
+        ax.focus(hero_more)
+        ax.keyboard.press("Enter")
+        opened_hero = ax.evaluate(act) == "next" and ax.get_attribute(hero_more, "aria-expanded") == "true"
+        ax.keyboard.press("Escape")
+        check(opened and opened_hero and ax.evaluate(is_focused, hero_more),
+              "меню карточки главной и баннера открываются с клавиатуры, Escape возвращает фокус")
+
         browser.close()
 
     print(f"\nПроверок: {checks}, провалено: {len(failures)}")

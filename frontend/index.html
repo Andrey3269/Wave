@@ -161,7 +161,7 @@
           </svg>
           <div class="hero__body">
             <p class="hero__eyebrow" id="hero-eyebrow"><span class="eq" aria-hidden="true"><i></i><i></i><i></i></span><span id="hero-eyebrow-text">Подборка</span></p>
-            <h1 class="hero__title" id="hero-title">Подборка</h1>
+            <h1 class="hero__title" id="hero-title" tabindex="-1">Подборка</h1>
             <p class="hero__sub" id="hero-sub">Подбираем музыку…</p>
             <p class="hero__meta" id="hero-meta" hidden></p>
             <div class="hero__actions">
@@ -221,7 +221,7 @@
             <span class="cv detail__cover" id="d-cover-wrap"><img id="d-cover" alt="" referrerpolicy="no-referrer"></span>
             <div class="detail__text">
               <p class="detail__kind" id="d-kind"></p>
-              <h1 class="detail__title" id="d-title"></h1>
+              <h1 class="detail__title" id="d-title" tabindex="-1"></h1>
               <p class="detail__sub" id="d-sub"></p>
               <div class="detail__actions">
                 <button class="btn btn--accent" id="d-play" type="button"><svg class="icon icon--fill"><use href="#i-play"/></svg>Слушать</button>
@@ -253,7 +253,7 @@
 
         <section class="results" id="results" aria-labelledby="results-title">
           <div class="results__head">
-            <h2 class="results__title" id="results-title">Треки</h2>
+            <h2 class="results__title" id="results-title" tabindex="-1">Треки</h2>
             <p class="results__status" id="status" role="status" aria-live="polite"></p>
             <button class="btn btn--ghost btn--sm" id="clear-history" type="button" hidden><svg class="icon"><use href="#i-trash"/></svg>Очистить историю</button>
             <select class="sort" id="sort" aria-label="Сортировка" hidden></select>
@@ -267,7 +267,7 @@
 
       <!-- ================= Коллекция ================= -->
       <div class="view" id="view-collection" hidden>
-        <h1 class="page-h">Коллекция</h1>
+        <h1 class="page-h" tabindex="-1">Коллекция</h1>
         <div class="tiles" id="col-tiles"></div>
         <section class="sec" aria-labelledby="h-col-pl">
           <header class="sec__head"><h2 class="sec__h" id="h-col-pl">Плейлисты</h2><button class="sec__link" type="button" data-view="playlists">Смотреть всё</button></header>
@@ -281,7 +281,7 @@
 
       <!-- ================= Настройки ================= -->
       <div class="view settings" id="view-settings" hidden aria-label="Настройки">
-        <h1 class="page-h">Настройки</h1>
+        <h1 class="page-h" tabindex="-1">Настройки</h1>
         <div class="set">
           <h3>Воспроизведение</h3>
           <label class="set__row">Источник по умолчанию
@@ -333,7 +333,7 @@
             <span class="cv now__cover"><img id="now-cover" alt="" referrerpolicy="no-referrer"></span>
             <div class="now__info">
               <p class="eyebrow" id="now-eyebrow"></p>
-              <h1 class="now__title" id="now-title"></h1>
+              <h1 class="now__title" id="now-title" tabindex="-1"></h1>
               <p class="now__artist" id="now-artist"></p>
               <p class="now__meta" id="now-meta"></p>
 

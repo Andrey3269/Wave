@@ -16,6 +16,7 @@ import { el, now, fs } from "./core/elements.js";
 import { state, queue, current, heroTrack, nav } from "./state/store.js";
 import { initSettingsSync, initThemeFollowSystem } from "./state/settings.js";
 import { initEmptyRetry } from "./components/skeleton.js";
+import { initFocusKeeper } from "./components/focus.js";
 import { initPickPlaylist } from "./components/dialogs.js";
 import { initLyrics } from "./components/lyrics.js";
 import { bindCardClicks, initRowScroll } from "./components/cards.js";
@@ -35,7 +36,7 @@ import { goHome, startWave, loadMoreHome, initHomeGrids, initHomeMixRow, initHom
 import { openNowFromUi, toggleLyrics, similar, initSimilarGrid, initNow } from "./views/now.js";
 import { initPlayerBar } from "./views/player-bar.js";
 import { openFs, closeFs, setFsMode, initFullscreen } from "./views/fullscreen.js";
-import { queueAdd, queueRemove, queueMove, queueMoveTo, toggleQueue, initQueueDrawer } from "./views/queue-drawer.js";
+import { queueAdd, queueRemove, queueMove, queueMoveTo, toggleQueue, closeQueue, initQueueDrawer } from "./views/queue-drawer.js";
 import { showLiked, showHistory, initHistory, createPlaylistFlow, showPlaylists, openPlaylist, initPlaylistActions,
   addToPlaylistFlow, removeFromPlaylist, showCollection, initCollectionTiles } from "./views/collection.js";
 import { refreshDownloads, pollJobs, toggleDownload, showDownloads } from "./views/downloads.js";
@@ -45,6 +46,7 @@ import { initOffline } from "./views/offline.js";
 initImageFallback();
 initSettingsSync();
 initEmptyRetry();
+initFocusKeeper();                                       // фокус не остаётся в скрытом DOM после смены экрана (S12)
 
 // ---------- Навигация «Назад» ----------
 const navTo = (fn) => nav.to(fn);
@@ -195,9 +197,9 @@ el.homeMore.addEventListener("click", loadMore);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (el.dlg.open || el.dlgConfirm.open || el.dlgPick.open) return;     // диалог закроется сам
-    if (!el.menu.hidden) { closeMenu(); return; }
+    if (!el.menu.hidden) { closeMenu({ restore: true }); return; }      // фокус в меню — вернётся на «⋯» (S12)
     if (state.fs.open) { if (state.fs.mode !== "default") setFsMode("default"); else closeFs(); return; }   // сначала закрываем панель, потом сам режим
-    if (!el.queue.hidden) { el.queue.hidden = true; return; }
+    if (!el.queue.hidden) { closeQueue(); return; }                        // фокус из панели — на кнопку «Очередь»
     if (state.view === "now") goBack();
     return;
   }
