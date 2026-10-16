@@ -227,11 +227,18 @@ graph TD
 
 Закрывает M14. Зависит от S9 и S6. Windows: WIN-11.
 
-**Статус: начат 2026-10-16 по команде владельца (S9 принят владельцем 2026-10-16), ветка `claude/s10-queue-player` от принятого HEAD S9 `ae44731`. Не принят владельцем; отчёт — `reports/S10.md` по завершении.**
+**Статус: выполнено 2026-10-16, READY FOR OWNER ACCEPTANCE (не принят владельцем), ветка `claude/s10-queue-player` от принятого HEAD S9 `ae44731`; отчёт — [reports/S10.md](reports/S10.md); ручной чек-лист WIN-11 — [checklists/S10_WINDOWS_CHECK.md](checklists/S10_WINDOWS_CHECK.md) (NOT RUN).** Итог: shuffle без повторов в круге с историей «Назад»; repeat off/all/one без `audio.loop` (файл и HLS); очередь, трек, позиция и режимы сохраняются в SQLite (строка `playback_state` в `settings`, схема v1) и восстанавливаются после перезапуска **без автозапуска звука**; история — после `min(30 с, 50 %)` фактически проигранного, пропуск — отдельная запись со снимком трека; «Открыть альбом» по id (YouTube Music, `MPRE…`), иначе поиск; без сети — сообщение с кнопкой «Скачанные» вместо перехода. Отдельными коммитами исправлены две причины красного CI (погрешность float в `CircuitBreaker`, гонка старта интерфейса — она же причина нестабильных HLS-тестов S8/S9). pytest 1336 + 9 skipped + 1 xfail; JS 72; e2e 211 + 33 (было 152 + 27); `run_checks.py` 8/8; снимки 76/76; CI 38861665602 на `7221e99` — SUCCESS (3/3).
 
 - **Изменения.** Shuffle без повторов с историей для «назад»; repeat off/one/all; восстановление очереди и позиции после перезапуска (сериализация модели в SQLite через settings или отдельную таблицу — решается на этапе); запись в историю после порога (30 с или 50 % длительности, что раньше) с сохранением сигнала пропуска; «Открыть альбом» по ID, где источник его даёт; событие `offline` больше не уводит с экрана, а показывает баннер со ссылкой на «Скачанные».
 - **Тесты.** `queue.test.mjs` (все режимы); e2e: повтор очереди, shuffle без повторов на 10 треках, восстановление после перезагрузки страницы; `test_userdata` (порог записи).
 - **Критерии приёмки.** Перечисленное поведение подтверждено тестами; WIN-11 PASS.
+  - Shuffle без повторов, «Назад» по истории — **PASS** (`queue-modes.test.mjs`, e2e на 10 треках).
+  - Repeat off/one/all — **PASS** (JS, e2e, HLS в `test_hls_browser.py`).
+  - Восстановление из SQLite после перезапуска по задокументированной логике — **PASS** (API, e2e после перезагрузки и после перезапуска backend на другом порту, закрытие окна — `test_playback_browser.py`).
+  - История после порога, сигнал пропуска — **PASS** (`listen.test.mjs`, `test_userdata.py`, e2e).
+  - «Открыть альбом» по id с резервным поиском — **PASS** (API, e2e).
+  - Офлайн без ухода с экрана — **PASS** (e2e).
+  - WIN-11 — **NOT RUN** (ручной чек-лист владельца).
 
 ### S11. Загрузки (для разрешённого контента)
 
@@ -287,9 +294,10 @@ graph TD
 | `backend/main.py` | S0, S2a, S2b, S3, S4, S5, S7 |
 | `backend/launcher.py` | S3, S4, S17 |
 | `backend/stream.py` → `streaming/*` | S2b, S2d, S3, S8 |
-| `backend/catalog.py`, `soundcloud.py` → `providers/*` (S7: адаптеры созданы, `soundcloud.py` — фасад) | S3, S7 |
+| `backend/catalog.py`, `soundcloud.py` → `providers/*` (S7: адаптеры созданы, `soundcloud.py` — фасад) | S3, S7, S10 (`album_id`) |
 | `backend/recs.py` | S0, S2c, S7, S14 |
-| `backend/library.py`, `userdata.py`, `playlists.py` → `persistence/*` | S2a, S6, S13, S15 |
+| `backend/library.py`, `userdata.py`, `playlists.py` → `persistence/*` | S2a, S6, S10 (пропуск со снимком), S13, S15 |
+| `backend/playback.py` (S10: состояние воспроизведения, строка в `settings`) | S10 |
 | `backend/downloads.py` → `jobs/*` | S0, S2b, S5, S11 |
 | `backend/download_policy.py` (S5) → `providers/policy.py` | S5; перенос отложен (в S7 модуль S5 не меняется), кандидат — S11 |
 | `backend/lyrics.py` | S5 (M8), S7 |
@@ -336,5 +344,5 @@ graph TD
 | S7 | **выполнено и принято владельцем 2026-10-14 с ограничениями** | `claude/s7-provider-adapters` (от `34bb073`, не слита; проверен `2f731f8`) | [reports/S7.md](reports/S7.md) §10; pytest 888 + 9 skipped + 6 xfail, e2e 137 + 27, `run_checks.py` 7/7; CI 38500085142 SUCCESS на `2f731f8` (Linux, Windows, сборка и установщик; ранее 38445324705 на `8ef3469`); M2, M3, M9 закрыты, M10 изолирован, не устранён (ADR-11 за владельцем); LIVE-1 частично (треки/альбомы BLOCKED), LIVE-5 поиск/отказ PASS, поток FAIL нестабильно 7 из 18 (N4); WIN-10 NOT RUN; `main` не менялся |
 | S8 | **выполнено и принято владельцем 2026-10-14 с ограничениями** (ACCEPTED BY OWNER) | `claude/s8-hls-playback` (от `b1ba727`, не слита; проверен `3eadcba`) | [reports/S8.md](reports/S8.md); HLS SoundCloud (воспроизведение и загрузка), L2, N2, N4; доработка по аудиту (закрепление IP, лимит HLS на всё время ответа); pytest 1235 + 9 skipped + 1 xfail, e2e 144 + 27, `run_checks.py` 7/7; CI SUCCESS (Linux, Windows, сборка, установщик; e2e против установленного `Wave.exe` — 144); LIVE-3, LIVE-5, LIVE-S8 AAC, LIVE-8a/8b — PASS, LIVE-S8 mp3 после доработки и LIVE-1 треки/альбомы — BLOCKED; владелец на Windows 11 подтвердил воспроизведение и загрузку YouTube Music и SoundCloud, остальные пункты чек-листа отдельно не подтверждены; M10/ADR-11 без изменений; `main` не менялся |
 | S9 | **выполнено и принято владельцем 2026-10-16 (ACCEPTED BY OWNER)** | `claude/s9-app-js-modules` (от `d5d0a01`, не слита; HEAD перед записью принятия `acf37b6`) | [reports/S9.md](reports/S9.md); pytest 1251 + 9 skipped + 1 xfail; JS 37; e2e 152 + 27; snapshots 76/76; CI 38844260089 SUCCESS (Linux, Windows, сборка и установщик); ручной чек-лист Windows 11/WebView2 — 11/11 PASS по подтверждению владельца; известны задержка холодного старта +120–130 мс в Linux Chromium и нестабильный S8 HLS-тест; `main` не менялся |
-| S10 | **в работе** с 2026-10-16 (S9 принят владельцем 2026-10-16) | `claude/s10-queue-player` (от `ae44731`) | приёмка — решение владельца; `main` не менялся |
+| S10 | **выполнено 2026-10-16, READY FOR OWNER ACCEPTANCE** (не принят владельцем) | `claude/s10-queue-player` (от `ae44731`, не слита) | [reports/S10.md](reports/S10.md); pytest 1336 + 9 skipped + 1 xfail; JS 72; e2e 211 + 33; `run_checks.py` 8/8; снимки 76/76; CI 38861665602 SUCCESS (Linux, Windows, сборка и установщик); WIN-11 — NOT RUN (чек-лист [S10_WINDOWS_CHECK.md](checklists/S10_WINDOWS_CHECK.md)); `main` не менялся |
 | S11–S19 | не начато | — | следующий этап — только по отдельной команде владельца |

@@ -134,6 +134,24 @@
 
 Приёмка S9: **ACCEPTED BY OWNER — 2026-10-16**. Все автоматические проверки и CI указаны выше; ручной чек-лист Windows 11/WebView2 пройден по подтверждению владельца (11/11 PASS). Это не означает слияния в `main`.
 
+### Состояние после S10 (2026-10-16; ветка `claude/s10-queue-player`, подробности — [reports/S10.md](reports/S10.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 1336 passed + 9 skipped + 1 xfail (было 1251 + 9 + 1; новые — `test_playback.py` 62, `test_playback_browser.py` 3, `test_frontend_startup.py` 2, `test_userdata.py` +6, `test_normalize_yt.py` +8, `test_provider_base.py` +3, `test_hls_browser.py` +1) | Linux, Python 3.13; CI `ubuntu-latest` (1343) и `windows-latest` (1345, 0 skipped) |
+| `node --test "tests/js/*.test.mjs"` | **PASS**: 72 (было 37) — `queue` 15, `queue-modes` 23, `listen` 12, `api` 6, `format` 9, `emitter` 2, `modules` 5 | Linux Node 22; CI Linux и Windows |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 211 + 33 (12 + 13 + 8); было 152 + 27. Новые разделы: Media Session, повтор off/all/one, перемешивание на 10 треках, восстановление после перезагрузки, порог истории и пропуски, альбом по id, нет соединения; в `verify` — восстановление после перезапуска backend на другом порту | Linux Chromium 141; CI Linux, Windows и e2e против установленного `Wave.exe` |
+| `python tests/run_checks.py` | **PASS** 8/8 перед каждым коммитом кода и на HEAD | Linux; CI Linux и Windows |
+| `tests/ui_snapshots.py` (база `ae44731` против HEAD) | **PASS**: 76/76 при допуске 20/255 | Linux Chromium 141 headless |
+| Окно WebView2, ручной чек-лист [checklists/S10_WINDOWS_CHECK.md](checklists/S10_WINDOWS_CHECK.md) (WIN-11) | **NOT RUN** — ожидает владельца | Windows 11, WebView2 |
+
+Особенности инструментов, найденные в S10 (учитывать в новых браузерных тестах):
+- перехват запросов Playwright (любой `ctx.route`/`page.route`) не доставляет запросы, которые страница отправляет при выгрузке (`sendBeacon`, `fetch keepalive` в `pagehide`). Такие сценарии проверяются без перехвата: `tests/api/test_playback_browser.py` (настоящий backend `harness.serve()`, внешних адресов не нужно);
+- `page.wait_for_function` не ждёт значение Promise: выражение с `fetch(...)` «выполняется» сразу. Ждать ответ backend — опросом из Python (`poll()` в `tests/e2e_smoke.py`). Такое же пустое ожидание осталось в `e2e_settings.py migrate` (S2) — кандидат на отдельную правку;
+- e2e на общем профиле: с S10 новая вкладка восстанавливает очередь прошлых разделов. Сценарий «запуск, ничего не играет» сначала очищает сохранённое состояние (`clear_playback()`).
+
+Приёмка S10 — решение владельца; статус этапа — READY FOR OWNER ACCEPTANCE.
+
 ## 3. Изоляция данных (обязательно с этапа S0)
 
 Тесты никогда не трогают `%LOCALAPPDATA%\Wave`, `~/.local/share/wave`, `~/Downloads/Wave`.
@@ -338,7 +356,7 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 | WIN-8 | Обновление поверх предыдущей версии: данные и загрузки сохранены, запущенное приложение корректно закрывается (`AppMutex`) | S4 |
 | WIN-9 | Деинсталляция: программа удалена, `%LOCALAPPDATA%\Wave` и загрузки остались | S4 |
 | WIN-10 | Офлайн и ограниченная сеть: старт, понятные статусы источников, скачанные треки играют | S2c, S7 |
-| WIN-11 | Медиаклавиши, системный оверлей и Media Session в WebView2 | S10 |
+| WIN-11 | Медиаклавиши, системный оверлей и Media Session в WebView2 (ручной чек-лист [checklists/S10_WINDOWS_CHECK.md](checklists/S10_WINDOWS_CHECK.md); автоматическая часть — раздел «Media Session» в `e2e_smoke.py`) | S10 |
 | WIN-12 | Watchdog: принудительная остановка backend → перезапуск → воспроизведение продолжает работать | S2b |
 | WIN-13 | e2e-тест против собранного backend (`Wave.exe` на фиксированном порту через `WAVE_PORT`, только для теста) | S4 |
 | WIN-14 | Длинные пути и кириллица в каталоге загрузок | S11 |
