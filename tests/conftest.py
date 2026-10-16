@@ -126,8 +126,7 @@ def reset_backend_state() -> None:
     m["hls_proxy"].clear()                               # S8: сеансы HLS-прокси (токены) — тоже данные процесса
     m["catalog"]._artist_cache.clear()
     m["lyrics"]._cache.clear()
-    m["downloads"].jobs.clear()
-    m["downloads"]._background.clear()
+    m["downloads"].jobs.clear()                          # задачи загрузок (S11: сами задачи — у DownloadManager в lifespan)
     m["paths"].set_downloads_dir(None)
     m["sc_provider"]._drop_ie()                          # экземпляр yt-dlp SoundCloud в потоке теста (если был)
     st._tls.__dict__.pop("ydls", None)                   # экземпляры YoutubeDL, созданные в потоке теста

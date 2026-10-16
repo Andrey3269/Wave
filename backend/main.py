@@ -35,7 +35,7 @@ import providers
 import recs
 import userdata
 from domain.models import Track
-from downloads import cleanup_partial, router as downloads_router
+from downloads import DownloadManager, cleanup_partial, router as downloads_router
 from lyrics import router as lyrics_router
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import ProviderError
@@ -158,9 +158,14 @@ async def lifespan(app: FastAPI):
     userdata.init()  # избранное, история, настройки
     playlists.init()  # локальные плейлисты
     cleanup_partial()  # недокачанные загрузки прошлого запуска
+    # S11: менеджер загрузок этого запуска (лимит, очередь, отмена); объекты asyncio — в цикле этого запуска (M1)
+    app.state.downloads = DownloadManager()
     try:
         yield
     finally:
+        # S11: сначала загрузки — они пользуются резолвером и обоими HTTP-клиентами. Новые не принимаются, текущие
+        # отменяются и дожидаются: запись в потоке закончена, файлы закрыты, папки .part удалены
+        await app.state.downloads.aclose()
         await app.state.resolver.aclose()  # отменяем резолвы и прогрев этого запуска до закрытия клиента
         # Потоки резолвера не отменить, но их дочерние процессы (Deno) завершаем: резолвы этого запуска
         # уже никому не нужны, а процесс не должен пережить остановку backend (S3, находка L8)

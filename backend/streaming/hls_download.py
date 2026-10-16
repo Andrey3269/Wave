@@ -12,15 +12,18 @@
 MPEG-TS и неизвестные контейнеры не сохраняются (честная ошибка), m3u8 под видом аудио — никогда.
 Один сегмент держится в памяти целиком (до MAX_SEGMENT_BYTES; у SoundCloud — сотни КБ), чтобы проверить
 его до записи.
+
+S11: запись — через download_io.ThreadFile (в потоке, вне event loop). Файл открывает и закрывает задача загрузки
+(downloads._run): она же удаляет временную папку после отмены или сбоя, когда запись в потоке уже закончилась.
 """
 from __future__ import annotations
 
 import logging
 import secrets
-from pathlib import Path
 
 import httpx
 
+from download_io import ThreadFile
 from streaming import containers, errors, hls, hls_proxy
 
 log = logging.getLogger("musicmeta.stream.hls")
@@ -105,8 +108,8 @@ async def _fetch(client, rs, s: hls_proxy.Session, pl: str, kind: str, num: int)
         return data[:cut] if cut is not None else data
 
 
-async def download(client, rs, source: str, track_id: str, dest: Path, job: dict) -> str:
-    """Скачивает HLS-поток трека в dest; возвращает расширение файла (.mp3 | .m4a)."""
+async def download(client, rs, source: str, track_id: str, out: ThreadFile, job: dict) -> str:
+    """Скачивает HLS-поток трека в открытый файл out; возвращает расширение файла (.mp3 | .m4a)."""
     s = hls_proxy.Session(token="dl-" + secrets.token_hex(8), source=source, track_id=track_id)   # вне реестра
     label = hls_proxy._label(s)
     _text, root = await hls_proxy._load_playlist(client, rs, s, "main")
@@ -125,43 +128,40 @@ async def download(client, rs, source: str, track_id: str, dest: Path, job: dict
     has_map = bool(media.maps)
     container: str | None = None
     joiner: containers.Mp3Joiner | None = None
-    written = 0
+    start = out.written
     try:
-        with open(dest, "wb") as f:
-            if has_map:
-                init = await _fetch(client, rs, s, pl, "m", media.segments[0].map_index or 0)
-                containers.check_init(init)
-                f.write(init)
-                written += len(init)
-            for i, seg in enumerate(media.segments):
-                data = await _fetch(client, rs, s, pl, "s", seg.seq)
-                if container is None:
-                    container = containers.sniff(data, has_map)
-                    if container == containers.MPEGTS:
-                        raise _unsupported(label, "HLS с сегментами MPEG-TS")
-                    if container not in (containers.MP3, containers.FMP4):
-                        raise _unsupported(label, "неизвестный контейнер сегментов")
-                    if container == containers.MP3:
-                        joiner = containers.Mp3Joiner()
-                if joiner is not None:
-                    out = joiner.feed(data)
-                else:
-                    containers.check_fragment(data)
-                    out = data
-                f.write(out)
-                written += len(out)
-                job["received"] = written
-                job["progress"] = min(99, int((i + 1) * 100 / len(media.segments)))
+        if has_map:
+            init = await _fetch(client, rs, s, pl, "m", media.segments[0].map_index or 0)
+            containers.check_init(init)
+            await out.write(init)
+        for i, seg in enumerate(media.segments):
+            data = await _fetch(client, rs, s, pl, "s", seg.seq)
+            if container is None:
+                container = containers.sniff(data, has_map)
+                if container == containers.MPEGTS:
+                    raise _unsupported(label, "HLS с сегментами MPEG-TS")
+                if container not in (containers.MP3, containers.FMP4):
+                    raise _unsupported(label, "неизвестный контейнер сегментов")
+                if container == containers.MP3:
+                    joiner = containers.Mp3Joiner()
             if joiner is not None:
-                tail = joiner.finish()
-                f.write(tail)
-                expected = sum(seg.duration for seg in media.segments)
-                if abs(joiner.seconds - expected) > max(2.0, 0.02 * expected):
-                    raise containers.ContainerError(
-                        f"длительность {joiner.seconds:.1f} с вместо {expected:.1f} с по плейлисту")
+                chunk = joiner.feed(data)
+            else:
+                containers.check_fragment(data)
+                chunk = data
+            await out.write(chunk)
+            job["received"] = out.written - start
+            job["progress"] = min(99, int((i + 1) * 100 / len(media.segments)))
+        if joiner is not None:
+            await out.write(joiner.finish())
+            expected = sum(seg.duration for seg in media.segments)
+            if abs(joiner.seconds - expected) > max(2.0, 0.02 * expected):
+                raise containers.ContainerError(
+                    f"длительность {joiner.seconds:.1f} с вместо {expected:.1f} с по плейлисту")
     except containers.ContainerError as exc:
         raise _bad_data(label, exc) from exc
-    job["total"] = job["received"] = dest.stat().st_size        # размер стал известен только в конце
+    written = out.written - start
+    job["total"] = job["received"] = written                    # размер стал известен только в конце
     log.info("HLS-загрузка %s:%s: %s, %d сегментов, %d КБ", source, track_id, container, len(media.segments),
              written // 1024)
     return ".mp3" if container == containers.MP3 else ".m4a"
