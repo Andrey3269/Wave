@@ -644,7 +644,7 @@ def main() -> int:
         check(page.locator("#mixes .mix").count() == 5, "в «Твоей музыке» 5 миксов")
         check(not visible(page, "#player"), "на главной нижнего плеера нет (ничего не играет)")
         check(page.locator("#mix-row .mixcard").count() >= 5, "ряд миксов заполнен")
-        check(page.locator("#new-grid .tcard").count() >= 20, "«Новое для тебя» заполнено реальными треками")
+        check(page.locator("#new-grid .tcard").count() >= 20, "«Ещё из подборки» заполнено реальными треками")
         check("Химия" in page.inner_text("#hero-title") or page.inner_text("#hero-title").strip() != "", "заголовок баннера из данных рекомендаций")
 
         print("«Слушать подборку»")
@@ -2824,6 +2824,95 @@ def main() -> int:
         if audio_state(au)["paused"]:
             au.keyboard.press("Space")
         au.close()
+
+        print("Рекомендации (S14): «Ещё из подборки», причина, «Не рекомендовать», исключения и сброс в настройках")
+        RECS.update(mode="normal", hold=False, paged=False, fail_more=False)
+        clear_playback()                                              # лента — подборка, а не радио текущего трека
+        rc = ctx.new_page()
+        rc.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        rc.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        rc.goto(BASE)
+        rc.wait_for_function(feed_ready, timeout=15000)
+        rc.wait_for_selector("#new-grid .tcard")
+        check(rc.text_content("#h-new") == "Ещё из подборки" and "Новое для тебя" not in rc.inner_text("body"),
+              "ряд ленты главной называется «Ещё из подборки», «Новое для тебя» нигде нет")
+        cards = "#new-grid .tcard"
+        whys = rc.evaluate("[...document.querySelectorAll('#new-grid .tcard')].map(c => c.querySelector('.tcard__why')?.textContent)")
+        check(len(whys) >= 20 and all(w == "Подборка" for w in whys),
+              f"на каждой карточке ленты видна причина рекомендации из ответа backend ({whys[:3]})")
+        n0 = rc.locator(cards).count()
+        key1 = rc.get_attribute(f"{cards}:nth-child(1)", "data-key")
+        rc.click(f"{cards}:nth-child(1) .tcard__more")
+        rc.wait_for_selector("#menu:not([hidden])")
+        items = rc.evaluate("[...document.querySelectorAll('#menu [role=menuitem]')].map(b => [b.dataset.act, b.textContent])")
+        check(["norec", "Не рекомендовать трек"] in items and ["norecartist", "Не рекомендовать исполнителя"] in items,
+              f"в меню трека есть «Не рекомендовать трек» и «Не рекомендовать исполнителя» ({[a for a, _ in items]})")
+        rc.click("#menu [data-act=norec]")
+        rc.wait_for_function("(k) => !document.querySelector(`#new-grid .tcard[data-key='${k}']`)", arg=key1)
+        check(wait_toast(rc, "больше не будет в рекомендациях") and rc.locator(cards).count() == n0 - 1,
+              "«Не рекомендовать трек»: карточка сразу убрана из ленты, сообщение о том, где вернуть")
+        art = rc.text_content(f"{cards}:nth-child(1) .tcard__sub")
+        by_art = "(a) => [...document.querySelectorAll('#new-grid .tcard .tcard__sub')].filter(n => n.textContent === a).length"
+        same, n1 = rc.evaluate(by_art, art), rc.locator(cards).count()
+        rc.focus(f"{cards}:nth-child(1) .tcard__more")
+        rc.keyboard.press("Enter")
+        rc.wait_for_selector("#menu:not([hidden])")
+        rc.keyboard.press("End")                                      # «Поделиться» → «Скачать» → «Не рекомендовать исполнителя»
+        rc.keyboard.press("ArrowUp")
+        rc.keyboard.press("ArrowUp")
+        chosen = rc.evaluate("document.activeElement.dataset.act")
+        rc.keyboard.press("Enter")
+        rc.wait_for_function(f"(a) => ({by_art})(a) === 0", arg=art)
+        f_ex = rc.evaluate("(() => { const a = document.activeElement; return [a.className, a.closest('.tcard')?.dataset.index] })()")
+        check(chosen == "norecartist" and same >= 2 and rc.locator(cards).count() == n1 - same and f_ex == ["tcard__open", "1"],
+              f"«Не рекомендовать исполнителя» с клавиатуры: убраны все {same} его карточки, фокус на карточке, вставшей на место ({chosen}, {f_ex})")
+        ex = rc.evaluate("fetch('/api/recommendations/exclusions').then(r => r.json())")
+        check([(i["kind"], i["label"]) for i in ex["items"]][0] == ("artist", art) and ex["items"][1]["kind"] == "track"
+              and ex["items"][1]["value"] == key1 and ex["reset_at"] is None,
+              f"исключения сохранены в backend: исполнитель и трек ({[(i['kind'], i['value']) for i in ex['items']]})")
+        hist_before = rc.evaluate("fetch('/api/history?limit=50').then(r => r.json()).then(d => d.tracks.length)")
+        favs_before = rc.evaluate("fetch('/api/favorites').then(r => r.json()).then(d => d.items.length)")
+
+        rc.click(".nav__item[data-view=settings]")
+        rc.wait_for_selector("#view-settings:not([hidden])")
+        rc.wait_for_function("document.querySelectorAll('#set-excl .excl__item').length === 2")
+        rows = rc.evaluate("[...document.querySelectorAll('#set-excl .excl__item')].map(li => [li.querySelector('.excl__label').textContent, li.querySelector('.excl__kind').textContent])")
+        check(rows[0] == [art, "Исполнитель"] and rows[1][1] == "Трек" and not visible(rc, "#set-excl-empty")
+              and "учитывают историю" in rc.text_content("#set-recs-state") and not visible(rc, "#set-recs-undo"),
+              f"настройки: список «Не рекомендовать» с видом записи, сброса не было ({rows})")
+        rc.focus("#set-excl .excl__item:first-child button")
+        rc.keyboard.press("Enter")
+        rc.wait_for_function("document.querySelectorAll('#set-excl .excl__item').length === 1")
+        f_back = rc.evaluate("document.activeElement === document.querySelector('#set-excl .excl__item button')")
+        check(f_back and "снова может попасть в рекомендации" in rc.text_content("#set-msg"),
+              "«Вернуть» с клавиатуры: запись убрана, фокус на следующей, сообщение о результате")
+        rc.click("#set-excl .excl__item button")
+        rc.wait_for_function("document.querySelectorAll('#set-excl .excl__item').length === 0")
+        left = rc.evaluate("fetch('/api/recommendations/exclusions').then(r => r.json()).then(d => d.items.length)")
+        check(left == 0 and visible(rc, "#set-excl-empty"), "все исключения возвращены: список пуст и в backend")
+
+        rc.click("#set-recs-reset")
+        rc.wait_for_selector("#dlg-confirm[open]")
+        check("не удаляются" in rc.text_content("#dc-text"), "сброс персонализации спрашивает подтверждение и говорит, что данные не удаляются")
+        rc.click("#dc-ok")
+        rc.wait_for_selector("#set-recs-undo:not([hidden])")
+        st = rc.evaluate("fetch('/api/recommendations/exclusions').then(r => r.json())")
+        hist_after = rc.evaluate("fetch('/api/history?limit=50').then(r => r.json()).then(d => d.tracks.length)")
+        favs_after = rc.evaluate("fetch('/api/favorites').then(r => r.json()).then(d => d.items.length)")
+        check(st["reset_at"] is not None and "сброшена" in rc.text_content("#set-recs-state")
+              and (hist_after, favs_after) == (hist_before, favs_before),
+              f"сброс выполнен: отметка в backend, история и избранное на месте ({hist_before}→{hist_after}, {favs_before}→{favs_after})")
+        rc.focus("#set-recs-undo")
+        rc.keyboard.press("Enter")
+        rc.wait_for_selector("#set-recs-undo", state="hidden")
+        st = rc.evaluate("fetch('/api/recommendations/exclusions').then(r => r.json())")
+        check(st["reset_at"] is None and rc.evaluate("document.activeElement === document.querySelector('#set-recs-reset')"),
+              "сброс отменён: прежние сигналы снова учитываются, фокус на «Сбросить персонализацию»")
+        rc.set_viewport_size({"width": 980, "height": 760})
+        check(rc.evaluate("document.querySelector('#main').scrollWidth <= document.querySelector('#main').clientWidth"),
+              "настройки рекомендаций без горизонтальной прокрутки на 980 px")
+        rc.screenshot(path=str(SHOTS / "s14-settings-recs.png"))
+        rc.close()
 
         browser.close()
 

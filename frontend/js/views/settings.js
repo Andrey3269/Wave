@@ -1,6 +1,6 @@
 // Экран настроек и профиль в боковой панели. Значения — в backend (/api/settings, SQLite); логика синхронизации
 // и защиты от запоздавших ответов — state/settings.js.
-import { $ } from "../core/dom.js";
+import { $, mk } from "../core/dom.js";
 import { clamp } from "../core/format.js";
 import { api, jsonOpts } from "../core/api.js";
 import { el, audio } from "../core/elements.js";
@@ -9,6 +9,8 @@ import { uiSave, round3, markLocal, settingsGeneration, flags, applySettings, fe
 import { covers, themeMixes } from "../state/mixes.js";
 import { paintVolume } from "../player/sliders.js";
 import { askConfirm } from "../components/dialogs.js";
+import { listExclusions, removeExclusion, resetSignals, undoReset } from "../components/recs-control.js";
+import { focusSafely, rescueFocus } from "../components/focus.js";
 import { layout, syncTabs } from "./shell.js";
 import { renderThemeMixes, computeArtists, renderArtistMixes } from "./sidebar.js";
 
@@ -60,6 +62,47 @@ export async function showSettings() {
   $("#set-dir").disabled = $("#set-dir-save").disabled = !!p.downloads_locked;
   $("#set-paths").textContent = `Данные приложения: ${p.data}`;
   setMsg(p.downloads_locked ? "Папка загрузок задана переменной окружения WAVE_DOWNLOADS_DIR." : "");
+  renderRecs();
+}
+
+// ---------- рекомендации (S14): сброс сигналов и исключения ----------
+const fmtDate = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { dateStyle: "long", timeStyle: "short" });
+let recsSeq = 0;
+/** Состояние сброса и список исключений из backend. Возвращает true, если данные получены. */
+async function renderRecs() {
+  const my = ++recsSeq;
+  let d;
+  try { d = await listExclusions(); } catch (e) {
+    if (my === recsSeq) $("#set-recs-state").textContent = `Не удалось загрузить настройки рекомендаций: ${e.message}`;
+    return false;
+  }
+  if (my !== recsSeq) return false;
+  $("#set-recs-state").textContent = d.reset_at
+    ? `Персонализация сброшена ${fmtDate(d.reset_at)}: прослушивания, пропуски и избранное до этого момента не влияют на рекомендации. Сами записи сохранены.`
+    : "Рекомендации учитывают историю прослушиваний, пропуски и избранное. Сброс их не удаляет и его можно отменить.";
+  $("#set-recs-undo").hidden = !d.reset_at;
+  $("#set-excl").replaceChildren(...d.items.map((item) => {
+    const li = mk("li", "excl__item");
+    const text = mk("span", "excl__text");
+    text.append(mk("span", "excl__label", item.label), mk("span", "excl__kind", item.kind === "artist" ? "Исполнитель" : "Трек"));
+    const back = mk("button", "btn btn--ghost", "Вернуть");
+    back.type = "button";
+    back.setAttribute("aria-label", `Вернуть в рекомендации: ${item.label}`);
+    back.addEventListener("click", () => returnExclusion(item, li));
+    li.append(text, back);
+    return li;
+  }));
+  $("#set-excl-empty").hidden = d.items.length > 0;
+  return true;
+}
+async function returnExclusion(item, li) {
+  const i = [...li.parentElement.children].indexOf(li);
+  const hadFocus = li.contains(document.activeElement);
+  try { await removeExclusion(item); } catch (e) { setMsg(e.message); return; }
+  setMsg(`«${item.label}» снова может попасть в рекомендации.`);
+  await renderRecs();
+  const items = $("#set-excl").children;                  // фокус — на строку, вставшую на место возвращённой
+  if (hadFocus) focusSafely((items[i] || items[i - 1])?.querySelector("button")) || focusSafely($("#set-recs-reset")) || rescueFocus();
 }
 async function saveSetting(body, okText) {
   markLocal(Object.keys(body));
@@ -90,6 +133,17 @@ export function initSettingsView() {
   $("#set-clear-history").addEventListener("click", async () => {
     if (!await askConfirm({ title: "Очистить историю?", text: "Рекомендации станут менее точными. Избранное и загрузки не затрагиваются.", ok: "Очистить" })) return;
     try { await api("/api/settings/clear-history", { method: "POST" }); state.hist = []; computeArtists(); renderArtistMixes(); setMsg("История очищена."); } catch (e) { setMsg(e.message); }
+  });
+  $("#set-recs-reset").addEventListener("click", async () => {
+    if (!await askConfirm({ title: "Сбросить персонализацию?", ok: "Сбросить",
+      text: "Рекомендации перестанут учитывать прежние прослушивания, пропуски и избранное. История, избранное, плейлисты и загрузки не удаляются, исключения остаются; сброс можно отменить здесь же." })) return;
+    try { await resetSignals(); setMsg("Персонализация сброшена. История и избранное сохранены."); } catch (e) { setMsg(e.message); return; }
+    renderRecs();
+  });
+  $("#set-recs-undo").addEventListener("click", async () => {
+    try { await undoReset(); setMsg("Прежние сигналы снова учитываются."); } catch (e) { setMsg(e.message); return; }
+    await renderRecs();
+    focusSafely($("#set-recs-reset"));                    // кнопка «Вернуть» скрылась вместе с фокусом
   });
   $("#set-clear-cache").addEventListener("click", async () => {
     try { await api("/api/settings/clear-cache", { method: "POST" }); setMsg("Кэш очищен. Загрузки не затронуты."); } catch (e) { setMsg(e.message); }

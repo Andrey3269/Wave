@@ -7,7 +7,8 @@ import { el, hero, audio } from "../core/elements.js";
 import { state, queue, current, heroTrack, nav, bus } from "../state/store.js";
 import { loadMix, buildMixes } from "../state/mixes.js";
 import { play, warmTrack, playerEvents } from "../player/controller.js";
-import { mixCard, miniCard, trackCard, markMix, bindTrackGrid } from "../components/cards.js";
+import { mixCard, miniCard, feedCard, markMix, bindTrackGrid } from "../components/cards.js";
+import { matchesExclusion } from "../core/exclusions.js";
 import { paintFav, markPlaying } from "../components/track-row.js";
 import { setBlock, skelCards, setMore } from "../components/skeleton.js";
 import { focusLost, focusSafely, rescueFocus, keyboardMode, dropLostFocus } from "../components/focus.js";
@@ -107,7 +108,7 @@ function renderFeed() {
     setMore(el.homeMore, "none");
     return;
   }
-  el.newGrid.replaceChildren(...items.map((t, i) => trackCard(t, i + 1)));
+  el.newGrid.replaceChildren(...items.map((t, i) => feedCard(t, i + 1)));
   markPlaying();
   if (home.error) setBlock(el.homeEmpty, `Не удалось подобрать музыку. ${home.error}.`, () => loadHome());
   else if (home.partial && state.feed.length) setBlock(el.homeEmpty, `Подборка неполная: ${home.partial} ответил не на все запросы.`, () => loadHome());
@@ -115,7 +116,7 @@ function renderFeed() {
   setMore(el.homeMore, home.pending && state.loadingMore === home.pending ? "loading" : state.more ? "idle" : "none", "Подбираем ещё…");
 }
 function appendFeedCards(from) {
-  el.newGrid.append(...state.feed.slice(from).map((t, i) => trackCard(t, from + i)));
+  el.newGrid.append(...state.feed.slice(from).map((t, i) => feedCard(t, from + i)));
   markPlaying();
 }
 
@@ -227,6 +228,28 @@ function renderHero() {
 export function initHomeGrids() {
   bindTrackGrid(el.newGrid, () => state.feed, () => feedLabel());
   bindTrackGrid(el.continueRow, () => state.hist, () => "Недавно слушали");
+  bus.on("recs-excluded", dropExcluded);
+}
+/**
+ * S14: исключённое из рекомендаций (трек или исполнитель) сразу пропадает из ленты и баннера; следующие страницы
+ * backend уже не вернёт. Массив тот же: очередь, запущенная из ленты, остаётся связанной с ней (player/queue.js).
+ * Фокус клавиатуры, бывший на убранной карточке, — на карточку, вставшую на её место.
+ */
+function dropExcluded(item) {
+  const kept = state.feed.filter((t) => !matchesExclusion(t, item));
+  if (kept.length === state.feed.length) return;
+  const a = document.activeElement;
+  const at = a && el.newGrid.contains(a) ? Number(a.closest(".tcard")?.dataset.index || 1) : 1;
+  state.feed.splice(0, state.feed.length, ...kept);
+  if (!state.feed.includes(state.featured)) state.featured = state.feed[0] || null;
+  if (state.view !== "home") return;
+  renderHero();
+  renderFeed();
+  if (focusLost()) {
+    if (!keyboardMode()) dropLostFocus();
+    else focusSafely(el.newGrid.querySelector(`.tcard[data-index="${at}"] .tcard__open`))
+      || focusSafely(el.newGrid.querySelector(".tcard:last-child .tcard__open")) || rescueFocus();
+  }
 }
 export function initHomeMixRow() {
   el.mixRow.addEventListener("click", (e) => {

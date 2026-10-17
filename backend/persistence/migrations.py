@@ -6,6 +6,9 @@
 * v1 — фиксация рабочей схемы на момент S6: `downloads` (с `root`), `favorites`, `history`, `settings`,
   `playlists`, `playlist_tracks` и их индексы. Таблицы и колонки те же, что создавал прежний код, поэтому
   база v1 открывается и предыдущими версиями Wave (они создают таблицы через IF NOT EXISTS).
+* v2 (S14) — таблица `rec_exclusions`: исключения из рекомендаций (трек или исполнитель). Только новая таблица,
+  существующие таблицы и строки не меняются. Версии Wave S6–S13 (знают до v1) базу v2 не откроют (п. 1 ниже);
+  для отката на них — резервная копия `backups/wave-<дата>-v1.db`, сделанная при обновлении.
 
 Порядок обновления базы (`migrate`):
 1. Номер версии больше известного → ошибка запуска: база от более новой Wave, трогать её нельзя.
@@ -32,7 +35,7 @@ from typing import Callable
 
 log = logging.getLogger("musicmeta.db")
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 BACKUP_KEEP = 3                     # сколько последних резервных копий хранить
 
 # ---------------------------------------------------------------------------
@@ -72,6 +75,7 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "settings": ("key", "value"),
     "playlists": ("id", "name", "created_at", "updated_at"),
     "playlist_tracks": ("id", "playlist_id", "position", "key", "data", "added_at"),
+    "rec_exclusions": ("kind", "value", "label", "created_at"),                   # v2
 }
 
 
@@ -89,7 +93,25 @@ def _v1(con: sqlite3.Connection) -> None:
         con.execute(ddl)
 
 
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1}
+# ---------------------------------------------------------------------------
+# v2 (S14): исключения из рекомендаций. kind = "track" (value = "источник:id") или "artist" (value — имя,
+# нормализованное как в recs.py). Первичный ключ (kind, value) — повторное исключение не создаёт дубль.
+# ---------------------------------------------------------------------------
+V2_TABLES = (
+    "CREATE TABLE IF NOT EXISTS rec_exclusions ("
+    " kind TEXT NOT NULL CHECK (kind IN ('track', 'artist')),"
+    " value TEXT NOT NULL, label TEXT NOT NULL, created_at REAL NOT NULL,"
+    " PRIMARY KEY (kind, value))",
+)
+
+
+def _v2(con: sqlite3.Connection) -> None:
+    """v1 → v2: новая таблица rec_exclusions. Данные других таблиц не затрагиваются."""
+    for ddl in V2_TABLES:
+        con.execute(ddl)
+
+
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1, 2: _v2}
 
 
 # ---------------------------------------------------------------------------

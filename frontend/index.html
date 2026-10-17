@@ -206,7 +206,7 @@
         </section>
 
         <section class="sec" id="sec-new" aria-labelledby="h-new">
-          <header class="sec__head"><h2 class="sec__h" id="h-new">Новое для тебя</h2></header>
+          <header class="sec__head"><h2 class="sec__h" id="h-new">Ещё из подборки</h2></header>
           <div class="tgrid" id="new-grid"></div>
           <div class="empty" id="home-empty" hidden><p class="empty__t"></p><button class="btn btn--ghost empty__retry" type="button" hidden>Повторить</button></div>
           <button class="more" id="home-more" type="button" hidden>Загрузить ещё</button>
@@ -304,6 +304,17 @@
           <h3>Профиль</h3>
           <label class="set__row set__row--col">Имя в боковой панели <input type="text" id="set-name" maxlength="24" spellcheck="false" placeholder="Слушатель"></label>
           <p class="set__hint">Имя хранится только на этом компьютере.</p>
+        </div>
+        <div class="set" id="set-recs">
+          <h3>Рекомендации</h3>
+          <p class="set__hint set__hint--text" id="set-recs-state"></p>
+          <div class="set__actions">
+            <button class="btn btn--ghost" id="set-recs-reset" type="button">Сбросить персонализацию</button>
+            <button class="btn btn--ghost" id="set-recs-undo" type="button" hidden>Вернуть прежние сигналы</button>
+          </div>
+          <h4 class="set__sub" id="set-excl-h">Не рекомендовать</h4>
+          <ul class="excl" id="set-excl" aria-labelledby="set-excl-h"></ul>
+          <p class="set__hint set__hint--text" id="set-excl-empty">Пока ничего не исключено. Исключить трек или исполнителя можно в меню «⋯» трека.</p>
         </div>
         <div class="set">
           <h3>Данные</h3>

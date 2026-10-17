@@ -421,8 +421,11 @@ def remove_favorite(source: str, track_id: str):
     return {"ok": True}
 
 
-def favorite_tracks() -> list[dict]:
-    return _snapshots(_q("SELECT key, data FROM favorites ORDER BY added_at DESC"), "favorites")
+def favorite_tracks(since: float | None = None) -> list[dict]:
+    """Избранное, новые сверху. since (S14, сброс сигналов рекомендаций) — только добавленное позже этой отметки."""
+    if since is None:
+        return _snapshots(_q("SELECT key, data FROM favorites ORDER BY added_at DESC"), "favorites")
+    return _snapshots(_q("SELECT key, data FROM favorites WHERE added_at > ? ORDER BY added_at DESC", (since,)), "favorites")
 
 
 # ---------- история ----------
@@ -504,10 +507,11 @@ def clear_history():
 
 
 def recent_plays(n: int = 300) -> list[dict]:
-    rows = _q("SELECT key, data, skipped FROM history ORDER BY id DESC LIMIT ?", (n,))
+    """Последние n записей истории, новые сверху. played_at (S14) — для сброса сигналов рекомендаций."""
+    rows = _q("SELECT key, data, skipped, played_at FROM history ORDER BY id DESC LIMIT ?", (n,))
     out = []
     for r in rows:
         t = snapshot.read_snapshot(r["data"], "history", r["key"])
         if t is not None:
-            out.append({"key": r["key"], "track": t, "skipped": bool(r["skipped"])})
+            out.append({"key": r["key"], "track": t, "skipped": bool(r["skipped"]), "played_at": r["played_at"]})
     return out

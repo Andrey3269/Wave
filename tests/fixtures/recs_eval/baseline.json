@@ -1,0 +1,11 @@
+{
+  "about": "Метрики офлайн-оценки рекомендаций алгоритма до S14 (backend/recs.py на 37781f8), посчитанные tests/api/test_recs_eval.py со сценариями tests/wavetest/recs_eval.py. Текущий алгоритм не должен быть хуже ни по одной метрике.",
+  "commit": "37781f88c09261863b904ca1eef4acdb12e556b1",
+  "limit": 24,
+  "scenarios": {
+    "loyal": {"count": 12, "new_artist_share": 0.25, "repeat_share": 0.5, "skip_share": 0.0},
+    "skipper": {"count": 17, "new_artist_share": 0.4706, "repeat_share": 0.0, "skip_share": 0.1765},
+    "radio_album": {"count": 20, "new_artist_share": 1.0, "repeat_share": 0.0, "skip_share": 0.0},
+    "cold": {"count": 15, "new_artist_share": 1.0, "repeat_share": 0.0, "skip_share": 0.0}
+  }
+}

@@ -73,7 +73,8 @@ async function loadSimilar(t) {
     const d = recsResult(await api(`/api/recommendations?limit=30&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`));
     if (my !== similar.seq) return;
     const all = d.tracks;
-    const radio = all.filter((x) => (x.reason || "").startsWith("Похоже"));   // только настоящее «радио» трека, без подборок по любимым
+    // только настоящее «радио» трека, без подборок по любимым (reason_kind — с S14; текст — для прежнего ответа)
+    const radio = all.filter((x) => (x.reason_kind ? x.reason_kind === "radio" : (x.reason || "").startsWith("Похоже")));
     similar.tracks = (radio.length >= 3 ? radio : all).slice(0, 12);
     const own = new Set(((t.artists && t.artists.length) ? t.artists : [t.artist]).map((n) => n.toLowerCase()));
     const seen = new Set();

@@ -395,7 +395,8 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .tcard__open { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 10px; border-radius: var(--r-m); text-align: left; transition: background-color .12s; }
 .tcard__open:hover { background: var(--surface); }
 .tcard__cv { width: 100%; aspect-ratio: 1; margin-bottom: 8px; border-radius: var(--r-s); }
-.tcard__title, .tcard__sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tcard__title, .tcard__sub, .tcard__why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tcard__why { color: var(--muted); font-size: 12px; }               /* S14: причина рекомендации */
 .tcard__title { font-weight: 600; }
 .tcard__sub { color: var(--muted); font-size: 13px; }
 .tcard.is-playing .tcard__title { color: var(--accent-ink); }
@@ -510,6 +511,14 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .set__actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .set__hint { margin-top: 10px; color: var(--muted); font-size: 13px; word-break: break-all; }
 .set__msg { min-height: 20px; margin-top: 16px; color: var(--accent-ink); }
+/* S14: управление рекомендациями */
+.set__hint--text { word-break: normal; overflow-wrap: anywhere; }
+.set__sub { margin-top: 18px; font-size: 14px; }
+.excl { margin-top: 8px; list-style: none; }
+.excl__item { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
+.excl__text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.excl__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.excl__kind { color: var(--muted); font-size: 12px; }
 
 /* ---------- 10. Страница текущего трека ---------- */
 .view.now { position: relative; isolation: isolate; margin: -24px -32px 0; padding: 20px 32px 8px; overflow: hidden; }

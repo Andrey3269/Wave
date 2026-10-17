@@ -48,7 +48,9 @@ def test_cold_start_queries(api, params, queries):
     assert body["personalized"] is False and body["radio"] is False and body["page"] == params.get("page", 0)
     assert body["failed_sources"] == [] and body["source_status"] == {"yt": "ok"}
     assert keys(body) == ["yt:CSCSCSCSC01"]                       # дубль из двух запросов — один раз
-    assert body["tracks"][0]["reason"] == "Подборка"
+    # S14: причина называет запрос общей подборки, который нашёл трек (до S14 — просто «Подборка»)
+    assert body["tracks"][0]["reason"] == f"Подборка по запросу «{queries[0]}»"
+    assert body["tracks"][0]["reason_kind"] == "general"
     assert body["tracks"][0]["score"] == W["same_source"]
 
 
@@ -56,7 +58,11 @@ def test_cold_start_queries(api, params, queries):
 # Баллы: каждый можно проследить по таблице W
 # ---------------------------------------------------------------------------
 def test_scoring_is_traceable(api):
-    play(api, "HHHHHHHHH01", "Hist Artist", skipped=True)            # слушали и пропустили
+    # слушали и пропустили. S14: пропуск — отдельная запись со снимком (контракт фронтенда с S10); пометка прежней
+    # записи (до S10) больше не считается прослушиванием исполнителя — см. test_legacy_skip_is_not_an_artist_play
+    play(api, "HHHHHHHHH01", "Hist Artist")
+    api.post("/api/history/skip", json={"source": "yt", "id": "HHHHHHHHH01", "track": track_payload(
+        id_="HHHHHHHHH01", artist="Hist Artist", artists=["Hist Artist"], title="t HHHHHHHHH01")})
     for i in range(recs.RECENT_EXCLUDE):                              # 25 более свежих прослушиваний
         play(api, f"OOOOOOOOO{i:02d}", "Other Artist")
     api.post("/api/favorites", json=track_payload(id_="FFFFFFFFF01", artist="Fav Artist", artists=["Fav Artist"]))
@@ -76,6 +82,8 @@ def test_scoring_is_traceable(api):
     reasons = {t["id"]: t["reason"] for t in body["tracks"]}
     assert reasons["FFFFFFFFF02"] == "Любимый исполнитель: Fav Artist"
     assert reasons["HHHHHHHHH02"] == "Из твоей истории: Hist Artist"
+    assert {t["id"]: t["reason_kind"] for t in body["tracks"]} == {
+        "FFFFFFFFF02": "fav_artist", "FFFFFFFFF01": "fav_artist", "HHHHHHHHH02": "history_artist", "HHHHHHHHH01": "history_artist"}
     assert body["personalized"] is True
     queried = {c[1] for c in api.ytm.calls if c[0] == "search"}
     assert queried == {"Fav Artist", "Hist Artist", "Other Artist"}           # три самых весомых артиста
@@ -121,7 +129,7 @@ def test_radio_of_current_track(api):
     api.ytm.watch["AAAAAAAAAA1"] = load_fixture("ytmusic/watch_playlist.json")
     body = api.get("/api/recommendations", params={"source": "yt", "id": "AAAAAAAAAA1", "title": "Northern Lights"}).json()
     assert keys(body) == ["yt:RRRRRRRRRR1", "yt:RRRRRRRRRR2"]           # сам текущий трек не предлагается
-    assert all(t["reason"] == "Похоже на «Northern Lights»" for t in body["tracks"])
+    assert all(t["reason"] == "Похоже на «Northern Lights»" and t["reason_kind"] == "radio" for t in body["tracks"])
     assert [t["score"] for t in body["tracks"]] == [W["radio"] + W["same_source"]] * 2
     assert ("get_watch_playlist", "AAAAAAAAAA1", 25) in api.ytm.calls
     # M13/M4: радио трека без истории и избранного — не «персональная» подборка (до S2c здесь было True)

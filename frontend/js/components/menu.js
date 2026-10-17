@@ -1,4 +1,4 @@
-// Меню трека «⋯»: обычное (в очередь, плейлист, исполнитель, альбом, загрузка, поделиться) и меню строки
+// Меню трека «⋯»: обычное (в очередь, плейлист, исполнитель, альбом, загрузка, не рекомендовать, поделиться) и меню строки
 // очереди (играть сейчас, выше/ниже, убрать). Что делает каждый пункт, задаёт приложение (initMenu).
 //
 // Клавиатура (S12, модель WAI-ARIA «menu button»): открытие ставит фокус на первый доступный пункт; стрелки вверх и
@@ -53,6 +53,9 @@ export function openMenu(track, anchor, ctx = null) {
     if (state.view === "playlist" && anchor.closest("#tracks")) entries.push(["unlist", "Убрать из плейлиста", "i-trash"]);
     entries.push(["artist", "Перейти к исполнителю", "i-user"]);
     if (track.album || track.album_id) entries.push(["album", "Открыть альбом", "i-disc"]);
+    // S14: исключение из рекомендаций (история, избранное и плейлисты не меняются; вернуть — в настройках)
+    entries.push(["norec", "Не рекомендовать трек", "i-x"]);
+    if (track.artist) entries.push(["norecartist", "Не рекомендовать исполнителя", "i-user"]);
     const denied = !downloaded && state.dlDenied.has(trackKey(track));
     const job = state.jobs[trackKey(track)];
     const busy = !downloaded && job && BUSY.includes(job.state);      // S11: идущую или ждущую загрузку можно отменить

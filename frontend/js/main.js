@@ -23,6 +23,7 @@ import { bindCardClicks, initRowScroll } from "./components/cards.js";
 import { openMenu, closeMenu, initMenu } from "./components/menu.js";
 import { repaintFav, toggleFav } from "./components/favorites.js";
 import { shareTrack } from "./components/share.js";
+import { excludeTrack, excludeArtist } from "./components/recs-control.js";
 import { toggleMute, initSliders } from "./player/sliders.js";
 import { setIdleAction, playIndex, togglePlay, playNext, playPrev, setShuffle, cycleRepeat,
   initPlayer, restorePlayback } from "./player/controller.js";
@@ -111,6 +112,8 @@ initMenu({
   album: (t) => { if (state.fs.open) closeFs(); goAlbum(t); },
   download: (t) => toggleDownload(t),
   share: (t) => shareTrack(t),
+  norec: (t) => excludeTrack(t),                         // S14
+  norecartist: (t) => excludeArtist(t),
 });
 
 initPlaylistActions();                                   // «Переименовать», «Удалить» плейлист

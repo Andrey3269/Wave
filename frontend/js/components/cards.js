@@ -1,5 +1,5 @@
 // Карточки: артисты, альбомы, плейлисты (кнопки), треки на главной и в «похожих», миксы, пункты боковой панели.
-import { $$, mk, icon, button, coverEl } from "../core/dom.js";
+import { $, $$, mk, icon, button, coverEl } from "../core/dom.js";
 import { fmtTime } from "../core/format.js";
 import { trackKey } from "../core/api.js";
 import { state, queue } from "../state/store.js";
@@ -54,6 +54,12 @@ export function trackCard(t, i) {
   const more = button("tbtn tcard__more", "Ещё", "i-more", true);
   more.setAttribute("aria-haspopup", "menu");
   art.append(open, more);
+  return art;
+}
+/** Карточка ленты главной: под исполнителем — причина рекомендации от backend (S14, поле reason). */
+export function feedCard(t, i) {
+  const art = trackCard(t, i);
+  if (t.reason) $(".tcard__open", art).append(mk("span", "tcard__why", t.reason));
   return art;
 }
 export function miniCard(t, i) {

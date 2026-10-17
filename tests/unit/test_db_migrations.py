@@ -61,6 +61,7 @@ def _backups(profile):
 def _expected_after(before: dict, schema: str) -> dict:
     """Строки после миграции: те же; у базы без root к строкам загрузок добавлена пустая колонка root."""
     after = dict(before)
+    after["rec_exclusions"] = []                            # v2 (S14): новая пустая таблица
     if schema == "without_root":
         after["downloads"] = [row + (None,) for row in before["downloads"]]
         after["playlists"] = []
@@ -84,7 +85,7 @@ def test_legacy_database_is_migrated_without_data_loss(wave_profile, schema):
     assert after == _expected_after(before, schema)
     for table, rows in before.items():                     # количество строк — по каждой таблице отдельно
         assert len(after[table]) == len(rows), table
-    assert _version(wave_profile.db_path) == migrations.CURRENT_VERSION == 1
+    assert _version(wave_profile.db_path) == migrations.CURRENT_VERSION == 2
     con = sqlite3.connect(wave_profile.db_path)
     try:
         for table, cols in migrations.REQUIRED_COLUMNS.items():
@@ -148,7 +149,7 @@ def test_backup_is_made_before_migration(wave_profile, schema):
 
 def test_fresh_install_needs_no_backup(wave_profile):
     _startup()
-    assert _version(wave_profile.db_path) == 1
+    assert _version(wave_profile.db_path) == 2
     assert _backups(wave_profile) == []
 
 
@@ -243,7 +244,7 @@ def test_repeated_startup_is_idempotent(wave_profile, schema):
         store.close()
     assert legacy_db.dump(wave_profile.db_path) == first                      # данные не продублированы
     assert _schema(wave_profile.db_path) == first_schema
-    assert _version(wave_profile.db_path) == 1
+    assert _version(wave_profile.db_path) == 2
     assert _backups(wave_profile) == backups                                  # обновлять нечего — копий нет
 
 
@@ -256,10 +257,10 @@ def test_current_database_is_left_alone(harness, wave_profile):
         api.post("/api/history", json=track_payload(id_="CURRENT0003"))
     store.close()
     before, before_schema = legacy_db.dump(wave_profile.db_path), _schema(wave_profile.db_path)
-    assert _version(wave_profile.db_path) == 1
+    assert _version(wave_profile.db_path) == 2
 
     result = store.open(wave_profile.db_path, wave_profile.data / "backups")
-    assert (result.before, result.after, result.backup) == (1, 1, None)
+    assert (result.before, result.after, result.backup) == (2, 2, None)
     store.close()
     with harness.client() as api:
         assert [f["id"] for f in api.get("/api/favorites").json()["items"]] == ["CURRENT0001"]
@@ -285,6 +286,75 @@ def test_previous_wave_can_still_open_v1_database(wave_profile):
             con.execute("ALTER TABLE downloads ADD COLUMN root TEXT")       # прежний код это и ожидал
     finally:
         con.close()
+    assert legacy_db.dump(wave_profile.db_path) == before
+
+
+# ---------------------------------------------------------------------------
+# v1 → v2 (S14): таблица исключений рекомендаций
+# ---------------------------------------------------------------------------
+def _v1_database(wave_profile, monkeypatch):
+    """База, какой её оставляет Wave S6–S13 (схема v1), с данными во всех таблицах."""
+    legacy_db.build(wave_profile.db_path, "5a7f27c")
+    with monkeypatch.context() as m:
+        m.setattr(migrations, "CURRENT_VERSION", 1)
+        m.delitem(migrations.REQUIRED_COLUMNS, "rec_exclusions")
+        _startup()
+        store.close()
+    for old in _backups(wave_profile):                      # копия v0 → v1 к проверке v2 не относится
+        old.unlink()
+    assert _version(wave_profile.db_path) == 1
+    assert "rec_exclusions" not in legacy_db.dump(wave_profile.db_path)
+
+
+def test_v1_database_is_migrated_to_v2_without_data_loss(wave_profile, monkeypatch):
+    _v1_database(wave_profile, monkeypatch)
+    before, before_schema = legacy_db.dump(wave_profile.db_path), _schema(wave_profile.db_path)
+
+    _startup()
+    store.close()
+
+    assert _version(wave_profile.db_path) == 2
+    after = legacy_db.dump(wave_profile.db_path)
+    assert after == {**before, "rec_exclusions": []}         # прежние таблицы и строки без изменений
+    assert [row for row in _schema(wave_profile.db_path) if row[1] != "rec_exclusions"
+            and not row[1].startswith("sqlite_autoindex_rec_exclusions")] == before_schema
+    backups = _backups(wave_profile)
+    assert len(backups) == 1 and backups[0].name.endswith("-v1.db")         # копия для отката на S6–S13
+    assert legacy_db.dump(backups[0]) == before and _version(backups[0]) == 1
+
+
+def test_failed_v2_step_leaves_v1_database_untouched(wave_profile, monkeypatch):
+    _v1_database(wave_profile, monkeypatch)
+    before, before_schema = legacy_db.dump(wave_profile.db_path), _schema(wave_profile.db_path)
+    real = migrations.MIGRATIONS[2]
+
+    def broken(con):
+        real(con)
+        raise RuntimeError("сбой шага v2")
+
+    monkeypatch.setitem(migrations.MIGRATIONS, 2, broken)
+    with pytest.raises(migrations.MigrationError, match="сбой шага v2"):
+        _startup()
+    assert not store.is_open()
+    assert legacy_db.dump(wave_profile.db_path) == before
+    assert _schema(wave_profile.db_path) == before_schema and _version(wave_profile.db_path) == 1
+
+
+def test_v2_table_rejects_unknown_kind(wave_profile):
+    _startup()
+    with pytest.raises(sqlite3.IntegrityError):
+        library._q("INSERT INTO rec_exclusions (kind, value, label, created_at) VALUES ('album', 'x', 'x', 1)")
+
+
+def test_wave_s13_refuses_v2_database(wave_profile, monkeypatch):
+    """Версия, знающая до v1 (S6–S13), не трогает базу v2: понятная ошибка, данные целы."""
+    _startup()
+    library._q("INSERT INTO rec_exclusions (kind, value, label, created_at) VALUES ('artist', 'a', 'A', 1)")
+    store.close()
+    before = legacy_db.dump(wave_profile.db_path)
+    monkeypatch.setattr(migrations, "CURRENT_VERSION", 1)
+    with pytest.raises(migrations.MigrationError, match="более новой версией Wave"):
+        _startup()
     assert legacy_db.dump(wave_profile.db_path) == before
 
 
