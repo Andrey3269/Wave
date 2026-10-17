@@ -43,6 +43,7 @@ import { showLiked, showHistory, initHistory, createPlaylistFlow, showPlaylists,
 import { refreshDownloads, pollJobs, toggleDownload, showDownloads } from "./views/downloads.js";
 import { loadLibrary, toggleDetailFav, importLocalFiles, removeLocal, movePlaylistTrack, removeFromHistory } from "./views/library.js";
 import { loadSettings, showSettings, renderProfile, initSettingsView } from "./views/settings.js";
+import { showAbout, initAboutView } from "./views/about.js";
 import { initOffline } from "./views/offline.js";
 
 initImageFallback();
@@ -136,6 +137,7 @@ initPlaylistActions();                                   // «Переимено
 initCollectionTiles();
 initThemeFollowSystem();
 initSettingsView();
+initAboutView();
 
 // ==========================================================================
 // Обработчики интерфейса
@@ -176,7 +178,7 @@ document.addEventListener("click", (e) => {
   nav.reset();
   el.main.scrollTo({ top: 0 });
   const go = { home: () => goHome(true), search: showSearch, playlists: showPlaylists, collection: showCollection,
-    liked: showLiked, downloads: showDownloads, history: showHistory, settings: showSettings }[view];
+    liked: showLiked, downloads: showDownloads, history: showHistory, settings: showSettings, about: showAbout }[view];
   if (go) go();
 });
 
@@ -263,6 +265,7 @@ async function boot() {
   // Первый экран — только если пользователь, пока шли запросы выше, сам ничего не открыл (каждый экран
   // выставляет state.reopen). Иначе поиск, начатый в первые секунды, уводило на главную.
   if (!state.reopen) { if (navigator.onLine) goHome(true); else showDownloads(); }
+  performance.mark("wave:first-screen");                 // S16: время до первого экрана («О программе»)
   // После первого экрана: лента главной при запуске собирается как раньше (не «похоже на» восстановленный трек),
   // а баннер и мини-плеер сразу показывают восстановленный трек на паузе
   restorePlayback(await saved);

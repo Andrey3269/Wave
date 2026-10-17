@@ -56,7 +56,7 @@ export const heroTrack = () => current() || state.featured;
 /** Экраны со «шапкой» (обложка, название, кнопки): артист, альбом, плейлист, микс. */
 export const DETAIL_VIEWS = ["artist", "album", "playlist", "mix"];
 /** Какой раздел главной области показывает экран v (остальные экраны — общий раздел списка). */
-export const sectionOf = (v) => (v === "home" || v === "collection" || v === "settings" || v === "now" ? v : "list");
+export const sectionOf = (v) => (["home", "collection", "settings", "about", "now"].includes(v) ? v : "list");
 /** Поиск по артистам или альбомам: вместо строк треков — карточки. */
 export const isCards = () => state.view === "search" && state.tab !== "tracks";
 

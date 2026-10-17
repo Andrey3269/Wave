@@ -171,6 +171,9 @@ async def lifespan(app: FastAPI):
     await startup_cleanup()
     # S11: менеджер загрузок этого запуска (лимит, очередь, отмена); объекты asyncio — в цикле этого запуска (M1)
     app.state.downloads = DownloadManager()
+    # S16: время от создания процесса до готовности API — в журнал и на экран «О программе»
+    ready = diagnostics.mark_ready()
+    log.info("Backend готов: %s мс от запуска процесса (перезапусков: %d)", ready["first_ready_ms"], ready["restarts"])
     try:
         yield
     finally:
@@ -241,7 +244,24 @@ async def diagnostics_report():
     Состояние компонентов воспроизведения YouTube (yt-dlp, yt-dlp-ejs, JS-runtime) без обращения к сети.
     Подтверждает конфигурацию, а не воспроизведение (поле playback_verified=false). Секретов не содержит.
     """
-    return await asyncio.to_thread(diagnostics.collect, True)
+    return await asyncio.to_thread(diagnostics.collect_serialized)
+
+
+@app.get("/api/about")
+async def about_report():
+    """
+    S16: экран «О программе / Диагностика» — версия, система, память процесса, время запуска, хранилище (каталоги
+    относительно домашнего, счётчики записей), заполненность кэшей. Без сети и дочерних процессов, без секретов
+    (о cookies и прокси — только «задано / не задано»).
+    """
+    import lyrics as lyrics_mod
+
+    caches = {"search": _cache.stats(), "lyrics": lyrics_mod._cache.stats(), "artists": catalog._artist_cache.stats(),
+              "stream_links": _resolver._cache.stats(),
+              "stream_heads": {"items": len(_proxy._heads), "maxsize": _proxy.HEAD_CACHE_ITEMS, "ttl": _proxy.HEAD_TTL},
+              "hls_sessions": {"items": _hls_proxy.stats()["sessions"], "maxsize": _hls_proxy.MAX_SESSIONS,
+                               "ttl": _hls_proxy.IDLE_TTL}}
+    return await asyncio.to_thread(diagnostics.about, caches)
 
 
 def _status_of(exc: BaseException) -> str:

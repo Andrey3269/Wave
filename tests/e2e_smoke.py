@@ -19,6 +19,7 @@ Smoke-тест интерфейса Wave в настоящем браузере 
 from __future__ import annotations
 
 import json
+import os
 import re
 import struct
 import sys
@@ -3114,6 +3115,91 @@ def main() -> int:
         gone = lb.evaluate("(k) => fetch('/api/favorites').then(r => r.json()).then(d => !d.items.some(t => `${t.source}:${t.id}` === k))", local_key)
         check(gone and "Добавить файлы" in lb.text_content("#empty"), "локальный трек удалён из Wave и из «Нравится»")
         lb.close()
+
+        print("Наблюдаемость и производительность (S16): длинные списки порциями, «О программе / Диагностика»")
+        pf = ctx.new_page()
+        pf.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        pf.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        pf.goto(BASE)
+        pf.wait_for_function(feed_ready, timeout=15000)
+        # 450 треков в «Нравится» через импорт (настоящий backend); потом они удаляются
+        big = pf.evaluate("""async () => {
+          const now = Date.now() / 1000, tracks = [];
+          for (let i = 0; i < 450; i++) {
+            const id = ('L' + String(i).padStart(10, '0')).slice(-11);
+            tracks.push({added_at: now - i, track: {id, source: 'yt', title: `Длинный список ${String(i).padStart(3, '0')}`,
+              artist: 'S16', artists: ['S16'], duration: 100 + i, stream_url: `/api/stream/yt/${id}`}});
+          }
+          const doc = {format: 'wave-library', version: 1, favorites: {tracks}, playlists: [], settings: {}};
+          const r = await fetch('/api/library/import', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(doc)});
+          const all = await (await fetch('/api/favorites')).json();
+          return {ok: r.ok, total: all.items.length, ids: tracks.map((t) => t.track.id)};
+        }""")
+        pf.click(".nav__item[data-view=liked]")
+        pf.wait_for_function("document.querySelectorAll('#tracks .row').length > 0")
+        pf.wait_for_timeout(300)
+        rows = lambda: pf.locator("#tracks .row").count()                                     # noqa: E731
+        check(big["ok"] and rows() == 200 and pf.text_content("#status") == f"Треков: {big['total']}",
+              "длинный список «Нравится»: сразу рисуются 200 строк, счётчик показывает весь список")
+        pf.click("#tracks .row .track__play")
+        pf.wait_for_function("!document.querySelector('#audio').paused")
+        check(pf.text_content("#player-title") == pf.text_content("#tracks .row .track__title"),
+              "трек из длинного списка играет: очередь собрана из списка")
+        pf.evaluate("document.querySelector('#main').scrollTop = document.querySelector('#main').scrollHeight")
+        pf.wait_for_function("document.querySelectorAll('#tracks .row').length > 200")
+        for _ in range(20):
+            if rows() >= big["total"]:
+                break
+            pf.evaluate("document.querySelector('#main').scrollTop = document.querySelector('#main').scrollHeight")
+            pf.wait_for_timeout(150)
+        last = pf.evaluate("[...document.querySelectorAll('#tracks .row')].pop().dataset.index")
+        check(rows() == big["total"] and int(last) == big["total"] - 1,
+              "прокрутка до конца дорисовывает строки порциями до последнего трека, индексы строк сквозные")
+        pf.select_option("#sort", "title")
+        check(rows() == big["total"], "сортировка длинного списка не теряет уже отрисованные строки")
+        pf.select_option("#sort", "default")
+        pf.evaluate("document.querySelector('#main').scrollTop = 0")
+        pf.screenshot(path=str(SHOTS / "s16-long-list.png"))
+
+        # «О программе / Диагностика»
+        pf.click(".nav__item[data-view=settings]")
+        pf.wait_for_selector("#set-about")
+        pf.click("#set-about")
+        pf.wait_for_selector("#view-about:not([hidden]) #about-app dd")
+        pf.wait_for_function("!document.querySelector('#about-check').disabled && !document.querySelector('#about-diag-state').textContent.startsWith('Проверяем')", timeout=30000)
+        health = pf.evaluate("fetch('/api/health').then(r => r.json())")
+        about_text = pf.inner_text("#view-about")
+        check(health["version"] in pf.text_content("#about-app")
+              and pf.get_attribute(".nav__item[aria-current='page']", "data-view") == "settings",
+              "«О программе» открывается из настроек: версия Wave, пункт «Настройки» подсвечен")
+        check("Треков в «Нравится»" in about_text and str(big["total"]) in pf.text_content("#about-data")
+              and "Ссылки на аудио" in pf.text_content("#about-caches") and "мс" in pf.text_content("#about-perf"),
+              "«О программе»: данные (счётчики записей), кэши с пределами, время запуска и память")
+        check(("Компоненты в порядке" in about_text or "Есть проблемы" in about_text) and "yt-dlp" in about_text,
+              "диагностика воспроизведения выполняется без сети и показывает итог проверки")
+        secrets_in = [p for p in (os.environ.get("WAVE_DATA_DIR"), os.environ.get("WAVE_DOWNLOADS_DIR"), str(Path.home())) if p and p in about_text]
+        check(not secrets_in, "на экране «О программе» нет полных путей профиля и домашнего каталога")
+        held = []                                                    # ответ проверки задерживаем, пока не проверим кнопку
+        pf.route("**/api/diagnostics", lambda route, req: held.append(route))
+        pf.click("#about-check")
+        pf.wait_for_function("document.querySelector('#about-check').disabled")
+        pf.evaluate("document.querySelector('#about-check').click()")      # нажатие по недоступной кнопке ничего не шлёт
+        pf.wait_for_timeout(300)
+        check(len(held) == 1 and pf.get_attribute("#about-check", "aria-busy") == "true"
+              and pf.text_content("#about-diag-state").startswith("Проверяем"),
+              "повторная проверка: пока идёт проверка, кнопка недоступна и второй запрос не уходит")
+        held[0].fallback()
+        pf.unroute("**/api/diagnostics")
+        pf.wait_for_function("!document.querySelector('#about-check').disabled", timeout=30000)
+        pf.set_viewport_size({"width": 980, "height": 800})
+        check(pf.evaluate("document.querySelector('#main').scrollWidth <= document.querySelector('#main').clientWidth"),
+              "«О программе» без горизонтальной прокрутки на 980 px")
+        pf.screenshot(path=str(SHOTS / "s16-about.png"), full_page=True)
+        pf.set_viewport_size({"width": 1440, "height": 900})
+        left = pf.evaluate("""async (ids) => { await Promise.all(ids.map((id) => fetch(`/api/favorites/yt/${id}`, {method: 'DELETE'})));
+          return (await (await fetch('/api/favorites')).json()).items.length; }""", big["ids"])
+        check(left == big["total"] - 450, "тестовые треки длинного списка удалены из «Нравится»")
+        pf.close()
 
         browser.close()
 

@@ -14,8 +14,10 @@ import os
 import platform
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import jsruntime
 from version import __version__
@@ -65,19 +67,61 @@ def _solver_info() -> dict:
     return info
 
 
+# ---------------------------------------------------------------------------
+# Пути и тексты в отчёте (S16): без имени пользователя и полных путей вне известных каталогов
+# ---------------------------------------------------------------------------
+_ROOT_LABELS = ("<app>", "<data>", "~")
+
+
+def safe_path(p) -> str | None:
+    """
+    Путь для отчёта: внутри папки приложения, каталога данных или домашнего каталога — относительно них (<app>, <data>,
+    ~); любой другой путь (другой диск, системная папка) — только последний элемент: «…/deno.exe». Так в отчёт не
+    попадают ни имя пользователя, ни устройство чужих дисков. Раньше такие пути шли в отчёт целиком.
+    """
+    shown = jsruntime.display_path(p)
+    if shown is None or shown.startswith(_ROOT_LABELS):
+        return shown
+    name = Path(shown).name
+    return f"…{os.sep}{name}" if name else "…"
+
+
+def _known_dirs() -> list[tuple[str, str]]:
+    import paths
+
+    dirs = []
+    for base, label in ((paths.resource_dir(), "<app>"), (paths.data_dir(), "<data>"), (Path.home(), "~")):
+        for form in {str(base), str(Path(base).resolve()), str(base).replace("\\", "/")}:
+            if len(form) > 3:                                    # не заменяем «C:\» и «/»
+                dirs.append((form, label))
+    return sorted(dirs, key=lambda x: -len(x[0]))                # длинные (вложенные) раньше
+
+
+def scrub(text: str | None, limit: int = 300) -> str | None:
+    """Текст ошибки для отчёта: известные каталоги -> метки, без ссылок и секретов (applog.redact), не длиннее limit."""
+    if text is None:
+        return None
+    import applog
+
+    s = str(text)
+    for form, label in _known_dirs():
+        s = re.sub(re.escape(form), lambda _m, lb=label: lb, s, flags=re.IGNORECASE if os.name == "nt" else 0)
+    return applog.redact(_URL_RE.sub("<url>", s))[:limit]
+
+
 def _runtime_info(st: jsruntime.RuntimeStatus) -> dict:
     return {
         "name": st.name,
         "ok": st.ok,
         "source": st.source,
-        "path": jsruntime.display_path(st.path),
+        "path": safe_path(st.path),
         "version": st.version,
         "min_version": ".".join(map(str, jsruntime.MIN_VERSION)),
         "expected_version": jsruntime.expected_version(),
         "problem": st.problem,
-        "detail": st.detail,
+        "detail": scrub(st.detail),
         "configured_for_yt_dlp": st.ok,
-        "candidates": [{"source": p.source, "path": jsruntime.display_path(p.path), "ok": p.ok,
+        "candidates": [{"source": p.source, "path": safe_path(p.path), "ok": p.ok,
                         "version": p.version, "problem": p.problem} for p in st.probes],
     }
 
@@ -89,7 +133,7 @@ def _deno_dir_info() -> dict:
         writable = os.access(d, os.W_OK)
     except OSError:
         writable = False
-    return {"path": jsruntime.display_path(d), "writable": writable}
+    return {"path": safe_path(d), "writable": writable}
 
 
 def collect(refresh: bool = True) -> dict:
@@ -103,7 +147,7 @@ def collect(refresh: bool = True) -> dict:
 
     if not st.ok:
         issues.append(_issue("js_runtime_unavailable", "critical", jsruntime.user_message(st),
-                             f"{st.problem}: {st.detail}" if st.problem else None))
+                             f"{st.problem}: {scrub(st.detail)}" if st.problem else None))
     else:
         expected = runtime["expected_version"]
         if st.source == "bundled" and expected and st.version != expected:
@@ -149,6 +193,143 @@ def collect(refresh: bool = True) -> dict:
         "settings": {"cookies_configured": bool(os.getenv("YTDLP_COOKIES")),
                      "proxy_configured": bool(os.getenv("YTDLP_PROXY"))},
         "issues": issues,
+    }
+
+
+_collect_lock = threading.Lock()
+
+
+def collect_serialized() -> dict:
+    """
+    collect(refresh=True) для GET /api/diagnostics (S16): одновременно идёт не больше одной проверки. Повторные нажатия
+    «Проверить» ждут текущую, а не запускают параллельно несколько `deno --version`. Время одной проверки ограничено
+    таймаутом запуска runtime (jsruntime.PROBE_TIMEOUT); сети проверка не использует.
+    """
+    with _collect_lock:
+        return collect(refresh=True)
+
+
+# ---------------------------------------------------------------------------
+# «О программе» (S16): версия, система, процесс, хранилище, кэши. Без сети, без дочерних процессов.
+# ---------------------------------------------------------------------------
+ABOUT_SCHEMA = 1
+_ready: dict = {}
+
+
+def process_uptime() -> float | None:
+    """Секунды с момента создания процесса (Linux: /proc, Windows: GetProcessTimes). Иначе None."""
+    try:
+        if sys.platform.startswith("linux"):
+            start_ticks = int(Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19])
+            boot_uptime = float(Path("/proc/uptime").read_text().split()[0])
+            return max(0.0, boot_uptime - start_ticks / os.sysconf("SC_CLK_TCK"))
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            ft = [wintypes.FILETIME() for _ in range(4)]
+            k32 = ctypes.windll.kernel32
+            if not k32.GetProcessTimes(k32.GetCurrentProcess(), *[ctypes.byref(f) for f in ft]):
+                return None
+            now = wintypes.FILETIME()
+            k32.GetSystemTimeAsFileTime(ctypes.byref(now))
+            val = lambda f: (f.dwHighDateTime << 32) | f.dwLowDateTime   # noqa: E731 — 100-нс интервалы
+            return max(0.0, (val(now) - val(ft[0])) / 1e7)
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
+    return None
+
+
+def process_rss_mb() -> float | None:
+    """Занятая процессом физическая память (resident set / working set), МБ. Иначе None."""
+    try:
+        if sys.platform.startswith("linux"):
+            for line in Path("/proc/self/status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                    (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                                   "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                                   "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+            pmc = PMC(cb=ctypes.sizeof(PMC))
+            k32 = ctypes.windll.kernel32
+            if ctypes.windll.psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+                return round(pmc.WorkingSetSize / 1048576, 1)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def mark_ready() -> dict:
+    """
+    Вызывается в конце запуска backend (lifespan). Первый вызов запоминает, сколько прошло от создания процесса до
+    готовности API; перезапуски сторожем лаунчера считаются отдельно. Возвращает запись (её пишет журнал).
+    """
+    up = process_uptime()
+    if "first_ready_ms" not in _ready:
+        _ready["first_ready_ms"] = round(up * 1000) if up is not None else None
+        _ready["restarts"] = 0
+    else:
+        _ready["restarts"] += 1
+    _ready["last_ready_at"] = time.time()
+    return dict(_ready)
+
+
+def _storage_info() -> dict:
+    import library
+    import paths
+
+    data = paths.data_dir()
+    db_file = data / "wave.db"
+    counts: dict[str, int | None] = {}
+    for table in ("favorites", "favorite_items", "history", "playlists", "playlist_tracks", "downloads", "local_tracks"):
+        try:
+            counts[table] = library._q(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"]   # имена — из списка выше
+        except Exception:                                         # noqa: BLE001 — нет таблицы или базы: отчёт, не падение
+            counts[table] = None
+    try:
+        version = library._q("PRAGMA user_version")[0][0]
+    except Exception:                                             # noqa: BLE001
+        version = None
+    try:
+        db_bytes = db_file.stat().st_size
+    except OSError:
+        db_bytes = None
+    return {"data_dir": _home_relative(data), "downloads_dir": _home_relative(paths.current_downloads_dir()),
+            "db_bytes": db_bytes, "schema_version": version, "counts": counts}
+
+
+def _home_relative(p: Path) -> str:
+    """Каталог для экрана «О программе»: относительно домашнего (~\\AppData\\Local\\Wave), иначе только имя («…\\Music»)."""
+    try:
+        rel = Path(p).resolve().relative_to(Path.home().resolve())
+        return "~" if str(rel) == "." else f"~{os.sep}{rel}"
+    except (ValueError, OSError):
+        name = Path(p).name
+        return f"…{os.sep}{name}" if name else "…"
+
+
+def about(caches: dict[str, dict]) -> dict:
+    """Отчёт для экрана «О программе» (GET /api/about). Быстрый: чтение файлов /proc и счётчики SQLite."""
+    up = process_uptime()
+    return {
+        "schema": ABOUT_SCHEMA,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "app": {"name": "Wave", "version": __version__, "frozen": jsruntime.is_frozen(),
+                "python": platform.python_version(), "platform": sys.platform,
+                "os": platform.platform(terse=True), "machine": platform.machine(), "cpus": os.cpu_count()},
+        "process": {"uptime_s": round(up) if up is not None else None, "rss_mb": process_rss_mb(),
+                    "threads": threading.active_count()},
+        "startup": {"backend_ready_ms": _ready.get("first_ready_ms"), "restarts": _ready.get("restarts", 0)},
+        "storage": _storage_info(),
+        "caches": caches,
+        "settings": {"cookies_configured": bool(os.getenv("YTDLP_COOKIES")),
+                     "proxy_configured": bool(os.getenv("YTDLP_PROXY"))},
     }
 
 

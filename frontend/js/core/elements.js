@@ -37,7 +37,7 @@ export const el = {
   progress: $("#progress"), volume: $("#volume"), tCur: $("#time-current"), tTotal: $("#time-total"),
 };
 /** Разделы главной области: какой из них виден, решает layout() по state.view. */
-export const views = { home: $("#view-home"), list: $("#view-list"), collection: $("#view-collection"), settings: $("#view-settings"), now: $("#view-now") };
+export const views = { home: $("#view-home"), list: $("#view-list"), collection: $("#view-collection"), settings: $("#view-settings"), about: $("#view-about"), now: $("#view-now") };
 /** Единственный <audio> приложения. Воспроизведением управляет только плеер. */
 export const audio = el.audio;
 

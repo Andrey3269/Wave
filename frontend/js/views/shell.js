@@ -7,7 +7,7 @@ import { closeFs } from "./fullscreen.js";
 import { setFocusFallback, keepFocus } from "../components/focus.js";
 
 const NAV_OF = { home: "home", search: "search", playlists: "playlists", playlist: "playlists", collection: "collection",
-  liked: "liked", downloads: "downloads", history: "history", settings: "settings", local: "collection" };
+  liked: "liked", downloads: "downloads", history: "history", settings: "settings", about: "settings", local: "collection" };
 
 /** Показывает нужные блоки для state.view. Мини-плеер скрывает CSS по body[data-view] и body[data-track]. */
 export function layout() {
@@ -45,7 +45,7 @@ function viewHeading() {
   const v = state.view, sec = sectionOf(v);
   if (sec === "home") return hero.title;
   if (sec === "now") return now.title;
-  if (sec === "collection" || sec === "settings") return views[sec].querySelector(".page-h");
+  if (sec === "collection" || sec === "settings" || sec === "about") return views[sec].querySelector(".page-h");
   return DETAIL_VIEWS.includes(v) ? el.dTitle : el.resultsTitle;
 }
 setFocusFallback(viewHeading);

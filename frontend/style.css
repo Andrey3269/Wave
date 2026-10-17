@@ -532,6 +532,13 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 /* S14: управление рекомендациями */
 .set__hint--text { word-break: normal; overflow-wrap: anywhere; }
 .set__sub { margin-top: 18px; font-size: 14px; }
+/* «О программе» (S16): пары «название — значение» */
+.kv { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 6px 24px; }
+.kv dt { color: var(--muted); }
+.kv dd { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.diag { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.diag__item { padding: 8px 12px; border-radius: var(--r-m); background: var(--surface); overflow-wrap: anywhere; }
+.diag__item--critical { box-shadow: inset 3px 0 0 var(--accent); }
 .excl { margin-top: 8px; list-style: none; }
 .excl__item { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
 .excl__text { display: flex; flex-direction: column; flex: 1; min-width: 0; }

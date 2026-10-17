@@ -361,7 +361,46 @@
           <p class="set__hint">Избранное (треки, альбомы, исполнители), плейлисты с порядком треков и настройки — в JSON-файл в папке загрузок. Импорт добавляет недостающее и заменяет настройки; если в файле есть ошибка, ничего не меняется. Локальные аудиофайлы в файл не входят.</p>
           <p class="set__hint" id="set-paths"></p>
         </div>
+        <div class="set">
+          <h3>О программе</h3>
+          <div class="set__actions">
+            <button class="btn btn--ghost" id="set-about" type="button" data-view="about">О программе и диагностика</button>
+          </div>
+        </div>
         <p class="set__msg" id="set-msg" role="status"></p>
+      </div>
+
+      <!-- ================= О программе / Диагностика (S16) ================= -->
+      <div class="view settings about" id="view-about" hidden aria-label="О программе">
+        <h1 class="page-h" tabindex="-1">О программе</h1>
+        <div class="set">
+          <h3>Wave</h3>
+          <dl class="kv" id="about-app"></dl>
+        </div>
+        <div class="set">
+          <h3>Запуск и память</h3>
+          <dl class="kv" id="about-perf"></dl>
+        </div>
+        <div class="set">
+          <h3>Данные</h3>
+          <dl class="kv" id="about-data"></dl>
+        </div>
+        <div class="set">
+          <h3>Кэши в памяти</h3>
+          <dl class="kv" id="about-caches"></dl>
+          <p class="set__hint set__hint--text">У каждого кэша есть предел записей и срок хранения; «Очистить кэш» в настройках сбрасывает их.</p>
+        </div>
+        <div class="set" id="about-diag">
+          <h3>Диагностика воспроизведения YouTube</h3>
+          <p class="set__hint set__hint--text" id="about-diag-state">Проверяет компоненты (yt-dlp, скрипты решателя, Deno) без обращения к сети.</p>
+          <ul class="diag" id="about-issues" aria-labelledby="about-diag-state"></ul>
+          <div class="set__actions">
+            <button class="btn btn--ghost" id="about-check" type="button">Проверить</button>
+            <button class="btn btn--ghost" id="about-copy" type="button">Скопировать отчёт</button>
+          </div>
+          <p class="set__hint set__hint--text">В отчёте нет cookies, прокси, токенов и полных путей: каталоги показаны относительно домашнего (~) или папки приложения.</p>
+        </div>
+        <p class="set__msg" id="about-msg" role="status"></p>
       </div>
 
       <!-- ================= Текущий трек ================= -->
