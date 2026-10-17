@@ -140,6 +140,7 @@ def test_playback_and_ranges(api):
     assert api.get(f"{url}/playback").json() == {"kind": "local", "url": url, "preview": False}
     full = api.get(url)
     assert full.status_code == 200 and full.content == data and full.headers["content-type"] == "audio/wav"
+    assert full.headers["x-content-type-options"] == "nosniff"
     part = api.get(url, headers={"Range": "bytes=10-19"})
     assert part.status_code == 206 and part.content == data[10:20]
     assert part.headers["content-range"] == f"bytes 10-19/{len(data)}"

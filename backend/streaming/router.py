@@ -96,7 +96,12 @@ async def stream_track_head(source: str, track_id: str, request: Request):
 async def _stream(source: str, track_id: str, request: Request, warm: int, is_head: bool):
     if source == SOURCE_LOCAL:                                   # S15: импортированный файл, Range — FileResponse
         path = _local_file(track_id)
-        return Response(status_code=204) if warm and not is_head else local.serve(path)
+        if warm and not is_head:
+            return Response(status_code=204)
+        resp = local.serve(path)
+        # Содержимое — файл пользователя (сигнатура проверена при импорте): браузер не угадывает тип сам
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
     _check(source, track_id)
 
     # Скачанный трек играем с диска: работает без интернета и мгновенно (Range поддерживает FileResponse)
