@@ -110,22 +110,22 @@ PAIRS: list[tuple[tuple, str, str, str, str]] = [
     # основной текст
     (APP, "--text", "--bg", "text", "заголовки, названия треков, пункты меню на странице"),
     (APP, "--text", "--surface", "text", "мини-плеер, очередь, диалоги, карточки при наведении, строка при наведении"),
-    (APP, "--text", "--surface-2", "text", "меню трека, кнопки-призраки, поля ввода, сообщение «нет сети»"),
+    (APP, "--text", "--surface-2", "text", "меню трека, кнопки-призраки, поля ввода, поиск, активный пункт меню (S17), «нет сети»"),
     (APP, "--text", "--surface-3", "text", "уведомление (тост), пункт меню и кнопки при наведении"),
     # вторичный текст
     (APP, "--muted", "--bg", "text", "исполнитель и альбом в строке, статус, пустые состояния, подсказки, «Загрузить ещё»"),
-    (APP, "--muted", "--surface", "text", "исполнитель в мини-плеере и очереди, время, подписи карточек, плейсхолдер поиска"),
-    (APP, "--muted", "--surface-2", "text", "невыбранная вкладка поиска, подписи карточек при наведении, недоступная загрузка"),
+    (APP, "--muted", "--surface", "text", "исполнитель в мини-плеере и очереди, время, подписи карточек"),
+    (APP, "--muted", "--surface-2", "text", "невыбранная вкладка поиска, плейсхолдер и значок поиска (S17), подписи карточек при наведении"),
     (APP, "--muted", "--surface-3", "text", "«Недоступно» и «В очереди» на кнопке-пилюле при наведении"),
     # акцент как цвет текста и значков
     (APP, "--accent-ink", "--bg", "text", "играющий трек, тип страницы, надзаголовок, сообщение настроек, % загрузки"),
     (APP, "--accent-ink", "--surface", "text", "играющий трек при наведении и в очереди, нажатые кнопки мини-плеера"),
-    (APP, "--accent-ink", "--surface-2", "text", "нажатые кнопки-пилюли («Нравится», «Текст»), «Скачано»"),
+    (APP, "--accent-ink", "--surface-2", "text", "нажатые кнопки-пилюли («Нравится», «Текст»), «Скачано», значок активного пункта меню (S17)"),
     (APP, "--accent-ink", "--surface-3", "text", "«Удалить плейлист» при наведении"),
-    (APP, "--accent-ink", "--accent-soft over --bg", "text", "активный пункт бокового меню, значок плитки коллекции"),
-    (APP, "--accent-ink", "--accent-soft over --surface", "text", "активный пункт бокового меню при наведении"),
+    (APP, "--accent-ink", "--accent-soft over --bg", "text", "значок плитки коллекции"),
+    (APP, "--accent-ink", "--accent-soft over --surface", "text", "значок плитки коллекции при наведении"),
     # текст на акцентной заливке
-    (APP, "--on-accent", "--accent", "text", "«Слушать», выбранный источник, буква аватара, Play"),
+    (APP, "--on-accent", "--accent-fill", "text", "«Слушать», выбранный источник, буква аватара, Play"),
     (APP, "--on-accent", "--accent-hover", "text", "те же кнопки при наведении"),
     # выбранная вкладка (инверсия)
     (APP, "--bg", "--text", "text", "выбранная вкладка поиска"),
@@ -146,20 +146,20 @@ PAIRS: list[tuple[tuple, str, str, str, str]] = [
     (APP, "--ly", "--surface", "large", "следующие строки текста песни на странице трека"),
     (APP, "--ly-past", "--surface", "large", "прошедшие строки текста песни"),
     (APP, "--ly-plain", "--surface", "text", "текст песни без таймкодов"),
-    # баннер главной (всегда тёмный фон #141416 под текстом)
-    (HERO, "--text", "#141416", "large", "название трека в баннере"),
-    (HERO, "--muted", "#141416", "text", "длительность, источник, прослушивания"),
-    (HERO, "--accent-ink", "#141416", "text", "надзаголовок «Сейчас играет» / название подборки"),
-    (HERO, "--on-accent", "--accent", "text", "кнопка «Слушать подборку» / «Пауза»"),
+    # баннер главной (всегда тёмный фон #0F1320 под текстом, S17)
+    (HERO, "--text", "#0F1320", "large", "название трека в баннере"),
+    (HERO, "--muted", "#0F1320", "text", "длительность, источник, прослушивания"),
+    (HERO, "--accent-ink", "#0F1320", "text", "надзаголовок «Сейчас играет» / название подборки"),
+    (HERO, "--on-accent", "--accent-fill", "text", "кнопка «Слушать подборку» / «Пауза»"),
     (HERO, "--text", "--surface-2", "ui", "круглые кнопки баннера"),
-    (HERO, "--accent-ink", "#141416", "focus", "рамка фокуса в баннере"),
+    (HERO, "--accent-ink", "#0F1320", "focus", "рамка фокуса в баннере"),
     # полноэкранный плеер: панель очереди — сплошной --surface
     (FS, "--text", "--surface", "text", "очередь: названия"),
     (FS, "--muted", "--surface", "text", "очередь: исполнители, длительность, заголовки «Далее»"),
     (FS, "--muted", "--surface-2", "text", "очередь: играющая строка и строка при наведении"),
     (FS, "--faint", "--surface", "text", "очередь: пояснения («Уже сыграно», перемешивание)"),
     (FS, "--accent-ink", "--surface-2", "text", "очередь: название играющего трека"),
-    (FS, "--on-accent", "--accent", "text", "кнопка Play/Pause"),
+    (FS, "--on-accent", "--accent-fill", "text", "кнопка Play/Pause"),
     (FS, "--accent-ink", "--surface", "focus", "рамка фокуса в панели очереди"),
 ]
 
@@ -186,6 +186,26 @@ def test_accent_as_foreground_uses_the_text_token():
     css = re.sub(r"/\*.*?\*/", "", CSS.read_text(encoding="utf-8"), flags=re.S)
     bad = re.findall(r"(?<![\w-])color\s*:\s*var\(--accent\)", css)
     assert not bad, f"color: var(--accent) встречается {len(bad)} раз — используйте var(--accent-ink)"
+
+
+def test_on_accent_text_sits_on_the_fill_token():
+    """S17: тёмный текст на коралле — только на заливке --accent-fill; --accent в светлой теме темнее (метки) и под
+    текстом не проверяется."""
+    css = re.sub(r"/\*.*?\*/", "", CSS.read_text(encoding="utf-8"), flags=re.S)
+    bad = [sel.strip() for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+           if "color: var(--on-accent)" in body and re.search(r"background:\s*var\(--accent\)", body)]
+    assert not bad, f"текст --on-accent на var(--accent): {bad} — используйте var(--accent-fill)"
+
+
+def test_component_values_come_from_the_scales():
+    """S17: размеры шрифта, крупные радиусы и длительности переходов — из шкал токенов (раздел 1 style.css),
+    а не числами по месту. Адаптивные clamp() заголовков и тонкие скругления шкал (1–3px) допустимы."""
+    css = re.sub(r"/\*.*?\*/", "", CSS.read_text(encoding="utf-8"), flags=re.S)
+    body = css.split(":root[data-theme=\"light\"]", 1)[1].split("}", 1)[1]
+    assert not re.findall(r"font-size:\s*\d[\d.]*px", body), "font-size в px — используйте var(--fs-*)"
+    radii = set(re.findall(r"border-radius:\s*(\d+)px", body))
+    assert radii <= {"1", "2", "3"}, f"border-radius {sorted(radii)}px — используйте var(--r-*)"
+    assert not re.findall(r"transition:[^;]*\d*\.?\d+m?s", body), "длительность перехода числом — var(--dur-*)"
 
 
 def test_focus_outline_uses_the_text_accent():

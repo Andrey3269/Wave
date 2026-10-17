@@ -70,15 +70,15 @@ log = logging.getLogger("wave.desktop")
 def _page(body: str) -> str:
     return (
         "<!doctype html><html><head><meta charset='utf-8'><style>"
-        "body{margin:0;height:100vh;display:grid;place-items:center;background:#141416;color:#F5F5F7;"
+        "body{margin:0;height:100vh;display:grid;place-items:center;background:#111214;color:#F3F1ED;"
         "font:16px 'Segoe UI',system-ui,sans-serif;text-align:center}"
         ".bars{display:flex;gap:6px;height:48px;align-items:center;justify-content:center;margin-bottom:16px}"
-        ".bars i{width:6px;height:12px;background:#FF6A4D;border-radius:3px;animation:w 1s ease-in-out infinite}"
+        ".bars i{width:6px;height:12px;background:#FF654A;border-radius:3px;animation:w 1s ease-in-out infinite}"
         ".bars i:nth-child(2){animation-delay:.1s}.bars i:nth-child(3){animation-delay:.2s}"
         ".bars i:nth-child(4){animation-delay:.3s}.bars i:nth-child(5){animation-delay:.4s}"
         "@keyframes w{0%,100%{height:12px}50%{height:44px}}"
-        "p{margin:6px 24px;color:#9A9AA3;max-width:520px;line-height:1.5}h1{margin:0 0 8px;font-size:22px}"
-        "@media (prefers-color-scheme:light){body{background:#FFFFFF;color:#17171A}}"
+        "p{margin:6px 24px;color:#9A9CA1;max-width:520px;line-height:1.5}h1{margin:0 0 8px;font-size:22px}"
+        "@media (prefers-color-scheme:light){body{background:#EEECE8;color:#18191C}p{color:#595C61}}"
         "@media (prefers-reduced-motion:reduce){.bars i{animation:none}}"
         f"</style></head><body><div>{body}</div></body></html>"
     )
@@ -157,6 +157,82 @@ def single_instance() -> bool:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _mutex = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
     return ctypes.get_last_error() != 183          # ERROR_ALREADY_EXISTS
+
+
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def pick_window(windows, own_pid: int, exe: str, title: str = APP_NAME):
+    """
+    Окно первого экземпляра среди окон верхнего уровня (L5). windows — (hwnd, заголовок, pid, путь к exe процесса)
+    видимых окон. Подходит окно с заголовком Wave из другого процесса того же исполняемого файла: окно с таким же
+    заголовком у чужой программы не активируется. None — подходящего окна нет.
+    """
+    for hwnd, text, pid, path in windows:
+        if text == title and pid != own_pid and path and _same_path(path, exe):
+            return hwnd
+    return None
+
+
+def _top_windows():
+    """(hwnd, заголовок, pid, путь к exe) видимых окон верхнего уровня (только Windows)."""
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    def exe_of(pid: int) -> str:
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            size, buf = wintypes.DWORD(32768), ctypes.create_unicode_buffer(32768)
+            ok = kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+            return buf.value if ok else ""
+        finally:
+            kernel32.CloseHandle(handle)
+
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if buf.value == APP_NAME:                              # exe спрашиваем только у окон «Wave»
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                found.append((hwnd, buf.value, pid.value, exe_of(pid.value)))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def activate_running_window() -> bool:
+    """
+    L5 (S17): второй запуск разворачивает и выводит на передний план окно уже запущенного Wave вместо сообщения.
+    True — окно найдено и показано. Если Windows не отдаёт фокус чужому окну, кнопка на панели задач мигает.
+    False — окна нет (например, первый экземпляр ещё на заставке до создания окна) или ошибка WinAPI.
+    """
+    if not IS_WIN:
+        return False
+    try:
+        hwnd = pick_window(_top_windows(), os.getpid(), sys.executable)
+        if hwnd is None:
+            return False
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        SW_RESTORE, SW_SHOW = 9, 5
+        user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+        if not user32.SetForegroundWindow(hwnd):
+            user32.FlashWindow(hwnd, True)
+        return True
+    except Exception:                                             # не мешаем завершению второго экземпляра
+        log.exception("Не удалось активировать окно запущенного Wave")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +488,12 @@ def main(argv: list[str] | None = None) -> int:
     if IS_WIN:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Wave.Desktop")   # значок на панели задач
     if not single_instance():
-        # второй экземпляр не запускает backend и не трогает базу (WIN-4); окно первого не активируется (L5, S17)
+        # второй экземпляр не запускает backend и не трогает базу (WIN-4); окно первого выводится вперёд (L5, S17)
         log.info("Wave уже запущен: второй экземпляр завершается, backend не запускается")
-        _message(APP_NAME, "Wave уже запущен.")
+        if activate_running_window():
+            log.info("Окно запущенного Wave выведено на передний план")
+        else:
+            _message(APP_NAME, "Wave уже запущен.")
         return 0
     try:
         port = configured_port()
@@ -433,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
 
     backend, closing = Backend(), threading.Event()
     window = webview.create_window(APP_NAME, html=splash(), width=1280, height=820, min_size=(980, 620),
-                                   background_color="#141416")
+                                   background_color="#111214")
     window.events.closed += closing.set
     storage = paths.data_dir() / "webview"          # localStorage и кэш окна живут между запусками
     storage.mkdir(parents=True, exist_ok=True)

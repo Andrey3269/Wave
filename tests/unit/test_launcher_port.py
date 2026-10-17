@@ -224,3 +224,24 @@ def test_startup_error_page_escapes_reason_and_falls_back(monkeypatch):
     assert "Wave не смог открыть базу данных" in page and "&lt;script&gt;" in page and "<script>" not in page
     monkeypatch.setattr(store, "_startup_error", None)
     assert "Не удалось запустить служебную часть приложения." in launcher.startup_error_page()
+
+
+# ---------------------------------------------------------------------------
+# L5 (S17): второй запуск активирует окно первого экземпляра
+# ---------------------------------------------------------------------------
+def test_pick_window_finds_the_first_instance():
+    exe = os.path.join(os.sep, "apps", "Wave", "Wave.exe")
+    windows = [
+        (1, "Wave", 400, os.path.join(os.sep, "other", "Wave.exe")),      # чужая программа с тем же заголовком
+        (2, "Wave", 999, exe),                                             # окно самого второго экземпляра
+        (3, "Wave — заметки", 300, exe),                                   # другой заголовок
+        (4, "Wave", 300, ""),                                              # путь процесса не прочитан
+        (5, "Wave", 300, exe),
+    ]
+    assert launcher.pick_window(windows, own_pid=999, exe=exe) == 5
+    assert launcher.pick_window(windows[:4], own_pid=999, exe=exe) is None
+
+
+def test_activation_is_a_no_op_off_windows(monkeypatch):
+    monkeypatch.setattr(launcher, "IS_WIN", False)
+    assert launcher.activate_running_window() is False
