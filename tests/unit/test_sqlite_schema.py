@@ -96,7 +96,9 @@ def test_old_row_without_root_resolves_against_current_downloads_dir(wave_profil
 
 
 def test_index_row_disappears_when_file_is_gone(db):
-    library.add(source="yt", track_id="AAAAAAAAAA1", title="T", artist="A", album=None, duration=1, folder="gone",
+    # папка с именем, которое создаёт загрузчик Wave: с S13 строки с чужими папками только пропускаются (N3)
+    library.add(source="yt", track_id="AAAAAAAAAA1", title="T", artist="A", album=None, duration=1,
+                folder="A - T [yt-AAAAAAAAAA1]",
                 audio="audio.m4a", cover=None, lyrics=None, size=1, created_at=1.0, root=str(db.downloads))
     assert library.get("yt", "AAAAAAAAAA1") is None
     assert library.list_items() == []

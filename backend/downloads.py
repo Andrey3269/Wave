@@ -408,12 +408,15 @@ class _Commit:
 async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _Entry | None = None) -> None:
     key = f"{req.source}:{req.id}"
     name = library.safe_folder(req.artist, req.title, req.source, req.id)
-    target = library.folder_path(name)
-    tmp = target.with_name(target.name + ".part")
+    tmp: Path | None = None
     out: ThreadFile | None = None
     part_key, own_part = None, False
     outcome = {"state": "error", "error": "Не удалось скачать трек. Попробуйте ещё раз.", "code": "internal"}
     try:
+        # S13: папка загрузок из настроек может быть недоступна (отключённый диск) — это ошибка задачи, а не
+        # необработанное исключение фоновой задачи с «вечным» состоянием preparing
+        target = library.folder_path(name)
+        tmp = target.with_name(target.name + ".part")
         # preparing: поток получен штатно (тем же резолвером, что и для воспроизведения) и это не фрагмент
         res = await download_policy.check(rs, req.source, req.id)
 
@@ -636,7 +639,8 @@ def list_jobs():
 
 @router.get("/downloads")
 def list_downloads():
-    return {"items": [library.to_track(r) for r in library.list_items()], "dir": str(paths.downloads_dir())}
+    # папку не создаём (S13): недоступная папка из настроек не превращает список загрузок в HTTP 500
+    return {"items": [library.to_track(r) for r in library.list_items()], "dir": str(paths.current_downloads_dir())}
 
 
 @router.delete("/downloads/{source}/{track_id}")

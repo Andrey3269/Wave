@@ -14,6 +14,7 @@ import sqlite3
 from pathlib import Path
 
 import paths
+from domain.snapshot import valid_track
 from persistence import db
 
 log = logging.getLogger("musicmeta.library")
@@ -63,6 +64,10 @@ def folder_path(folder: str, root: str | None = None) -> Path:
 # каталога загрузок, файлы — одно имя внутри этой папки. Строка, которая выводит за эти пределы
 # (../, абсолютный путь, другой диск, ссылка наружу), пропускается при чтении и пишется в журнал;
 # её файлы не читаются и не удаляются. Сама строка не удаляется: это данные пользователя.
+# S13: каталог загрузок (колонка root) тоже приходит из базы, поэтому читать можно только папку, которую создал
+# загрузчик Wave для этого трека: имя оканчивается на «[источник-id]» (owns_folder), ключ строки совпадает с её
+# источником и id, а id — в формате источника. Строка с root=C:\Users\Имя и folder="Documents" больше не даёт
+# прочитать файлы из Documents. Файл — не ссылка и лежит прямо в этой папке.
 _warned: set[str] = set()
 _SEP = re.compile(r"[/\\:\x00]")
 
@@ -80,16 +85,31 @@ def _unsafe(row: sqlite3.Row, why: str) -> None:
 
 
 def _row_dir(row: sqlite3.Row) -> Path | None:
-    """Папка загрузки этой строки или None, если строка указывает за пределы своего каталога загрузок."""
+    """
+    Папка загрузки этой строки или None, если строка указывает за пределы своего каталога загрузок или на папку,
+    которую загрузчик Wave не создавал для этого трека.
+    """
+    source, track_id = row["source"], row["track_id"]
+    if not valid_track(source, track_id) or row["key"] != f"{source}:{track_id}":
+        _unsafe(row, "источник или id трека недопустимы либо не совпадают с ключом")
+        return None
     root = row["root"]
-    if root and not Path(root).is_absolute():
-        _unsafe(row, "каталог загрузок записан относительным путём")
+    try:
+        if root and not Path(root).is_absolute():
+            _unsafe(row, "каталог загрузок записан относительным путём")
+            return None
+    except (TypeError, ValueError):
+        _unsafe(row, "каталог загрузок записан недопустимым значением")
         return None
     if not _component(row["folder"]):
         _unsafe(row, "имя папки выводит за пределы каталога загрузок")
         return None
+    if not owns_folder(row):
+        _unsafe(row, "папка создана не загрузчиком Wave для этого трека")
+        return None
     try:
-        return folder_path(row["folder"], root)
+        # без root — текущий каталог загрузок, не создавая его (S13: недоступная папка не роняет чтение)
+        return folder_path(row["folder"], root or str(paths.current_downloads_dir()))
     except (ValueError, OSError):
         _unsafe(row, "папка разрешается за пределы каталога загрузок")
         return None
@@ -105,12 +125,21 @@ def _row_file(row: sqlite3.Row, column: str) -> Path | None:
     if not _component(name):
         _unsafe(row, f"имя файла ({column}) выводит за пределы папки загрузки")
         return None
-    return folder / name
+    p = folder / name
+    try:
+        if p.is_symlink() or (p.exists() and p.resolve().parent != folder):
+            _unsafe(row, f"файл ({column}) — ссылка или разрешается за пределы папки загрузки")
+            return None
+    except (OSError, ValueError):
+        return None
+    return p
 
 
 def owns_folder(row: sqlite3.Row) -> bool:
-    """Папку создал загрузчик Wave именно для этого трека: только такую папку можно удалить целиком."""
-    return row["folder"].endswith(f"[{row['source']}-{_clean(row['track_id'], 24)}]")
+    """Папку создал загрузчик Wave именно для этого трека: только такую папку можно читать и удалить целиком."""
+    folder, track_id = row["folder"], row["track_id"]
+    return (isinstance(folder, str) and isinstance(track_id, str)
+            and folder.endswith(f"[{row['source']}-{_clean(track_id, 24)}]"))
 
 
 # ---------- запросы ----------
@@ -223,12 +252,10 @@ def delete(source: str, track_id: str) -> bool:
     if not rows:
         return False
     row = rows[0]
-    folder = _row_dir(row)
-    if folder is None or not owns_folder(row):
-        if folder is not None:
-            _unsafe(row, "имя папки создано не загрузчиком Wave, удаляется только запись индекса")
+    folder = _row_dir(row)                     # с S13 None и для папки, созданной не загрузчиком Wave для этого трека
+    if folder is None:
         _q("DELETE FROM downloads WHERE key = ?", (row["key"],))
-        raise FolderKept(folder)
+        raise FolderKept(None)
     if folder.exists():
         shutil.rmtree(folder)          # при ошибке бросит OSError: запись индекса остаётся
     _q("DELETE FROM downloads WHERE key = ?", (row["key"],))

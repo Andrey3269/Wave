@@ -42,8 +42,16 @@ def default_downloads_dir() -> Path:
     return Path.home() / "Downloads" / "Wave"
 
 
+def current_downloads_dir() -> Path:
+    """
+    Текущая папка загрузок без создания (S13): для чтения и показа. Недоступная папка (отключённый диск, путь
+    через файл) не роняет чтение индекса и настроек — её создаёт только downloads_dir() при записи.
+    """
+    return Path(os.getenv("WAVE_DOWNLOADS_DIR") or _downloads_override or default_downloads_dir())
+
+
 def downloads_dir() -> Path:
-    """Скачанные треки: ~/Downloads/Wave по умолчанию, либо папка из настроек."""
-    p = Path(os.getenv("WAVE_DOWNLOADS_DIR") or _downloads_override or default_downloads_dir())
+    """Скачанные треки: ~/Downloads/Wave по умолчанию, либо папка из настроек. Создаётся при обращении (для записи)."""
+    p = current_downloads_dir()
     p.mkdir(parents=True, exist_ok=True)
     return p

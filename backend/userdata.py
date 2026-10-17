@@ -224,15 +224,33 @@ def _read_covers(raw: str | None) -> dict[str, str]:
         return {}
 
 
+def saved_downloads_dir(value) -> Path | None:
+    """
+    Папка загрузок из базы (S13, N3): строка базы не доверенная. Допустим только абсолютный путь без управляющих
+    символов, который не указывает на существующий файл. Иначе None — используется папка по умолчанию, а сама
+    строка остаётся в базе (её перезапишет следующий выбор папки в настройках). Доступность (отключённый диск)
+    здесь не проверяется: такая папка остаётся выбранной, чтение настроек и индекса от неё не падает.
+    """
+    if not isinstance(value, str) or not value.strip() or _CONTROL.search(value):
+        return None
+    try:
+        p = Path(value)
+        if not p.is_absolute() or p.is_file():
+            return None
+    except (OSError, ValueError):
+        return None
+    return p
+
+
 def init() -> None:
     """Вызывается после library.init(): база уже открыта и обновлена до текущей схемы."""
     trim_history()                              # лимит могли уменьшить, или база от версии без ретеншна
     saved = get_setting("downloads_dir")
     if saved:                                   # возвращаем выбранную пользователем папку загрузок
-        try:
-            paths.set_downloads_dir(Path(saved))
-        except OSError as exc:
-            log.warning("Папка загрузок недоступна: %r", exc)
+        p = saved_downloads_dir(saved)
+        if p is None:
+            log.warning("Папка загрузок в настройках недопустима и не используется: %r", saved[:300] if isinstance(saved, str) else saved)
+        paths.set_downloads_dir(p)
 
 
 def _public() -> dict:
@@ -247,7 +265,7 @@ def _public() -> dict:
             "mix_covers": _read_covers(s["mix_covers"]),
             "history_limit": _read_history_limit(s["history_limit"]),           # S6
         },
-        "paths": {"downloads": str(paths.downloads_dir()), "data": str(paths.data_dir()),
+        "paths": {"downloads": str(paths.current_downloads_dir()), "data": str(paths.data_dir()),
                   "downloads_locked": bool(os.getenv("WAVE_DOWNLOADS_DIR"))},
         "meta": {"local_ui_migrated": s.get(MIGRATED_KEY) == "1"},
     }
