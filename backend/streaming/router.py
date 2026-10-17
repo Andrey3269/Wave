@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 import library
+import localmusic
+from domain.models import SOURCE_LOCAL
 from streaming import hls_proxy, local, proxy, resolver
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
@@ -32,6 +34,16 @@ async def hls_release(token: str):
     return Response(status_code=204)
 
 
+def _local_file(track_id: str):
+    """Файл локального трека (S15, источник local) или понятная ошибка. Путь строит localmusic из id."""
+    if not localmusic.ID_RE.fullmatch(track_id):
+        raise HTTPException(400, "Некорректный идентификатор трека")
+    path = localmusic.audio_path(track_id)
+    if path is None:
+        raise HTTPException(404, "Файл локального трека не найден: возможно, его удалили из Wave.")
+    return path
+
+
 def _check(source: str, track_id: str) -> resolver.Source:
     cfg = resolver.SOURCES.get(source)
     if cfg is None:
@@ -50,8 +62,11 @@ async def playback(source: str, track_id: str, request: Request):
       hls         — url = /api/stream/hls/{token}/main.m3u8 для hls.js; корневой плейлист уже проверен.
     Ошибки — как у потока: понятный текст в detail и тип в X-Wave-Error.
     """
-    _check(source, track_id)
     direct = f"/api/stream/{source}/{track_id}"
+    if source == SOURCE_LOCAL:                                   # S15: импортированный файл — всегда с диска
+        _local_file(track_id)
+        return {"kind": "local", "url": direct, "preview": False}
+    _check(source, track_id)
     if library.audio_path(source, track_id):
         return {"kind": "local", "url": direct, "preview": False}
     res = await resolver._resolve(request.app.state.resolver, source, track_id)
@@ -79,6 +94,9 @@ async def stream_track_head(source: str, track_id: str, request: Request):
 
 
 async def _stream(source: str, track_id: str, request: Request, warm: int, is_head: bool):
+    if source == SOURCE_LOCAL:                                   # S15: импортированный файл, Range — FileResponse
+        path = _local_file(track_id)
+        return Response(status_code=204) if warm and not is_head else local.serve(path)
     _check(source, track_id)
 
     # Скачанный трек играем с диска: работает без интернета и мгновенно (Range поддерживает FileResponse)

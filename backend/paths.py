@@ -28,6 +28,16 @@ def data_dir() -> Path:
     return p
 
 
+def local_music_dir() -> Path:
+    """
+    Локальная музыка (S15): копии аудиофайлов, импортированных пользователем, — <data>/local. Файлы называются по id
+    трека (backend/localmusic.py), пользовательских путей здесь нет. Создаётся при обращении.
+    """
+    p = data_dir() / "local"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 _downloads_override: Path | None = None
 
 

@@ -14,7 +14,9 @@ from fastapi.responses import FileResponse
 
 from streaming import ranges
 
-MIME = {".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".webm": "audio/webm", ".ogg": "audio/ogg"}
+MIME = {".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".webm": "audio/webm", ".ogg": "audio/ogg",
+        # S15: форматы локальной музыки (backend/localmusic.py)
+        ".weba": "audio/webm", ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac", ".wav": "audio/wav"}
 
 
 def mime(path: Path) -> str:

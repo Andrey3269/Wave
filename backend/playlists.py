@@ -9,13 +9,14 @@ import json
 import time
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import library
 import userdata
 from domain import snapshot
 
 router = APIRouter(prefix="/api", tags=["playlists"])
+ORDER_MAX = 10_000                      # S15: сколько треков можно переставить одним запросом
 # Таблицы playlists и playlist_tracks создаёт persistence/migrations.py (версия схемы v1).
 
 
@@ -111,6 +112,43 @@ def add_track(pid: int, t: userdata.TrackIn):
             return {"added": False}                   # такой трек в плейлисте уже есть
         db.execute("UPDATE playlists SET updated_at = ? WHERE id = ?", (time.time(), pid))
     return {"added": True}
+
+
+class OrderIn(BaseModel):
+    """Новый порядок треков: ключи «источник:id» в нужной последовательности (S15)."""
+    keys: list[str] = Field(..., max_length=ORDER_MAX)
+
+
+@router.patch("/playlists/{pid}/tracks/order")
+def reorder_tracks(pid: int, body: OrderIn):
+    """
+    Перестановка треков плейлиста (S15) — одной транзакцией: проверка плейлиста, состава и запись позиций.
+
+    keys — каждый видимый трек плейлиста (тот, что отдаёт GET /api/playlists/{pid}) ровно один раз. Дубли и чужие
+    ключи → 400; плейлист изменился с момента загрузки (трек добавлен или удалён) → 409, порядок не меняется.
+    Строки, которые GET пропускает как недопустимые (S13), остаются в плейлисте и встают после видимых в прежнем
+    порядке: клиент о них не знает и не может их упорядочить.
+    """
+    keys = body.keys
+    if any(not isinstance(k, str) or len(k) > 300 for k in keys):
+        raise HTTPException(400, "Некорректный ключ трека.")
+    if len(set(keys)) != len(keys):
+        raise HTTPException(400, "Трек указан в новом порядке несколько раз.")
+    with library.transaction() as db:
+        _require(db, pid)
+        rows = db.execute("SELECT id, key, data FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+                          (pid,)).fetchall()
+        visible = [r for r in rows if snapshot.read_snapshot(r["data"], "playlist_tracks", r["key"]) is not None]
+        by_key = {r["key"]: r for r in visible}
+        if any(k not in by_key for k in keys):
+            raise HTTPException(400, "В новом порядке есть трек, которого нет в этом плейлисте. Обнови страницу.")
+        if len(keys) != len(visible):
+            raise HTTPException(409, "Плейлист изменился: в нём есть треки, которых нет в новом порядке. Обнови страницу.")
+        hidden = [r for r in rows if r["key"] not in by_key]
+        ordered = [by_key[k] for k in keys] + hidden
+        db.executemany("UPDATE playlist_tracks SET position = ? WHERE id = ?", [(i, r["id"]) for i, r in enumerate(ordered)])
+        db.execute("UPDATE playlists SET updated_at = ? WHERE id = ?", (time.time(), pid))
+    return {"ok": True}
 
 
 # `:path` — как у избранного: трек с «/» в id (сохранённый до проверки формата) тоже удаляется.

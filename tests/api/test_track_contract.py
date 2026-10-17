@@ -24,7 +24,7 @@ def test_track_model_fields():
     assert required == REQUIRED
 
 
-@pytest.mark.parametrize("source", ["local", "spotify", "yandex", ""])
+@pytest.mark.parametrize("source", ["spotify", "yandex", "", "LOCAL"])   # S15: "local" — допустимый источник
 def test_track_source_is_closed_set(source):
     with pytest.raises(ValidationError):
         main.Track(id="x", source=source, title="t", artist="a", artists=[], stream_url="/x")
@@ -56,7 +56,7 @@ def test_openapi_exposes_track_schema(api):
     assert r.status_code == 200
     props = r.json()["components"]["schemas"]["Track"]["properties"]
     assert set(props) == TRACK_FIELDS
-    assert props["source"]["enum"] == ["yt", "sc"]
+    assert props["source"]["enum"] == ["yt", "sc", "local"]                   # S15: аддитивно — локальная музыка
 
 
 def test_downloaded_track_shape(db):

@@ -33,6 +33,8 @@ def register_cache_clear(fn: Callable[[], None]) -> None:
 
 class TrackIn(BaseModel):
     """
+    S15: источник local — трек, импортированный в Wave (backend/localmusic.py); id выдаёт сервер (16 hex).
+
     Снимок трека для избранного, истории и плейлистов. Поля и типы — как у main.Track (находка M6).
 
     S13 (M6, валидация): id обязан быть в формате своего источника (иначе 422); stream_url клиент по-прежнему
@@ -40,7 +42,7 @@ class TrackIn(BaseModel):
     публичная ссылка — только из разрешённых списков (domain/snapshot.py), иначе сохраняются как null.
     """
     id: str
-    source: Literal["yt", "sc"]
+    source: Literal["yt", "sc", "local"]
     title: str
     artist: str
     artists: list[str] = []
@@ -67,7 +69,7 @@ class TrackIn(BaseModel):
 
 
 class KeyIn(BaseModel):
-    source: Literal["yt", "sc"]
+    source: Literal["yt", "sc", "local"]
     id: str
 
     @model_validator(mode="after")
@@ -504,6 +506,17 @@ def list_history(limit: int = Query(20, ge=1, le=50), offset: int = Query(0, ge=
 def clear_history():
     _q("DELETE FROM history")
     return {"ok": True}
+
+
+# S15: удаление одной записи «Недавно слушали». Экран истории показывает трек один раз (GROUP BY key), поэтому запись —
+# это трек: удаляются все его прослушивания и пропуски, остальная история не меняется. `:path` — как у избранного:
+# снимок с «/» в id (сохранённый до проверки формата) тоже можно удалить.
+@router.delete("/history/{source}/{track_id:path}")
+def remove_history_entry(source: str, track_id: str):
+    if len(source) > 16 or len(track_id) > 256:
+        raise HTTPException(400, "Некорректный идентификатор трека.")
+    cur = library.db.execute("DELETE FROM history WHERE key = ?", (f"{source}:{track_id}",))
+    return {"ok": True, "removed": cur.rowcount}
 
 
 def recent_plays(n: int = 300) -> list[dict]:

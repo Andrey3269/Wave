@@ -239,7 +239,7 @@ def test_profile_without_s10_state_and_other_data_untouched(api):
     assert api.profile.sql("SELECT key, value FROM settings ORDER BY key") == settings_before
     assert api.get("/api/settings").json()["values"]["theme"] == "light"
     assert pl["id"]
-    assert api.profile.sql("PRAGMA user_version")[0][0] == 2                  # S10 схему не меняла; v2 — таблица S14
+    assert api.profile.sql("PRAGMA user_version")[0][0] == 3                  # S10 схему не меняла; v2 — S14, v3 — S15
 
 
 def test_concurrent_patches_and_puts_keep_valid_json(api):

@@ -9,6 +9,9 @@
 * v2 (S14) — таблица `rec_exclusions`: исключения из рекомендаций (трек или исполнитель). Только новая таблица,
   существующие таблицы и строки не меняются. Версии Wave S6–S13 (знают до v1) базу v2 не откроют (п. 1 ниже);
   для отката на них — резервная копия `backups/wave-<дата>-v1.db`, сделанная при обновлении.
+* v3 (S15) — таблицы `favorite_items` (избранные альбомы и исполнители) и `local_tracks` (локальная музыка,
+  импортированная в Wave). Только новые таблицы, прежние таблицы и строки не меняются. Версии Wave до S15 (знают
+  до v2) базу v3 не откроют; для отката — копия `backups/wave-<дата>-v2.db`, сделанная при обновлении.
 
 Порядок обновления базы (`migrate`):
 1. Номер версии больше известного → ошибка запуска: база от более новой Wave, трогать её нельзя.
@@ -35,7 +38,7 @@ from typing import Callable
 
 log = logging.getLogger("musicmeta.db")
 
-CURRENT_VERSION = 2
+CURRENT_VERSION = 3
 BACKUP_KEEP = 3                     # сколько последних резервных копий хранить
 
 # ---------------------------------------------------------------------------
@@ -76,6 +79,8 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "playlists": ("id", "name", "created_at", "updated_at"),
     "playlist_tracks": ("id", "playlist_id", "position", "key", "data", "added_at"),
     "rec_exclusions": ("kind", "value", "label", "created_at"),                   # v2
+    "favorite_items": ("kind", "source", "item_id", "data", "added_at"),          # v3
+    "local_tracks": ("id", "title", "artist", "album", "duration", "ext", "size", "sha256", "created_at"),  # v3
 }
 
 
@@ -111,7 +116,32 @@ def _v2(con: sqlite3.Connection) -> None:
         con.execute(ddl)
 
 
-MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1, 2: _v2}
+# ---------------------------------------------------------------------------
+# v3 (S15): библиотека.
+# * favorite_items — избранные альбомы и исполнители (карточка каталога в data, JSON). Ключ (kind, source, item_id):
+#   повторное добавление не создаёт дубль. Избранные треки по-прежнему в favorites (их формат не меняется).
+# * local_tracks — аудиофайлы, импортированные пользователем. Файл лежит в <data>/local/<id><ext>; путь из базы не
+#   читается: имя файла строится из id (16 hex) и расширения из белого списка (backend/localmusic.py). sha256 —
+#   повторный импорт того же файла не создаёт копию.
+# ---------------------------------------------------------------------------
+V3_TABLES = (
+    "CREATE TABLE IF NOT EXISTS favorite_items ("
+    " kind TEXT NOT NULL CHECK (kind IN ('album', 'artist')),"
+    " source TEXT NOT NULL, item_id TEXT NOT NULL, data TEXT NOT NULL, added_at REAL NOT NULL,"
+    " PRIMARY KEY (kind, source, item_id))",
+    "CREATE TABLE IF NOT EXISTS local_tracks ("
+    " id TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT, duration INTEGER,"
+    " ext TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL UNIQUE, created_at REAL NOT NULL)",
+)
+
+
+def _v3(con: sqlite3.Connection) -> None:
+    """v2 → v3: новые таблицы favorite_items и local_tracks. Данные других таблиц не затрагиваются."""
+    for ddl in V3_TABLES:
+        con.execute(ddl)
+
+
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _v1, 2: _v2, 3: _v3}
 
 
 # ---------------------------------------------------------------------------

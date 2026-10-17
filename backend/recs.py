@@ -38,8 +38,10 @@ from pydantic import BaseModel, Field, model_validator
 
 import providers
 import recs_store
+from localmusic import UNKNOWN_ARTIST
 import userdata
 from domain import snapshot
+from domain.models import SOURCE_LOCAL
 from providers import youtube_music as yt_provider
 
 log = logging.getLogger("musicmeta.recs")
@@ -118,13 +120,19 @@ def _album(d: dict) -> str | None:
     return f"{_name(d.get('album'))}|{_name(d.get('artist'))}" if _name(d.get("album")) else None
 
 
+def _signal(t: dict) -> bool:
+    """S15: локальный файл без исполнителя в имени — не сигнал вкуса (искать в источниках «Неизвестного исполнителя»
+    незачем). Локальный трек с исполнителем учитывается, как любой другой."""
+    return not (t.get("source") == SOURCE_LOCAL and t.get("artist") == UNKNOWN_ARTIST)
+
+
 @router.get("/recommendations")
 async def recommendations(request: Request, source: str | None = None, id: str | None = None, title: str = "",
                           exclude: str = "", limit: int = Query(24, ge=1, le=50),
                           page: int = Query(0, ge=0, le=500), salt: int = Query(0, ge=0)):
     plays = userdata.recent_plays(300)
     since = recs_store.reset_at()
-    favs = userdata.favorite_tracks(since)                   # сигналы: только избранное после сброса
+    favs = [t for t in userdata.favorite_tracks(since) if _signal(t)]   # сигналы: только избранное после сброса
     liked = favs if since is None else userdata.favorite_tracks()
     pref = source if source in ("yt", "sc") else userdata.get_setting("default_source", "yt")
     banned_tracks, banned_artists = recs_store.excluded()
@@ -133,7 +141,7 @@ async def recommendations(request: Request, source: str | None = None, id: str |
     played, skips, artist_plays, artist_skips, display = Counter(), Counter(), Counter(), Counter(), {}
     for p in plays:
         played[p["key"]] += 1
-        if since is not None and p["played_at"] <= since:
+        if since is not None and p["played_at"] <= since or not _signal(p["track"]):
             continue
         d = p["track"]
         a = _name(d["artist"])

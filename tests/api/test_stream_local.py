@@ -95,7 +95,8 @@ def test_multiple_ranges_multipart(local):
 
 
 @pytest.mark.parametrize("ext, mime", [(".m4a", "audio/mp4"), (".mp3", "audio/mpeg"), (".webm", "audio/webm"),
-                                       (".ogg", "audio/ogg"), (".flac", "audio/mp4")])
+                                       (".ogg", "audio/ogg"), (".flac", "audio/flac"),   # S15: flac, wav — локальная музыка
+                                       (".wav", "audio/wav"), (".xyz", "audio/mp4")])
 def test_mime_by_extension(api, ext, mime):
     add_download(api.profile, ext=ext)
     r = api.get(PATH, headers={"Range": "bytes=0-1"})

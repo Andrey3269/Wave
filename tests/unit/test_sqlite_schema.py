@@ -21,6 +21,8 @@ EXPECTED_COLUMNS = {
     "playlists": ["id", "name", "created_at", "updated_at"],
     "playlist_tracks": ["id", "playlist_id", "position", "key", "data", "added_at"],
     "rec_exclusions": ["kind", "value", "label", "created_at"],                   # S14, схема v2
+    "favorite_items": ["kind", "source", "item_id", "data", "added_at"],          # S15, схема v3
+    "local_tracks": ["id", "title", "artist", "album", "duration", "ext", "size", "sha256", "created_at"],  # S15, v3
 }
 
 
@@ -53,9 +55,9 @@ def test_schema_v0(db):
 
 
 def test_schema_version_is_current(db):
-    """S6: версия схемы записана в user_version (до S6 было 0 — версионирования не было). S14 — v2."""
+    """S6: версия схемы записана в user_version (до S6 было 0 — версионирования не было). S14 — v2, S15 — v3."""
     from persistence import migrations
-    assert db.sql("PRAGMA user_version") == [(migrations.CURRENT_VERSION,)] == [(2,)]
+    assert db.sql("PRAGMA user_version") == [(migrations.CURRENT_VERSION,)] == [(3,)]
 
 
 def test_init_is_idempotent_and_keeps_data(db):

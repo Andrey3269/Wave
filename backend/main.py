@@ -26,9 +26,11 @@ from pydantic import BaseModel
 
 import applog
 import catalog
+import collection
 import diagnostics
 import jsruntime
 import library
+import localmusic
 import paths
 import playback
 import playlists
@@ -163,6 +165,7 @@ async def lifespan(app: FastAPI):
     library.init()  # локальный индекс загрузок (SQLite)
     userdata.init()  # избранное, история, настройки
     playlists.init()  # локальные плейлисты
+    localmusic.init()  # S15: локальная музыка — убрать оборванные импорты
     # Недокачанные загрузки прошлого запуска — во всех проверенных каталогах загрузок (S11). Обход диска — в потоке;
     # старт ждёт его не дольше downloads.CLEANUP_STARTUP_WAIT (недоступный сетевой диск), остальное — в фоне
     await startup_cleanup()
@@ -219,6 +222,8 @@ app.include_router(downloads_router)  # /api/downloads, /api/local
 app.include_router(userdata.router)  # /api/favorites, /api/history, /api/settings
 app.include_router(playback.router)  # /api/player/state: очередь и позиция между запусками (S10)
 app.include_router(playlists.router)  # /api/playlists
+app.include_router(localmusic.router)  # S15: /api/library/local — локальная музыка
+app.include_router(collection.router)  # S15: /api/library — альбомы и исполнители в избранном, экспорт и импорт
 app.include_router(recs.router)  # /api/recommendations
 app.include_router(catalog.router)  # /api/search/{artists|albums}, /api/artist, /api/album
 

@@ -17,7 +17,10 @@ from pydantic import BaseModel
 TRACK_ID_RE: dict[str, re.Pattern] = {
     "yt": re.compile(r"^[A-Za-z0-9_-]{11}$"),
     "sc": re.compile(r"^\d{1,15}$"),
+    # S15: локальный трек, импортированный в Wave (backend/localmusic.py) — 16 hex-символов, выдаёт сервер
+    "local": re.compile(r"^[0-9a-f]{16}$"),
 }
+SOURCE_LOCAL = "local"
 
 # browseId альбома YouTube Music. Плейлисты (VL…, PL…, OLAK5uy_…) сюда не подходят: их за альбом не выдаём.
 ALBUM_ID_RE = re.compile(r"^MPRE[\w-]{1,80}$")
@@ -30,7 +33,7 @@ def album_id_or_none(value) -> str | None:
 
 class Track(BaseModel):
     id: str                                  # ID внутри источника (videoId и т.п.)
-    source: Literal["yt", "sc"]        # источник
+    source: Literal["yt", "sc", "local"]   # источник (S15: local — файл, импортированный в Wave)
     title: str
     artist: str                              # для отображения: "A, B"
     artists: list[str]
