@@ -2665,6 +2665,45 @@ def main() -> int:
         ring = au.evaluate(FOCUS_RING)
         au.evaluate("(t) => { document.documentElement.dataset.theme = t }", theme0)
         check(ring["ok"] and "mixcard__open" in ring["who"], f"светлая тема: рамка карточки микса с тёмной линией внутри ({ring})")
+
+        # Перезагрузка ленты во время подгрузки: прежняя подгрузка больше не держит «Загрузить ещё» — ни после
+        # «Повторить» на главной, ни после «Главной» с возвратом со страницы трека (home.pending сброшен в loadHome)
+        def held_n(n: int) -> int:
+            for _ in range(60):
+                if len(RECS_HELD) >= n:
+                    break
+                au.wait_for_timeout(100)
+            return len(RECS_HELD)
+
+        feed_ready = "document.querySelector('#hero').dataset.feed === 'ready'"
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        RECS_HELD.clear()
+        RECS.update(paged=True, mode="partial")
+        au.click(".brand")
+        au.wait_for_function(feed_ready)
+        au.wait_for_selector("#home-empty:not([hidden]) .empty__retry")
+        RECS["hold"] = True
+        au.evaluate(to_bottom)
+        n1 = held_n(1)
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        au.click("#home-empty .empty__retry")
+        au.wait_for_function(feed_ready)
+        au.evaluate(to_bottom)
+        n2 = held_n(2)
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        RECS["mode"] = "normal"
+        au.click(".brand")
+        au.wait_for_function(feed_ready)
+        au.click(".hero [data-do=now]")
+        au.wait_for_selector("#view-now:not([hidden])")
+        au.click("[data-do=back]")
+        au.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        au.evaluate(to_bottom)
+        n3 = held_n(3)
+        RECS.update(hold=False, paged=False, mode="normal")
+        recs_release()
+        check((n1, n2, n3) == (1, 2, 3),
+              f"перезагрузка ленты посреди подгрузки («Повторить», «Главная» и возврат): следующая подгрузка уходит сразу ({n1}, {n2}, {n3})")
         au.close()
 
         browser.close()
