@@ -69,6 +69,7 @@ def folder_path(folder: str, root: str | None = None) -> Path:
 # источником и id, а id — в формате источника. Строка с root=C:\Users\Имя и folder="Documents" больше не даёт
 # прочитать файлы из Documents. Файл — не ссылка и лежит прямо в этой папке.
 _warned: set[str] = set()
+_WARN_MAX = 256                  # S16: о каждой плохой строке пишем один раз, но множество не растёт без предела
 _SEP = re.compile(r"[/\\:\x00]")
 
 
@@ -79,7 +80,7 @@ def _component(name) -> bool:
 
 
 def _unsafe(row: sqlite3.Row, why: str) -> None:
-    if row["key"] not in _warned:
+    if row["key"] not in _warned and len(_warned) < _WARN_MAX:
         _warned.add(row["key"])
         log.warning("Запись индекса загрузок %s пропущена: %s", row["key"], why)
 

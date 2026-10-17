@@ -24,14 +24,19 @@ export const themeMixes = THEMES.map((th) => ({
     return (await api(`/api/search?q=${enc(q)}&limit=40&sources=${state.source}`)).tracks || [];
   },
 }));
+// S16: радио-миксы запоминаются вместе со своими треками (до 40 на микс), поэтому их не больше RADIO_MEMO_MAX:
+// давно не открытый вытесняется (Map хранит порядок вставки — обращение переносит микс в конец)
 const radioMemo = new Map();
+const RADIO_MEMO_MAX = 32;
 function radioMix(t) {
   const id = `radio:${trackKey(t)}`;
-  if (!radioMemo.has(id)) {
-    radioMemo.set(id, { id, title: `Похоже на «${t.title}»`, sub: `Радио · ${t.artist}`, cover: t.cover, fresh: false,
-      async load() { return recsResult(await api(`/api/recommendations?limit=40&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`)).tracks; } });
-  }
-  return radioMemo.get(id);
+  let mix = radioMemo.get(id);
+  if (mix) radioMemo.delete(id);
+  else mix = { id, title: `Похоже на «${t.title}»`, sub: `Радио · ${t.artist}`, cover: t.cover, fresh: false,
+    async load() { return recsResult(await api(`/api/recommendations?limit=40&source=${t.source}&id=${enc(t.id)}&title=${enc(t.title)}`)).tracks; } };
+  radioMemo.set(id, mix);
+  while (radioMemo.size > RADIO_MEMO_MAX) radioMemo.delete(radioMemo.keys().next().value);
+  return mix;
 }
 const MIX_TTL = 10 * 60 * 1000;
 /** Треки микса (без дублей). Тематический микс, впервые получив треки, запоминает обложку (bus "mix-covers"). */

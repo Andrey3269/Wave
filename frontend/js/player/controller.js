@@ -367,11 +367,17 @@ function replayCurrent(user = false) {
  * через yt-dlp (это занимает секунды). К моменту клика трек стартует почти сразу.
  */
 const warmed = new Map();                  // id -> время прогрева
+const WARM_FRESH = 20 * 60 * 1000, WARMED_MAX = 200;
 export function warmTrack(t) {
   if (!t) return;
   const last = warmed.get(t.id);
-  if (last && Date.now() - last < 20 * 60 * 1000) return;   // ссылка на сервере живёт часами
+  if (last && Date.now() - last < WARM_FRESH) return;       // ссылка на сервере живёт часами
   warmed.set(t.id, Date.now());
+  if (warmed.size > WARMED_MAX) {                            // S16: отметки старше 20 мин больше не нужны
+    const old = Date.now() - WARM_FRESH;
+    for (const [id, at] of warmed) if (at < old) warmed.delete(id);
+    while (warmed.size > WARMED_MAX) warmed.delete(warmed.keys().next().value);
+  }
   // Сервер сразу отвечает 202/204 и в фоне получает ссылку + первую порцию трека
   fetch(`${t.stream_url}?warm=1`, { cache: "no-store" })
     .then((r) => { if (r.status !== 202 && r.status !== 204) warmed.delete(t.id); })  // 503: занят, позже

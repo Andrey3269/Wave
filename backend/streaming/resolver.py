@@ -21,6 +21,7 @@ from yt_dlp.utils import DownloadError
 
 import jsruntime
 from domain.models import TRACK_ID_RE
+from providers.cache import TTLCache
 from streaming import config, errors
 
 log = logging.getLogger("musicmeta.stream")
@@ -35,6 +36,11 @@ DEFAULT_TTL = 30 * 60             # TTL ссылки, если в ней нет 
 EXPIRY_MARGIN = 120               # обновляем ссылку за 2 минуты до истечения
 MAX_PARALLEL_RESOLVES = 4         # одновременных запусков yt-dlp
 HLS_PARALLEL = 6                  # одновременных соединений HLS-прокси с источником
+# S16: кэш ссылок ограничен по числу записей и сроку. Раньше это был dict, который при 512+ записях чистил только
+# протухшие, а живые (ссылки YouTube живут ~6 ч) копились без предела за долгий сеанс. Ссылка всё равно
+# проверяется по своему expires_at (alive); RESOLVE_CACHE_TTL — потолок на случай ссылки с далёким expire.
+RESOLVE_CACHE_ITEMS = 256
+RESOLVE_CACHE_TTL = 6 * 3600
 
 # Из заголовков yt-dlp оставляем только безопасные. Accept-Encoding задаём сами:
 # сжатие вместе с Range ломает подсчёт байтов.
@@ -106,8 +112,8 @@ class NoPlayableFormat(Exception):
 
 
 # Ссылки — просто данные: они не привязаны к event loop и переживают перезапуск uvicorn сторожем
-# лаунчера, поэтому живут на уровне модуля.
-_cache: dict[str, Resolved] = {}
+# лаунчера, поэтому живут на уровне модуля. LRU + TTL (S16): давно не нужные ссылки вытесняются.
+_cache: TTLCache[Resolved] = TTLCache(maxsize=RESOLVE_CACHE_ITEMS, ttl=RESOLVE_CACHE_TTL)
 
 
 class ResolverState:
@@ -355,10 +361,7 @@ async def _resolve_uncached(rs: ResolverState, source: str, track_id: str) -> Re
             raise errors._runtime_error(source, errors._err(502, "internal", "Внутренняя ошибка резолвера"),
                                         None) from exc
 
-    _cache[key] = res
-    if len(_cache) > 512:  # чистим протухшие записи
-        for k in [k for k, v in _cache.items() if not v.alive()]:
-            _cache.pop(k, None)
+    _cache.set(key, res)            # переполнение: сначала устаревшие, затем давно не использованные (S16)
     return res
 
 
