@@ -269,3 +269,19 @@ def test_playlist_with_hidden_row_is_recognised_on_reimport(api):
                (pid, json.dumps({"id": "bad/id", "source": "yt"})))
     body = _post(api, api.get("/api/library/export").json()).json()
     assert body["skipped"]["duplicate_playlists"] == 2 and body["imported"]["playlists"] == 0
+
+
+def test_one_to_one_with_equal_timestamps(harness, wave_profile, monkeypatch):
+    """Windows: time.time() шагает по ~15 мс — даты добавления совпадают. Порядок списков после импорта тот же."""
+    import time as _time
+    with harness.client() as api:
+        with monkeypatch.context() as m:
+            m.setattr(_time, "time", lambda: 1_700_000_000.0)
+            _fill(api)
+        doc = api.get("/api/library/export").json()
+        state = _state(api)
+    _fresh_profile(wave_profile)
+    with harness.client() as api:
+        assert _post(api, doc).status_code == 200
+        assert _state(api) == state
+        assert _no_time(api.get("/api/library/export").json()) == _no_time(doc)

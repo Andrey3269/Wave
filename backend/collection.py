@@ -406,7 +406,8 @@ def apply_import(doc: ExportIn, settings: dict[str, str]) -> dict:
     dump = lambda t: json.dumps(userdata._dump(t), ensure_ascii=False)       # noqa: E731
     with library.transaction() as db:
         local_ids = {r[0] for r in db.execute("SELECT id FROM local_tracks")}
-        for e in doc.favorites.tracks:
+        # Записи — от старых к новым (в файле новые сверху): при равных датах порядок по rowid остаётся прежним
+        for e in reversed(doc.favorites.tracks):
             if not _keep(e.track, local_ids):
                 skipped["missing_local"] += 1
                 continue
@@ -415,7 +416,7 @@ def apply_import(doc: ExportIn, settings: dict[str, str]) -> dict:
             imported["tracks"] += cur.rowcount
             skipped["existing"] += 1 - cur.rowcount
         for kind, entries in (("album", doc.favorites.albums), ("artist", doc.favorites.artists)):
-            for e in entries:
+            for e in reversed(entries):
                 cur = db.execute("INSERT OR IGNORE INTO favorite_items (kind, source, item_id, data, added_at)"
                                  " VALUES (?, ?, ?, ?, ?)", (kind, e.item.source, e.item.id,
                                                              json.dumps(e.item.card(), ensure_ascii=False), e.added_at))

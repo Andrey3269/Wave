@@ -46,7 +46,7 @@ def list_playlists():
     rows = library._q(
         "SELECT p.id, p.name, p.updated_at, COUNT(t.id) AS n,"
         " (SELECT data FROM playlist_tracks WHERE playlist_id = p.id ORDER BY position LIMIT 1) AS first"
-        " FROM playlists p LEFT JOIN playlist_tracks t ON t.playlist_id = p.id GROUP BY p.id ORDER BY p.updated_at DESC")
+        " FROM playlists p LEFT JOIN playlist_tracks t ON t.playlist_id = p.id GROUP BY p.id ORDER BY p.updated_at DESC, p.id DESC")
     return {"items": [{"id": r["id"], "name": r["name"], "count": r["n"], "cover": _first_cover(r["first"])} for r in rows]}
 
 

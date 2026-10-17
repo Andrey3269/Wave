@@ -426,8 +426,9 @@ def remove_favorite(source: str, track_id: str):
 def favorite_tracks(since: float | None = None) -> list[dict]:
     """Избранное, новые сверху. since (S14, сброс сигналов рекомендаций) — только добавленное позже этой отметки."""
     if since is None:
-        return _snapshots(_q("SELECT key, data FROM favorites ORDER BY added_at DESC"), "favorites")
-    return _snapshots(_q("SELECT key, data FROM favorites WHERE added_at > ? ORDER BY added_at DESC", (since,)), "favorites")
+        return _snapshots(_q("SELECT key, data FROM favorites ORDER BY added_at DESC, rowid DESC"), "favorites")
+    return _snapshots(_q("SELECT key, data FROM favorites WHERE added_at > ? ORDER BY added_at DESC, rowid DESC", (since,)),
+                      "favorites")
 
 
 # ---------- история ----------
