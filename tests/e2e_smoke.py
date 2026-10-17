@@ -2116,6 +2116,9 @@ def main() -> int:
         print("Доступность (S12): рамка фокуса видна и не обрезана (обход Tab)")
 
         def walk_check(label: str, steps: int, key: str = "Tab", start: str | None = None, kinds: int = 3) -> None:
+            # конечные анимации появления (панель очереди въезжает справа 0.18 с) должны закончиться: иначе рамка первого
+            # элемента ещё за краем окна (сбой CI Linux 39019158518); бесконечные (эквалайзер, скелетоны) не ждём
+            ax.wait_for_function("document.getAnimations().every((a) => a.playState !== 'running' || a.effect.getTiming().iterations === Infinity)")
             if start:
                 ax.focus(start)
             bad, n = tab_walk(ax, steps, key)
