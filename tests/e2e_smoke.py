@@ -2932,8 +2932,10 @@ def main() -> int:
               and lb.get_attribute(".nav__item[aria-current='page']", "data-view") == "collection",
               "«Локальная музыка» открывается из коллекции: пустое состояние подсказывает «Добавить файлы»")
         local_wav = wav(4)
+        # список перезагружается после импорта (скелетон, затем строки): ждём, пока он уляжется
+        LOCAL_ONE_ROW = "document.querySelectorAll('#tracks .row').length === 1 && !document.querySelector('#tracks .row--skel')"
         lb.set_input_files("#local-file", files=[{"name": "Тестовый Исполнитель - Локальный трек.wav", "mimeType": "audio/wav", "buffer": local_wav}])
-        lb.wait_for_selector("#tracks .row .track__title")
+        lb.wait_for_selector("#tracks .row:not(.row--skel) .track__title")
         row = lb.evaluate("""(() => { const r = document.querySelector('#tracks .row'); return [r.dataset.key, r.querySelector('.track__title').textContent,
             r.querySelector('.track__artist').textContent, r.querySelector('.src use').getAttribute('href'), r.querySelector('.track__dl').hidden] })()""")
         local_key = row[0]
@@ -2957,10 +2959,10 @@ def main() -> int:
         lb.wait_for_function("(k) => fetch('/api/favorites').then(r => r.json()).then(d => d.items.some(t => `${t.source}:${t.id}` === k))", arg=local_key)
         check(True, "локальный трек добавляется в «Нравится»")
         lb.set_input_files("#local-file", files=[{"name": "другое имя.wav", "mimeType": "audio/wav", "buffer": local_wav}])
-        check(wait_toast(lb, "уже были в Wave: 1") and lb.locator("#tracks .row").count() == 1,
+        check(wait_toast(lb, "уже были в Wave: 1") and poll(lb, LOCAL_ONE_ROW),
               "повторный импорт того же файла не создаёт копию")
         lb.set_input_files("#local-file", files=[{"name": "не аудио.mp3", "mimeType": "audio/mpeg", "buffer": b"MZ" + bytes(200)}])
-        check(wait_toast(lb, "не удалось: не аудио.mp3") and lb.locator("#tracks .row").count() == 1,
+        check(wait_toast(lb, "не удалось: не аудио.mp3") and poll(lb, LOCAL_ONE_ROW),
               "файл, который не похож на аудио, отклонён с понятной причиной")
 
         # альбом и исполнитель в коллекции
