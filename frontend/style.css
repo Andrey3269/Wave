@@ -360,7 +360,7 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 /* S12: рамка фокуса — у всей карточки, двухцветная (акцент + тёмная линия внутри): видна и на коралловой обложке */
 .mixcard__open:focus-visible { outline: none; }
 .mixcard:has(.mixcard__open:focus-visible) { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
-.mixcard:has(.mixcard__open:focus-visible)::after { content: ""; position: absolute; inset: 2px; border: 2px solid var(--bg); border-radius: calc(var(--r-m) - 3px); pointer-events: none; }
+.mixcard:has(.mixcard__open:focus-visible)::after { content: ""; position: absolute; inset: 2px; border: 2px solid #101113; border-radius: calc(var(--r-m) - 3px); pointer-events: none; }
 .mixcard__cv { width: 100%; aspect-ratio: 16 / 10; }
 .mixcard__body { display: flex; flex-direction: column; gap: 2px; padding: 12px 60px 14px 14px; }
 .mixcard__title, .mixcard__sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -480,8 +480,14 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
    сдвигает строку (при overflow: hidden браузер прокручивал её к имени, и сдвиг оставался). */
 .track__artist, .mp__artist, .fs__artist { display: flex; min-width: 0; overflow: clip; text-overflow: clip; }
 .fs__artist { justify-content: center; }
-.track__artist > .who, .mp__artist > .who, .fs__artist > .who { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.who__sep { flex: none; white-space: pre; }
+/* Место делится между именами поровну (flex-basis 0), имя не шире себя самого (max-width), освободившееся место
+   достаётся остальным. Так при многих исполнителях каждое имя получает свою долю строки, а не сжимается до нескольких
+   пикселей, как при сжатии пропорционально длине (аудит S12, раунд 2). */
+.track__artist > .who, .mp__artist > .who, .fs__artist > .who { flex: 1 1 0; max-width: max-content; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Пробел разделителя сохраняется только в flex-строках (там он отдельный flex-элемент); в обычном тексте (страница
+   трека) разделитель — обычный текст и переносится вместе с именем, а не в начало следующей строки. */
+:is(.track__artist, .mp__artist, .fs__artist) > .who__sep { flex: none; white-space: pre; }
+.who__more { flex: none; padding-left: .4em; font-variant-numeric: tabular-nums; }   /* «+N»: остальные имена — на странице трека */
 
 /* ---------- 9. Коллекция и настройки ---------- */
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }

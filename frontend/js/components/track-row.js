@@ -20,12 +20,15 @@ export function setSource(node, source) {
  * Имена авторов трека: каждый отдельным элементом. Если источник дал id автора — это кнопка-ссылка на его страницу
  * (S12: доступна с клавиатуры, Enter и Space открывают страницу, трек не трогают); без id — обычный текст, ложной
  * ссылки нет. Узел node не должен лежать внутри другой кнопки: вложенные интерактивные элементы запрещены.
+ * max — сколько имён показывать в узкой строке (мини-плеер, полноэкранный плеер): остальные заменяет «+N» (полный
+ * список — на странице трека), чтобы каждое показанное имя было читаемым, а не сжималось до многоточия.
  */
-export function renderArtists(node, t) {
+export function renderArtists(node, t, max = Infinity) {
   const names = t.artists && t.artists.length ? t.artists : [t.artist];
   const ids = t.artist_ids && t.artist_ids.length ? t.artist_ids : (t.artist_id ? [t.artist_id] : []);
   node.replaceChildren();
-  names.forEach((name, i) => {
+  const shown = names.length > max ? names.slice(0, max) : names;
+  shown.forEach((name, i) => {
     if (i) node.append(mk("span", "who__sep", ", "));   // отдельным элементом: строка имён — flex (S12)
     if (!ids[i]) { node.append(mk("span", "who", name)); return; }
     const b = mk("button", "who is-link", name);
@@ -36,6 +39,12 @@ export function renderArtists(node, t) {
     b.title = label;
     node.append(b);
   });
+  if (shown.length < names.length) {
+    const rest = names.slice(shown.length);
+    const more = mk("span", "who__more", `+${rest.length}`);
+    more.title = `Ещё: ${rest.join(", ")}`;
+    node.append(more);
+  }
 }
 
 /** Кнопка «в избранное» любого вида (строка, очередь, мини-плеер, страница трека, баннер). */

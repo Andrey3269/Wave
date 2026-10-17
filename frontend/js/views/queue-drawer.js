@@ -11,7 +11,7 @@ import { toast } from "../components/toast.js";
 import { openMenu } from "../components/menu.js";
 import { paintFav } from "../components/track-row.js";
 import { toggleFav } from "../components/favorites.js";
-import { focusSafely, focusLost, rescueFocus } from "../components/focus.js";
+import { focusSafely, focusLost, rescueFocus, keyboardMode } from "../components/focus.js";
 
 // Правки очереди — методами модели (player/queue.js); здесь — то, что видит пользователь.
 // Баннер главной показывает «Далее»: после добавления и переноса он перерисовывается (bus "hero").
@@ -79,8 +79,8 @@ function renderDrawer() {
   el.queueList.replaceChildren(...(rows.length ? rows : [mk("li", "lyrics__empty", "Очередь пуста")]));
   el.queueList.querySelector(".is-current")?.scrollIntoView?.({ block: "nearest" });
 }
-// S12: панель очереди помнит, откуда её открыли. Если при закрытии (кнопка, Esc) фокус был в панели, он
-// возвращается на открывшую кнопку, а не пропадает вместе со скрытой панелью.
+// S12: панель очереди помнит, откуда её открыли. Если при закрытии с клавиатуры (Esc, Enter на «Закрыть») фокус был
+// в панели, он возвращается на открывшую кнопку, а не пропадает вместе со скрытой панелью.
 let queueOpener = null;
 export function toggleQueue() {
   if (!el.queue.hidden) { closeQueue(); return; }
@@ -94,7 +94,7 @@ export function closeQueue() {
   el.queue.hidden = true;
   const opener = queueOpener;
   queueOpener = null;
-  if (inside && !focusSafely(opener)) rescueFocus();
+  if (inside && keyboardMode() && !focusSafely(opener)) rescueFocus();   // закрыли мышью — фокус не переносим
 }
 /** Куда вернуть фокус после действия меню строки полноэкранной очереди: «⋯» того же трека, иначе строки на его
  *  месте (трек убран), иначе кнопка Play/Pause. Строки перерисовываются целиком, прежний узел «⋯» уже не годится. */
@@ -166,16 +166,14 @@ export function initQueueDrawer() {
     else if (b.dataset.q === "rm") queueRemove(i);
     else if (b.classList.contains("q__main")) playIndex(i);   // «играть сейчас»
     // S12: список перерисован целиком — фокус на ту же кнопку того же трека на новом месте, а если трек убран или
-    // кнопки у него больше нет (стал текущим, дошёл до края) — на строку, вставшую на это место
-    const fix = () => {
-      if (!focusLost() || el.queue.hidden) return;
-      const j = t ? queue.tracks.indexOf(t) : -1, kind = b.dataset.q ? `[data-q="${b.dataset.q}"]` : ".q__main";
-      const at = (k, sel) => el.queueList.querySelector(`${sel}[data-index="${k}"]`);
-      focusSafely(j >= 0 ? at(j, kind) : null) || focusSafely(at(j >= 0 ? j : i, ".q__main"))
-        || focusSafely([...el.queueList.querySelectorAll(".q__main")].pop()) || focusSafely($("#queue-close"));
-    };
-    fix();
-    requestAnimationFrame(fix);                          // «Играть сейчас» перерисовывает очередь по событию плеера
+    // кнопки у него больше нет (стал текущим, дошёл до края) — на строку, вставшую на это место. Перерисовка
+    // синхронная: правки очереди вызывают renderQueue сами, «Играть сейчас» — через событие "track", которое
+    // playIndex отправляет сразу (player/controller.js). После клика мышью фокус не переносим (focus.js).
+    if (!keyboardMode() || !focusLost() || el.queue.hidden) return;
+    const j = t ? queue.tracks.indexOf(t) : -1, kind = b.dataset.q ? `[data-q="${b.dataset.q}"]` : ".q__main";
+    const at = (k, sel) => el.queueList.querySelector(`${sel}[data-index="${k}"]`);
+    focusSafely(j >= 0 ? at(j, kind) : null) || focusSafely(at(j >= 0 ? j : i, ".q__main"))
+      || focusSafely([...el.queueList.querySelectorAll(".q__main")].pop()) || focusSafely($("#queue-close"));
   });
   $("#queue-close").addEventListener("click", closeQueue);
   $("#queue-clear").addEventListener("click", queueClearFlow);

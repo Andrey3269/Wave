@@ -39,7 +39,7 @@ function renderFs() {
   setCover(fs.cover, t.cover, 544);
   paintFsBg(t.cover);
   fs.title.textContent = t.title;
-  renderArtists(fs.artist, t);
+  renderArtists(fs.artist, t, 3);                         // узкая строка: не больше трёх имён (S12)
   const meta = [t.album, t.released ? String(t.released).slice(0, 4) : "", SOURCES[t.source]].filter(Boolean).join(" · ");
   fs.meta.textContent = meta;
   fs.meta.hidden = !meta;

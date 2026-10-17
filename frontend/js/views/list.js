@@ -8,7 +8,7 @@ import { play, togglePlay, setShuffle, scheduleWarm, warmTrack } from "../player
 import { buildRow, markPlaying } from "../components/track-row.js";
 import { buildCard, cardKey } from "../components/cards.js";
 import { setBlock, skelRows, skelCards, setMore } from "../components/skeleton.js";
-import { focusLost, focusSafely, rescueFocus } from "../components/focus.js";
+import { focusLost, focusSafely, rescueFocus, keyboardMode } from "../components/focus.js";
 import { openMenu } from "../components/menu.js";
 import { toggleFav } from "../components/favorites.js";
 
@@ -128,7 +128,7 @@ export async function fetchPage(append) {
     setMore(el.more, state.more ? "idle" : "none");
     // Подгрузка кнопкой, а страниц больше нет: кнопка скрылась вместе с фокусом — переносим его на первую новую строку;
     // новых нет (пустая страница, одни повторы) — на последнюю строку списка, иначе на заголовок экрана
-    if (moreFocused && focusLost()) {
+    if (moreFocused && keyboardMode() && focusLost()) {
       const last = isCards() ? el.cards.lastElementChild : el.tracks.lastElementChild?.querySelector(".track__play");
       focusSafely(firstNew) || focusSafely(last) || rescueFocus();
     }

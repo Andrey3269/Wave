@@ -168,6 +168,8 @@ M11 = {"page2": False}
 # или отдаётся (ok). Лента главной: RECS["paged"] — следующие страницы отдают новые треки (а не радио последнего),
 # RECS["fail_more"] — следующие страницы отвечают 502.
 MORE = {"mode": "fail", "held": []}
+# Следующие страницы ленты главной придерживаются, пока RECS["hold"] (S12, аудит 2): (route, page) до recs_release()
+RECS_HELD: list = []
 
 
 def sc_track(n: int) -> dict:
@@ -203,6 +205,17 @@ def more_release() -> None:
     """Отвечает на придержанные запросы второй страницы «more12» (S12)."""
     while MORE["held"]:
         js(MORE["held"].pop(0), more12_page(20))
+
+
+def recs_release() -> None:
+    """Отвечает на придержанные запросы следующих страниц ленты главной (S12, аудит 2)."""
+    while RECS_HELD:
+        route, page = RECS_HELD.pop(0)
+        try:
+            js(route, {"tracks": [track(1 + page * 24 + i, "Подборка") for i in range(24)], "personalized": False, "radio": False,
+                       "page": page, "failed_sources": [], "source_status": {"yt": "ok"}})
+        except Exception:                                              # запрос уже отменён страницей
+            pass
 
 
 def held_release() -> None:
@@ -306,6 +319,9 @@ def handle(route: Route) -> None:
                               "radio": True, "page": 0, "failed_sources": [], "source_status": {"yt": "ok"}})
         page = int(q.get("page", 0))
         mode = RECS["mode"]
+        if page and RECS.get("hold"):
+            RECS_HELD.append((route, page))
+            return None
         if page and RECS.get("fail_more"):
             return route.fulfill(status=502, content_type="application/json", body=json.dumps({"detail": "Источник не ответил"}))
         if page and RECS.get("paged"):
@@ -351,6 +367,10 @@ def handle(route: Route) -> None:
     if path == "/api/search" and q.get("q") == "s10h":                # короткие треки по 6 с (история, S10)
         return js(route, {"query": "s10h", "count": 4, "tracks": [{**track(300 + i), "duration": 6} for i in range(4)],
                           "failed_sources": [], "has_more": False})
+    if path == "/api/search" and q.get("q") == "many6":               # шесть исполнителей у одного трека (S12, аудит 2)
+        names = ["Первый Исполнитель", "Второй Исполнитель", "Третий Исполнитель", "Четвёртый", "Пятый Исполнитель", "Шестой"]
+        many = {**track(410), "artist": ", ".join(names), "artists": names, "artist_ids": [f"UCart{9100 + i}" for i in range(6)]}
+        return js(route, {"query": "many6", "count": 1, "tracks": [many], "failed_sources": [], "has_more": False})
     if path == "/api/search" and q.get("q") == "feat":                # несколько исполнителей, у одного нет id (S12)
         duo = {**track(400), "artist": "GSPD, Vtornik", "artists": ["GSPD", "Vtornik"], "artist_ids": ["UCart0001", "UCart0002"]}
         no_id = {**track(401), "artist": "Кино, Безымянный", "artists": ["Кино", "Безымянный"], "artist_id": "UCart0008",
@@ -513,7 +533,12 @@ FOCUS_RING = """() => {
   let box = a, cs = getComputedStyle(a);
   if (a.classList.contains("track__play")) { box = a.closest(".track"); cs = getComputedStyle(a, "::after"); }
   if (a.id === "np-lyrics") { box = a.parentElement; cs = getComputedStyle(box); }
-  if (a.classList.contains("mixcard__open")) { box = a.closest(".mixcard"); cs = getComputedStyle(box); }
+  if (a.classList.contains("mixcard__open")) {          // двухцветная рамка: акцент снаружи и тёмная линия внутри
+    box = a.closest(".mixcard"); cs = getComputedStyle(box);
+    const inner = getComputedStyle(box, "::after"), rgb = (inner.borderTopColor.match(/\\d+/g) || []).slice(0, 3).map(Number);
+    if (parseFloat(inner.borderTopWidth) < 2 || rgb.length < 3 || Math.max(...rgb) > 40)
+      return { ok: false, why: `нет тёмной линии внутри рамки карточки (${inner.borderTopWidth} ${inner.borderTopColor})`, who: who(a) };
+  }
   if (cs.outlineStyle === "none" || parseFloat(cs.outlineWidth) < 2) return { ok: false, why: "нет рамки", who: who(a) };
   if (!a.checkVisibility()) return { ok: false, why: "элемент не виден", who: who(a) };
   const r = box.getBoundingClientRect(), g = parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth);
@@ -2032,8 +2057,8 @@ def main() -> int:
         ax.keyboard.press("Enter")
         ax.wait_for_function("document.querySelector('#more').dataset.state === 'loading'")
         mb = ax.evaluate(more_btn, "#more")
-        ax.keyboard.press("Enter")
         ax.click("#more", force=True)                                # aria-disabled: Playwright без force не нажимает
+        ax.keyboard.press("Enter")                                   # и с клавиатуры (последнее действие — клавиша)
         ax.wait_for_timeout(300)
         check(mb["busy"] == "true" and mb["ad"] == "true" and not mb["disabled"] and mb["text"] == "Загружаем…"
               and ax.evaluate("document.activeElement.id") == "more" and len(more_reqs) == n + 2,
@@ -2446,6 +2471,177 @@ def main() -> int:
         ring = au.evaluate(FOCUS_RING)
         au.keyboard.press("Escape")
         check(ring["ok"] and "dlg-input" in ring["who"], f"диалог: поле ввода в фокусе с видимой рамкой ({ring})")
+
+        print("Доступность (S12): исправления по независимому аудиту, раунд 2")
+        # A: подгрузка ленты идёт, пользователь открыл страницу трека и вернулся — второй запрос не уходит, ответ первого
+        # дописывает карточки один раз
+        au.click(".brand")
+        au.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        au.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'")
+        RECS_HELD.clear()
+        RECS.update(paged=True, hold=True)
+        au.evaluate(to_bottom)
+        au.wait_for_function("document.querySelector('#home-more').dataset.state === 'loading'")
+        for _ in range(50):
+            if RECS_HELD:
+                break
+            au.wait_for_timeout(100)
+        held_first = len(RECS_HELD)
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        au.click(".hero [data-do=now]")                               # на главной мини-плеера нет: страница трека — из баннера
+        au.wait_for_selector("#view-now:not([hidden])")
+        au.click("[data-do=back]")
+        au.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        au.evaluate(to_bottom)
+        au.wait_for_timeout(800)
+        held_after, st = len(RECS_HELD), au.evaluate("document.querySelector('#home-more').dataset.state")
+        n_cards = au.locator("#new-grid .tcard").count()
+        recs_release()
+        try:                                                          # из 24 треков страницы новые — те, которых в ленте нет
+            au.wait_for_function("(n) => document.querySelectorAll('#new-grid .tcard').length > n", arg=n_cards, timeout=10000)
+            grown = True
+        except Exception:
+            grown = False
+        au.wait_for_timeout(600)
+        held_end = len(RECS_HELD)
+        titles = au.evaluate("[...document.querySelectorAll('#new-grid .tcard .tcard__title')].map((n) => n.textContent)")
+        fresh = 24 - len({1 + 24 + i for i in range(24)} & {20 + i for i in range(14)})   # страница 1 против радио трека
+        check(held_first == 1 and held_after == 1 and held_end == 0 and st == "loading" and grown
+              and len(titles) == len(set(titles)) == n_cards + fresh,
+              f"главная: возврат на главную во время подгрузки — без второго запроса, карточки дописаны один раз "
+              f"(запросов {held_first}→{held_after}, состояние {st}, карточек {n_cards}→{len(titles)}, ожидалось +{fresh}, разных {len(set(titles))})")
+        # подгрузка главной идёт, пользователь ушёл в поиск — «Загрузить ещё» поиска работает сразу
+        au.evaluate(to_bottom)
+        for _ in range(50):
+            if RECS_HELD:
+                break
+            au.wait_for_timeout(100)
+        held_home = len(RECS_HELD)
+        MORE["mode"] = "hold"
+        au_search("more12", 20)
+        srch_more: list[str] = []
+        on_srch = lambda r: srch_more.append(r.url) if "q=more12" in r.url and "offset=20" in r.url else None   # noqa: E731
+        au.on("request", on_srch)
+        au.evaluate(to_bottom)
+        for _ in range(50):
+            if srch_more:
+                break
+            au.wait_for_timeout(100)
+        au.remove_listener("request", on_srch)
+        more_release()
+        MORE["mode"] = "fail"
+        recs_release()                                                # ответ ленты, которую уже не показывают
+        RECS.update(paged=False, hold=False)
+        check(held_home == 1 and len(srch_more) == 1,
+              f"подгрузка ленты главной не мешает подгрузке поиска, открытого посреди неё ({held_home}, {len(srch_more)})")
+
+        # B: мышью — фокус после действия не переносится, пробел по-прежнему ставит паузу
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        au_search("gspd", 20)
+        au.locator("#tracks .row").nth(1).click(position={"x": 260, "y": 20})
+        playing = "(id) => { const a = document.querySelector('#audio'); return a.src.endsWith('/' + id) && !a.paused }"
+        au.wait_for_function(playing, arg="trk00000041")
+        au.click("#btn-queue")
+        au.wait_for_selector("#queue:not([hidden]) .q")
+        q_n = au.evaluate(q_count)
+        au.click("#queue-list [data-q=rm][data-index='3']")
+        au.wait_for_timeout(150)                                      # «исправление фокуса» в следующем кадре
+        fb = au.evaluate(au_active)
+        au.keyboard.press("Space")
+        au.wait_for_timeout(200)
+        paused, q_n2 = audio_state(au)["paused"], au.evaluate(q_count)
+        check(paused and q_n2 == q_n - 1 and fb["q"] is None,
+              f"мышь: «Убрать» в панели очереди убирает один трек, фокус не переходит на соседнюю кнопку, пробел — пауза "
+              f"({q_n}→{q_n2}, фокус {fb}, пауза {paused})")
+        au.keyboard.press("Space")
+        au.wait_for_function(playing, arg="trk00000041")
+        au.click("#queue-close")
+        au.click("#tracks .row:nth-child(6) .track__more")
+        au.click("#menu [data-act=add]")
+        fm = au.evaluate("document.activeElement.className")
+        au.keyboard.press("Space")
+        au.wait_for_timeout(200)
+        paused = audio_state(au)["paused"]
+        check(paused and au.is_hidden("#menu") and "track__more" not in fm,
+              f"мышь: пункт меню «Добавить в очередь» — фокус не возвращается на «⋯», пробел ставит паузу, меню не открывается ({fm})")
+        au.keyboard.press("Space")
+        au.wait_for_function(playing, arg="trk00000041")
+        # «Загрузить ещё» мышью: страниц больше нет, кнопка скрылась — фокус не переносится на строку, пробел — пауза
+        MORE["mode"] = "fail"                                         # автоподгрузка обрывается: остаётся кнопка повтора
+        au_search("more12", 20)
+        au.evaluate(to_bottom)
+        au.wait_for_function("document.querySelector('#more').dataset.state === 'error'")
+        MORE["mode"] = "ok"
+        au.click("#more")
+        au.wait_for_function(rows_ready, arg=40)
+        au.wait_for_function("document.querySelector('#more').hidden")
+        fl = au.evaluate("document.activeElement.className")
+        au.keyboard.press("Space")
+        au.wait_for_timeout(200)
+        paused = audio_state(au)["paused"]
+        MORE["mode"] = "fail"
+        check(paused and fl != "track__play", f"мышь: «Загрузить ещё» скрылась — фокус не на строке трека, пробел ставит паузу ({fl!r})")
+        au.keyboard.press("Space")
+        au.wait_for_function(playing, arg="trk00000041")
+        au_search("gspd", 20)
+        # с клавиатуры фокус по-прежнему возвращается на «⋯»
+        au.focus("#tracks .row:nth-child(6) .track__more")
+        au.keyboard.press("Enter")
+        menu_to(au, "add")
+        au.keyboard.press("Enter")
+        check(au.evaluate("document.activeElement === document.querySelector('#tracks .row:nth-child(6) .track__more')"),
+              "клавиатура: после пункта меню фокус снова на «⋯» той же строки")
+
+        # c: Enter на треке в панели очереди — после перерисовки (асинхронно, по событию плеера) фокус на этом треке
+        au.focus("#btn-queue")
+        au.keyboard.press("Enter")
+        au.wait_for_selector("#queue:not([hidden]) .q")
+        target = au.evaluate("document.querySelector(`#queue-list .q__main[data-index='4'] .q__title`).textContent")
+        au.focus("#queue-list .q__main[data-index='4']")
+        au.keyboard.press("Enter")
+        au.wait_for_function("(t) => document.querySelector('#queue-list .q.is-current .q__title')?.textContent === t", arg=target)
+        au.wait_for_timeout(300)
+        fq = au.evaluate("() => { const a = document.activeElement; return [a.className, a.closest('.q')?.classList.contains('is-current'),"
+                         " a.closest('.q')?.querySelector('.q__title').textContent] }")
+        check(fq == ["q__main", True, target], f"панель очереди: Enter на треке — он играет, фокус на его строке после перерисовки ({fq})")
+        au.keyboard.press("Escape")
+
+        # C: на странице трека разделитель имён — обычный текст (переносится с именем, не в начало строки)
+        au_search("feat", 2)
+        au.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        au.click("#player-open")
+        au.wait_for_selector("#view-now:not([hidden]) #now-artist .who__sep")
+        ws = au.evaluate("[getComputedStyle(document.querySelector('#now-artist .who__sep')).whiteSpace,"
+                         " getComputedStyle(document.querySelector('#player-artist .who__sep')).whiteSpace]")
+        check(ws[0] != "pre" and ws[1] == "pre", f"разделитель имён: на странице трека — обычный текст, в мини-плеере — flex-элемент ({ws})")
+        au.click("[data-do=back]")
+
+        # D: шесть исполнителей — ни одно видимое имя не сжимается до нескольких пикселей (строка списка, мини-плеер)
+        au.set_viewport_size({"width": 980, "height": 760})
+        au_search("many6", 1)
+        au.locator("#tracks .row").first.click(position={"x": 200, "y": 20})
+        au.wait_for_selector("#player-artist .who.is-link")
+        widths = au.evaluate("""() => [...document.querySelectorAll('#tracks .row .track__artist, #player-artist')].map((c) => {
+            const q = c.getBoundingClientRect();
+            return [...c.querySelectorAll('.who')].map((w) => { const r = w.getBoundingClientRect();
+              return Math.round(Math.max(0, Math.min(r.right, q.right) - Math.max(r.left, q.left))) }) })""")
+        more6 = au.evaluate("[document.querySelector('#player-artist .who__more')?.textContent, document.querySelector('#player-artist .who__more')?.title]")
+        check(len(widths) == 2 and len(widths[0]) == 6 and len(widths[1]) == 2 and all(w >= 16 for line in widths for w in line)
+              and more6[0] == "+4" and more6[1].startswith("Ещё: Третий Исполнитель"),
+              f"шесть исполнителей при ширине 980: в строке списка все имена шире 16px, в мини-плеере два имени и «+4» ({widths}, {more6})")
+        au.set_viewport_size({"width": 1440, "height": 900})
+
+        # G: двухцветная рамка карточки микса — тёмная линия внутри и в светлой теме
+        au.click(".brand")
+        au.wait_for_selector("#view-home:not([hidden]) #mix-row .mixcard__open")
+        theme0 = au.evaluate("document.documentElement.dataset.theme || ''")
+        au.evaluate("document.documentElement.dataset.theme = 'light'")
+        au.focus("#mix-row .mixcard__open")
+        au.keyboard.press("Shift+Tab")
+        au.keyboard.press("Tab")
+        ring = au.evaluate(FOCUS_RING)
+        au.evaluate("(t) => { document.documentElement.dataset.theme = t }", theme0)
+        check(ring["ok"] and "mixcard__open" in ring["who"], f"светлая тема: рамка карточки микса с тёмной линией внутри ({ring})")
         au.close()
 
         browser.close()

@@ -1,6 +1,6 @@
 // Мини-плеер внизу экрана и общее состояние кнопок управления (data-do play/shuffle/repeat на всех экранах).
 // Обновляется по событиям плеера (player/controller.js).
-import { setCover } from "../core/dom.js";
+import { setCover, mk } from "../core/dom.js";
 import { el, hero, ctl } from "../core/elements.js";
 import { state, current } from "../state/store.js";
 import { playerEvents } from "../player/controller.js";
@@ -12,7 +12,7 @@ import { paintLike } from "../components/favorites.js";
 function showNowPlaying(t) {
   el.title.textContent = t.title;
   el.playerOpen.setAttribute("aria-label", `Открыть страницу трека: ${t.title}`);
-  renderArtists(el.artist, t);
+  renderArtists(el.artist, t, 2);                       // узкая строка: не больше двух имён (S12)
   setSource(el.playerSrc, t.source);
   setCover(el.cover, t.cover, 120);
   document.title = `${t.title} — ${t.artist}`;
@@ -29,9 +29,9 @@ function setPlayingUI(playing) {
 }
 // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
 function setLoading(text) {
-  if (text != null) { el.artist.textContent = text; return; }
+  if (text != null) { el.artist.replaceChildren(mk("span", "who", text)); return; }   // flex-элемент с многоточием (S12)
   const t = current();
-  if (t) renderArtists(el.artist, t);
+  if (t) renderArtists(el.artist, t, 2);
 }
 // Повтор (S10): три режима на одной кнопке. Нажатое состояние — прежнее (акцентный цвет), повтор трека
 // дополнительно отличается значком с «1». Подпись называет текущий режим.

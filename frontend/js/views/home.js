@@ -10,25 +10,28 @@ import { play, warmTrack, playerEvents } from "../player/controller.js";
 import { mixCard, miniCard, trackCard, markMix, bindTrackGrid } from "../components/cards.js";
 import { paintFav, markPlaying } from "../components/track-row.js";
 import { setBlock, skelCards, setMore } from "../components/skeleton.js";
-import { focusLost, focusSafely, rescueFocus } from "../components/focus.js";
+import { focusLost, focusSafely, rescueFocus, keyboardMode } from "../components/focus.js";
 import { toast, hideToast } from "../components/toast.js";
 import { layout } from "./shell.js";
 import { openMix } from "./detail.js";
 import { computeArtists, renderArtistMixes } from "./sidebar.js";
 import { openNowFromUi } from "./now.js";
 
-const home = { seq: 0, loading: false, error: "", partial: "", ready: false, at: 0 };
+const home = { seq: 0, loading: false, error: "", partial: "", ready: false, at: 0, pending: null };   // pending — идущая подгрузка ленты (S12)
 const HOME_TTL = 10 * 60 * 1000;
 
 export function goHome(refresh = true) {
   state.reopen = () => goHome(false);
   state.searchCtl?.abort();
-  Object.assign(state, { view: "home", query: "", cards: [], albums: [], related: [], sort: "default", loadingMore: false });
+  const reload = refresh || !home.ready || Date.now() - home.at > HOME_TTL;
+  // S12: подгрузка ленты, начатая до ухода с главной, ещё идёт, а лента не перезагружается — флаг подгрузки снова её:
+  // второй запрос не уйдёт, её ответ допишет карточки. При перезагрузке ленты прежняя подгрузка устаревает (loadHome).
+  Object.assign(state, { view: "home", query: "", cards: [], albums: [], related: [], sort: "default", loadingMore: (!reload && home.pending) || false });
   state.list = [];
   el.tracks.replaceChildren(); el.cards.replaceChildren();
   setMore(el.more, "none");
   layout();
-  if (refresh || !home.ready || Date.now() - home.at > HOME_TTL) { loadHome(); }
+  if (reload) { loadHome(); }
   else { renderHome(); refreshHistory().then(() => { if (state.view === "home") { renderContinue(); renderMixRow(); } }); }
   el.main.scrollTo({ top: 0 });
 }
@@ -41,6 +44,8 @@ async function refreshHistory() {
 
 async function loadHome() {
   const my = ++home.seq;
+  home.pending = null;                                   // подгрузка прежней ленты устарела (её ответ отбросит проверка seq)
+  if (state.view === "home") state.loadingMore = false;
   home.loading = true; home.error = ""; home.partial = "";
   state.salt = rand(1e6);
   renderHome();
@@ -107,7 +112,7 @@ function renderFeed() {
   if (home.error) setBlock(el.homeEmpty, `Не удалось подобрать музыку. ${home.error}.`, () => loadHome());
   else if (home.partial && state.feed.length) setBlock(el.homeEmpty, `Подборка неполная: ${home.partial} ответил не на все запросы.`, () => loadHome());
   else setBlock(el.homeEmpty, state.feed.length ? "" : "Пока нечего предложить. Найди что-нибудь через поиск.");
-  setMore(el.homeMore, state.more ? "idle" : "none");
+  setMore(el.homeMore, home.pending && state.loadingMore === home.pending ? "loading" : state.more ? "idle" : "none", "Подбираем ещё…");
 }
 function appendFeedCards(from) {
   el.newGrid.append(...state.feed.slice(from).map((t, i) => trackCard(t, from + i)));
@@ -120,8 +125,10 @@ function appendFeedCards(from) {
  */
 export async function loadMoreHome() {
   const my = home.seq;
+  const stale = () => my !== home.seq || state.view !== "home";
   const mine = {};                                       // флаг подгрузки принадлежит этому запуску (S12)
   state.loadingMore = mine;
+  home.pending = mine;
   const moreFocused = document.activeElement === el.homeMore;
   setMore(el.homeMore, "loading", "Подбираем ещё…");
   let firstNew = -1;                                     // индекс первой подгруженной карточки
@@ -133,7 +140,7 @@ export async function loadMoreHome() {
         exclude: state.feed.map(trackKey).slice(-200).join(",") });
       if (last) { qs.set("source", last.source); qs.set("id", last.id); qs.set("title", last.title); }
       const d = recsResult(await api(`/api/recommendations?${qs}`));   // сбой источника = ошибка, а не «лента кончилась»
-      if (my !== home.seq || state.view !== "home") return;
+      if (stale()) return;                               // лента перезагружена или открыт другой экран — ответ не нужен
       const have = new Set(state.feed.map(trackKey));
       const fresh = d.tracks.filter((t) => !have.has(trackKey(t)));
       if (fresh.length) {
@@ -147,13 +154,16 @@ export async function loadMoreHome() {
     }
     state.more = added;
   } catch {
-    setMore(el.homeMore, "error");
+    if (!stale()) setMore(el.homeMore, "error");
     return;
-  } finally { if (state.loadingMore === mine) state.loadingMore = false; }
+  } finally {
+    if (state.loadingMore === mine) state.loadingMore = false;
+    if (home.pending === mine) home.pending = null;
+  }
   setMore(el.homeMore, state.more ? "idle" : "none");
   // Подгрузка кнопкой, а ленте больше нечего добавить: кнопка скрылась вместе с фокусом — на первую новую карточку;
   // новых нет — на последнюю карточку ленты, иначе на заголовок экрана
-  if (moreFocused && focusLost()) {
+  if (moreFocused && keyboardMode() && focusLost()) {
     const first = firstNew >= 0 ? el.newGrid.querySelector(`.tcard[data-index="${firstNew}"] .tcard__open`) : null;
     focusSafely(first) || focusSafely(el.newGrid.querySelector(".tcard:last-child .tcard__open")) || rescueFocus();
   }

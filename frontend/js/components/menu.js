@@ -12,7 +12,7 @@ import { el } from "../core/elements.js";
 import { navTarget, firstEnabled } from "../core/keynav.js";
 import { state, queue } from "../state/store.js";
 import { BUSY } from "./track-row.js";
-import { focusSafely, focusLost, rescueFocus } from "./focus.js";
+import { focusSafely, focusLost, rescueFocus, keyboardMode } from "./focus.js";
 
 let menuTrack = null, menuCtx = null, menuAnchor = null;
 
@@ -100,7 +100,8 @@ export function closeMenu({ restore = false } = {}) {
 
 /**
  * actions: { [пункт]: (track, queueIndex) => void } — что делает каждый пункт меню (data-act).
- * Меню закрывается до действия, фокус уже на «⋯»: диалог, открытый действием, вернёт фокус туда. Если действие
+ * Меню закрывается до действия; если пункт выбран с клавиатуры, фокус уже на «⋯»: диалог, открытый действием,
+ * вернёт фокус туда. Если действие
  * перерисовало строку вместе с «⋯», фокус — туда, куда укажет ctx.refocus; при смене экрана его переносит
  * views/shell.js (заголовок экрана). Клик вне меню и вне кнопок «⋯» тоже закрывает его.
  */
@@ -110,14 +111,12 @@ export function initMenu(actions) {
     const t = menuTrack, ctx = menuCtx, qi = ctx ? ctx.queueIndex : null;
     if (!b || !t) return;
     if (b.getAttribute("aria-disabled") === "true") return;   // недоступный пункт: действия нет, меню остаётся
-    closeMenu({ restore: true });
+    const kb = keyboardMode();                           // пункт выбран мышью — фокус не возвращаем (см. focus.js)
+    closeMenu({ restore: kb });
     const act = actions[b.dataset.act];
     if (act) act(t, qi);
-    if (ctx?.refocus) {
-      const fix = () => { if (focusLost()) focusSafely(ctx.refocus()); };
-      fix();
-      requestAnimationFrame(fix);                        // перерисовка очереди могла прийти после действия
-    }
+    // Действия меню очереди перерисовывают её синхронно (см. views/queue-drawer.js), поэтому проверка — сразу
+    if (kb && ctx?.refocus && focusLost()) focusSafely(ctx.refocus());
   });
   el.menu.addEventListener("keydown", (e) => {
     if (el.menu.hidden) return;
