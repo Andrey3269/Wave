@@ -213,6 +213,83 @@ def test_cover_only_from_allowed_https_hosts(dl, cover):
     assert not [q for q in dl.net.requests if q.url.host.endswith("evil.example")]
 
 
+# ---- S13: редиректы при скачивании обложки — каждый адрес цепочки проверяется заново ----
+def _redirect(location: str, status: int = 302):
+    return lambda request: httpx.Response(status, headers={"Location": location})
+
+
+def _cover_requests(dl) -> list[str]:
+    return [str(q.url) for q in dl.net.requests if q.url.host != "cdn.test" and q.url.host != "lrclib.net"]
+
+
+@pytest.mark.parametrize("target", ["https://lh3.googleusercontent.com/final=w544-h544",     # тот же хост
+                                    "/final=w544-h544",                                     # относительный Location
+                                    "https://i1.sndcdn.com/artworks-x-t500x500.jpg",        # другой хост обложек
+                                    "https://i.ytimg.com/vi/x/hqdefault.jpg"])
+def test_cover_redirect_to_allowed_host_is_followed(dl, target):
+    final = target if target.startswith("https://") else "https://lh3.googleusercontent.com" + target
+    dl.net.images[COVER] = _redirect(target, 301)
+    dl.net.images[final] = (b"\xff\xd8jpeg", "image/jpeg")
+    dl.post("/api/downloads", json=REQ)
+    assert wait_job(dl)["state"] == "done"
+    assert (dl.profile.downloads / FOLDER / "cover.jpg").read_bytes() == b"\xff\xd8jpeg"
+    assert _cover_requests(dl) == [COVER, final]
+
+
+@pytest.mark.parametrize("target", [
+    "https://evil.example/x.jpg",                          # посторонний хост
+    "https://googleusercontent.com.evil.example/x.jpg",    # поддельный домен с именем хоста обложек
+    "https://evilgoogleusercontent.com/x.jpg",
+    "https://lh3.googleusercontent.com@evil.example/x.jpg",
+    "http://lh3.googleusercontent.com/x.jpg",              # не https
+    "https://lh3.googleusercontent.com:8443/x.jpg",
+    "https://127.0.0.1/x.jpg",                             # локальные и частные адреса
+    "https://localhost/x.jpg",
+    "https://[::1]/x.jpg",
+    "https://10.0.0.5/x.jpg",
+    "https://169.254.169.254/latest/meta-data",
+    "file:///etc/passwd",
+])
+def test_cover_redirect_to_foreign_or_local_address_is_refused(dl, target):
+    dl.net.images[COVER] = _redirect(target)
+    dl.post("/api/downloads", json=REQ)
+    assert wait_job(dl)["state"] == "done"                 # трек сохранён, обложки нет
+    assert not (dl.profile.downloads / FOLDER / "cover.jpg").exists()
+    assert dl.profile.sql("SELECT cover FROM downloads") == [(None,)]
+    assert _cover_requests(dl) == [COVER]                   # по адресу редиректа запроса не было
+    dl.net.assert_no_unexpected()
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "10.0.0.5", "192.168.1.10", "169.254.169.254", "::1"])
+def test_allowed_cover_host_resolving_to_local_address_is_refused(dl, ip):
+    """Имя из разрешённого списка, но DNS ведёт в локальную сеть (подмена DNS): ни исходный адрес, ни редирект не запрашиваются."""
+    dl.net.images[COVER] = _redirect("https://lh5.googleusercontent.com/x.jpg")
+    dl.net.images["https://lh5.googleusercontent.com/x.jpg"] = (b"\xff\xd8jpeg", "image/jpeg")
+    dl.dns["lh5.googleusercontent.com"] = [ip]
+    dl.post("/api/downloads", json=REQ)
+    assert wait_job(dl)["state"] == "done"
+    assert not (dl.profile.downloads / FOLDER / "cover.jpg").exists()
+    assert _cover_requests(dl) == [COVER]
+    dl.dns["lh3.googleusercontent.com"] = [ip]
+    dl.delete(f"/api/downloads/yt/{YT}")
+    dl.net.requests.clear()
+    dl.post("/api/downloads", json=REQ)
+    assert wait_job(dl)["state"] == "done"
+    assert _cover_requests(dl) == []
+
+
+def test_cover_redirects_are_limited(dl):
+    hops = [f"https://lh3.googleusercontent.com/hop{i}" for i in range(downloads.COVER_MAX_REDIRECTS + 2)]
+    dl.net.images[COVER] = _redirect(hops[0])
+    for a, b in zip(hops, hops[1:]):
+        dl.net.images[a] = _redirect(b)
+    dl.net.images[hops[-1]] = (b"\xff\xd8jpeg", "image/jpeg")
+    dl.post("/api/downloads", json=REQ)
+    assert wait_job(dl)["state"] == "done"
+    assert not (dl.profile.downloads / FOLDER / "cover.jpg").exists()
+    assert len(_cover_requests(dl)) == downloads.COVER_MAX_REDIRECTS + 1     # исходный запрос и 3 перехода
+
+
 def test_cover_failure_does_not_fail_download(dl):
     dl.net.images.clear()                                            # 404 на обложку
     dl.post("/api/downloads", json=REQ)

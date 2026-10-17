@@ -116,7 +116,10 @@ class FakeNet:
         if host.endswith(COVER_HOSTS):
             url = str(request.url)
             if url in self.images:
-                data, ctype = self.images[url]
+                item = self.images[url]
+                if callable(item):                               # свой ответ (например, редирект), S13
+                    return item(request)
+                data, ctype = item
                 return httpx.Response(200, content=data, headers={"Content-Type": ctype})
             return httpx.Response(404)
         self.unexpected.append(str(request.url))
@@ -369,6 +372,8 @@ class ApiHarness:
     async def _resolve_host(self, host: str, port: int) -> list[str]:
         if host in self.dns:
             return list(self.dns[host])
+        if any(host == h or host.endswith("." + h) for h in COVER_HOSTS):
+            return ["142.250.74.97"]                               # хосты обложек «публичные» (S13); тест может переопределить
         raise OSError(f"тест: имя {host} не разрешается")
 
     def _make_ytm(self):

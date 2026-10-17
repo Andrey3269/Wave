@@ -41,6 +41,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urljoin
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -53,7 +54,7 @@ import paths
 from domain import snapshot
 from download_io import ThreadFile, clear_part_dir, is_link, remove_partial, run_in_thread
 from lyrics import fetch_lyrics
-from streaming import hls_download
+from streaming import hls_download, netguard
 from streaming.errors import ERROR_HEADER
 from streaming.proxy import _connect
 from streaming.ranges import CONTENT_RANGE_RE
@@ -79,6 +80,7 @@ SHUTDOWN_WAIT = 6.0
 CLEANUP_STARTUP_WAIT = 5.0
 ACTIVE = {"queued", "preparing", "downloading", "processing"}
 COVER_HOSTS = snapshot.COVER_HOSTS          # откуда разрешено брать обложки (S13: один список с интерфейсом)
+COVER_MAX_REDIRECTS = 3                     # S13: переходов при скачивании обложки (каждый адрес проверяется)
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
 # Временная папка загрузки: имя library.safe_folder() + ".part" — «… [источник-id].part» с id, допустимым для
 # своего источника (S11: только такие папки удаляет очистка при старте)
@@ -346,15 +348,44 @@ async def _download_audio(client, rs, req: DownloadRequest, out: ThreadFile, job
     return ext
 
 
+async def _cover_response(client, url: str) -> httpx.Response | None:
+    """
+    Ответ на запрос обложки или None, если адрес или любой редирект недопустим (S13).
+
+    Редиректы клиент сам не выполняет: каждый адрес цепочки (исходный и каждый Location) проверяется заново —
+    только https:// на хостах обложек источников и их поддоменах, без логина и чужого порта
+    (domain/snapshot.safe_cover; «googleusercontent.com.evil.example» и «evilgoogleusercontent.com» не проходят),
+    и все IP имени — публичные (netguard.check_url: не localhost, не частные сети, не link-local). Клиент —
+    netguard.make_client (тот же, что у HLS): он ещё раз проверяет и закрепляет IP в момент соединения, поэтому
+    подмена ответа DNS между проверкой и запросом тоже не ведёт в локальную сеть. Не больше COVER_MAX_REDIRECTS
+    переходов.
+    """
+    for _hop in range(COVER_MAX_REDIRECTS + 1):
+        if snapshot.safe_cover(url, local=False) is None:
+            log.info("Обложка не скачана: адрес вне разрешённого списка (%s)", netguard.redact(url))
+            return None
+        try:
+            await netguard.check_url(url)
+        except netguard.BlockedUrl as exc:
+            log.info("Обложка не скачана: %s (%s)", exc, netguard.redact(url))
+            return None
+        r = await client.get(url, timeout=10, follow_redirects=False)
+        location = r.headers.get("location")
+        if r.status_code in netguard.REDIRECT_STATUSES and location:
+            url = urljoin(url, location)
+            continue
+        return r
+    log.info("Обложка не скачана: больше %d перенаправлений", COVER_MAX_REDIRECTS)
+    return None
+
+
 async def _download_cover(client, url: str | None, folder) -> str | None:
     if not url:
         return None
-    # S13: только https:// с хостов обложек и их поддоменов. Раньше проверка по окончанию имени пропускала
-    # «evilgoogleusercontent.com»
-    if snapshot.safe_cover(url, local=False) is None:
-        return None
     try:
-        r = await client.get(url, timeout=10)
+        r = await _cover_response(client, url)
+        if r is None:
+            return None
         ctype = r.headers.get("content-type", "")
         if r.status_code != 200 or not ctype.startswith("image/"):
             return None
@@ -443,7 +474,7 @@ async def _run(client, rs, req: DownloadRequest, hls_client, job: dict, entry: _
         await run_in_thread(os.replace, tmp / "audio.part", tmp / audio)
 
         job.update(state="processing", progress=99)
-        cover = await _download_cover(client, req.cover, tmp)
+        cover = await _download_cover(hls_client, req.cover, tmp)    # S13: клиент с проверкой IP (netguard)
         lyr = await _fetch_lyrics_safe(client, req)
         lyrics_file = None
         if lyr and (lyr["synced"] or lyr["plain"]):           # пустой файл «для вида» не создаём
