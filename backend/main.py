@@ -37,6 +37,7 @@ import userdata
 from domain.models import Track
 from downloads import DownloadManager, router as downloads_router, startup_cleanup
 from lyrics import router as lyrics_router
+from origin_guard import OriginGuard
 from providers import soundcloud as sc_provider, youtube_music as yt_provider
 from providers.base import ProviderError
 from providers.cache import TTLCache
@@ -180,6 +181,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Music Meta Client", version=__version__, lifespan=lifespan)   # версия — backend/version.py
 
+# S13 (M7): изменяющие запросы только с адреса самого сервера — кросс-доменный POST/PUT/PATCH/DELETE получает 403
+# (backend/origin_guard.py). Самый внутренний слой: снаружи TrustedHost (Host уже проверен) и CORS (preflight)
+app.add_middleware(OriginGuard)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in ALLOWED_ORIGINS if o.strip()],

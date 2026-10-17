@@ -1,4 +1,4 @@
-"""Базовая защита локального API (backend/main.py: TrustedHostMiddleware, CORS) и известная находка M7."""
+"""Базовая защита локального API (backend/main.py: TrustedHostMiddleware, CORS, OriginGuard) и находка M7."""
 from __future__ import annotations
 
 import pytest
@@ -30,8 +30,8 @@ def test_cors_preflight_for_mutation_from_foreign_origin_fails(api):
     assert "access-control-allow-origin" not in r.headers
 
 
-@pytest.mark.xfail(strict=True, reason="M7: POST /api/settings/clear-history без тела выполняется с чужого Origin (CSRF), план S13")
 def test_cross_origin_mutation_is_refused(api):
+    """M7 (исправлено в S13, backend/origin_guard.py): «простой» POST без тела с чужого Origin отклоняется."""
     api.post("/api/history", json={"id": "AAAAAAAAAA1", "source": "yt", "title": "t", "artist": "a",
                                    "stream_url": "/api/stream/yt/AAAAAAAAAA1"})
     r = api.post("/api/settings/clear-history", headers={"Origin": "https://evil.example"})
