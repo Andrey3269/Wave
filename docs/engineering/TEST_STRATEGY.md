@@ -245,6 +245,7 @@
 | `node --test "tests/js/*.test.mjs"` | **PASS**: 83 | Linux Node 22 |
 | `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 394 + 33 (было 383 + 33; раздел S16 +11: длинный список порциями, «О программе / Диагностика») | Linux Chromium |
 | `python tests/run_checks.py` | **PASS** 8/8 (второй прогон; первый — двойная обработка перехвата в новом e2e-тесте, исправлен тест) | Linux |
+| CI на `c9c7c64` | [39055160042](https://github.com/Andrey3269/Wave/actions/runs/39055160042) **SUCCESS** 3/3 (прежний 39054452267 на `1e8586f` — FAILURE на Windows: `rss_mb` = None из-за ctypes без типов HANDLE, исправлено) | GitHub Actions |
 | `python tests/perf/measure.py` (S15 и S16 подряд) | выполнено, числа — в отчёте S16 §2 | Linux Chromium headless, 2 vCPU |
 | Окно WebView2, замеры на Windows | **NOT RUN** | Windows 11 |
 
