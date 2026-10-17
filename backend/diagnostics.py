@@ -340,10 +340,8 @@ _URL_RE = re.compile(r"https?://\S+")
 
 
 def _sanitize(text: str, limit: int = 300) -> str:
-    """Текст ошибки yt-dlp для отчёта: без ссылок (в них подписи и параметры потока)."""
-    import applog
-
-    return applog.redact(_URL_RE.sub("<url>", text))[:limit]
+    """Текст ошибки yt-dlp для отчёта: без ссылок (в них подписи и параметры потока) и путей профиля (S16: scrub)."""
+    return scrub(text, limit)
 
 
 def _http_client():
