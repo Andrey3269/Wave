@@ -199,6 +199,7 @@
 | `node --test "tests/js/*.test.mjs"` | **PASS**: 79 (без изменений) | Linux Node 22 |
 | `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 341 + 33 (без изменений: фронтенд не менялся, штатные запросы проходят OriginGuard) | Linux Chromium; CI Linux, Windows |
 | `python tests/run_checks.py` | **PASS** 8/8 | Linux |
+| CI 39031757763 (`bb1b747`) | **SUCCESS** 3/3: Linux 1707 + 3 skipped, Windows 1709 + 1 skipped, сборка и установщик | GitHub Actions |
 | Окно WebView2 | **NOT RUN** (ручной чек-лист по заданию не создавался) | Windows 11 |
 
 Приёмы, введённые в S13: список изменяющих маршрутов для проверки OriginGuard строится по `main.app` (новый маршрут попадает в проверку сам); «старые строки» базы вставляются отдельным соединением SQLite, мимо API, которое такие данные уже не примет; браузерная проверка CSRF — страница на `http://localhost:<порт>` шлёт no-cors запросы на `127.0.0.1:<порт>` того же сервера.
