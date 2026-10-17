@@ -214,7 +214,9 @@ def test_symlinked_file_in_own_folder_is_not_served(api, outside, column):
     assert not d.exists() and snapshot(outside) == before
 
 
-@pytest.mark.parametrize("content", [b"{broken", b"\xff\xfe\x00garbage", b"[1, 2]", b'{"synced": "x"}', b"", b"[" * 50_000])
+# короткие id: длинный id параметра попадает в PYTEST_CURRENT_TEST, а на Windows переменная окружения ≤ 32 767 символов
+@pytest.mark.parametrize("content", [b"{broken", b"\xff\xfe\x00garbage", b"[1, 2]", b'{"synced": "x"}', b"", b"[" * 50_000],
+                         ids=["broken-json", "not-utf8", "array", "synced-not-list", "empty", "deep-nesting"])
 def test_corrupt_saved_lyrics_fall_back_to_service_not_500(api, content):
     d = api.profile.downloads / OWN
     d.mkdir()

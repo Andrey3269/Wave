@@ -89,6 +89,7 @@ def test_read_snapshot_does_not_add_missing_optional_fields():
 
 
 @pytest.mark.parametrize("raw", ["", "not json", "[]", "null", "5", '{"id": "a/b", "source": "yt"}',
-                                 '{"id": "1", "source": "local"}', "[" * 100_000])
+                                 '{"id": "1", "source": "local"}', "[" * 100_000],
+                         ids=["empty", "not-json", "array", "null", "number", "slash-id", "unknown-source", "deep-nesting"])
 def test_read_snapshot_rejects_bad_rows(raw):
     assert snapshot.read_snapshot(raw, "favorites", "k") is None
