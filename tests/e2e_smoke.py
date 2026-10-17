@@ -2592,6 +2592,18 @@ def main() -> int:
         au.keyboard.press("Space")
         au.wait_for_function(playing, arg="trk00000041")
         au_search("gspd", 20)
+        # то же синхронно, до пересчёта стилей: Chromium на Linux снимает фокус со скрытого элемента при ближайшем
+        # пересчёте, на Windows (CI) — позже; проверка в том же задании показывает, снимает ли его само приложение
+        mouse_click_sync = """(sel) => { const b = document.querySelector(sel); b.focus();
+            b.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); b.click();
+            const a = document.activeElement; return a === document.body ? 'body' : (a.dataset.act || a.id || a.className) }"""
+        au.click("#tracks .row:nth-child(6) .track__more")
+        s_menu = au.evaluate(mouse_click_sync, "#menu [data-act=add]")
+        au.click("#btn-queue")
+        au.wait_for_selector("#queue:not([hidden]) .q")
+        s_queue = au.evaluate(mouse_click_sync, "#queue-close")
+        check(s_menu == "body" and s_queue == "body" and au.is_hidden("#menu") and au.is_hidden("#queue"),
+              f"мышь: фокус снимается со скрытого пункта меню и закрытой панели сразу, в том же задании ({s_menu}, {s_queue})")
         # с клавиатуры фокус по-прежнему возвращается на «⋯»
         au.focus("#tracks .row:nth-child(6) .track__more")
         au.keyboard.press("Enter")
