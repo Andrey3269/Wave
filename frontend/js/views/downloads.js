@@ -120,6 +120,7 @@ async function cancelDownload(t) {
 }
 /** Кнопка загрузки трека: скачать, отменить идущую, удалить скачанное, объяснить отказ. */
 export function toggleDownload(t) {
+  if (t.source === "local") { toast("Этот трек — файл на компьютере, скачивать его не нужно."); return undefined; }
   const key = trackKey(t);
   if (state.dl.has(key)) return removeDownload(t);
   if (state.dlStarting.has(key)) return;                 // запуск ещё не подтверждён backend

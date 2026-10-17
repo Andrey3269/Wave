@@ -66,5 +66,5 @@ test("clamp и rand", () => {
 });
 
 test("названия источников совпадают с Track.source", () => {
-  assert.deepEqual(Object.keys(SOURCES).sort(), ["sc", "yt"]);
+  assert.deepEqual(Object.keys(SOURCES).sort(), ["local", "sc", "yt"]);   // S15: локальная музыка
 });

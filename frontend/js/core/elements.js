@@ -14,12 +14,18 @@ export const el = {
   // списки
   detail: $("#detail"), back: $("#back"), dCover: $("#d-cover"), dCoverWrap: $("#d-cover-wrap"), dKind: $("#d-kind"),
   dTitle: $("#d-title"), dSub: $("#d-sub"), dPlay: $("#d-play"), dShuffle: $("#d-shuffle"),
-  dRename: $("#d-rename"), dDelete: $("#d-delete"),
+  dRename: $("#d-rename"), dDelete: $("#d-delete"), dFav: $("#d-fav"), dFavT: $("#d-fav-t"),
   tabs: $("#tabs"), albumsSec: $("#albums-sec"), albumsRow: $("#albums-row"), relatedSec: $("#related-sec"), relatedRow: $("#related-row"),
   results: $("#results"), resultsTitle: $("#results-title"), status: $("#status"), sort: $("#sort"), clearHistory: $("#clear-history"),
+  localAdd: $("#local-add"), localFile: $("#local-file"),                              // S15: локальная музыка
   cards: $("#cards"), empty: $("#empty"), tracks: $("#tracks"), tpl: $("#track-template"), more: $("#more"),
   // коллекция
   colTiles: $("#col-tiles"), colPlaylists: $("#col-playlists"), colArtists: $("#col-artists"), colArtistsSec: $("#col-artists-sec"),
+  // S15: поиск и фильтры коллекции, избранные альбомы и исполнители, найденные треки
+  colQ: $("#col-q"), colFilter: $("#col-filter"), colEmpty: $("#col-empty"), colPlSec: $("#col-pl-sec"),
+  colTracksSec: $("#col-tracks-sec"), colTracks: $("#col-tracks"), colTracksN: $("#col-tracks-n"),
+  colAlbumsSec: $("#col-albums-sec"), colAlbums: $("#col-albums"), colFavArtistsSec: $("#col-fav-artists-sec"),
+  colFavArtists: $("#col-fav-artists"),
   // очередь, меню, диалоги
   queue: $("#queue"), queueList: $("#queue-list"), queueLabel: $("#queue-label"), menu: $("#menu"), toast: $("#toast"),
   dlg: $("#dlg"), dlgTitle: $("#dlg-title"), dlgInput: $("#dlg-input"), dlgOk: $("#dlg-ok"),

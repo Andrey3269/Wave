@@ -33,6 +33,8 @@ export function openMenu(track, anchor, ctx = null) {
   menuCtx = ctx;
   menuAnchor = anchor;
   const downloaded = state.dl.has(trackKey(track));
+  const local = track.source === "local";                // S15: файл на компьютере — без загрузки и исключений по id
+  const inList = !!anchor.closest("#tracks"), li = inList ? state.list.indexOf(track) : -1;
   let entries;
   if (ctx && ctx.queueIndex != null) {
     const i = ctx.queueIndex, isCur = i === queue.index, fav = state.fav.has(trackKey(track));
@@ -42,24 +44,33 @@ export function openMenu(track, anchor, ctx = null) {
     if (!isCur && i > queue.index + 1) entries.push(["up", "Выше", "i-chev-u"]);
     if (!isCur && i < queue.length - 1) entries.push(["down", "Ниже", "i-chev-d"]);
     if (!isCur) entries.push(["rm", "Убрать из очереди", "i-trash"]);
-    entries.push(["fav", fav ? "Убрать из избранного" : "В избранное", "i-heart"], ["playlist", "Добавить в плейлист…", "i-playlists"],
-      ["artist", "Перейти к исполнителю", "i-user"], ["share", "Поделиться", "i-share"]);
+    entries.push(["fav", fav ? "Убрать из избранного" : "В избранное", "i-heart"], ["playlist", "Добавить в плейлист…", "i-playlists"]);
+    if (!local || track.artist_id) entries.push(["artist", "Перейти к исполнителю", "i-user"]);
+    entries.push(["share", "Поделиться", "i-share"]);
   } else {
     entries = [
       ["next", "Играть следующим", "i-next"],
       ["add", "Добавить в очередь", "i-queue"],
       ["playlist", "Добавить в плейлист…", "i-playlists"],
     ];
-    if (state.view === "playlist" && anchor.closest("#tracks")) entries.push(["unlist", "Убрать из плейлиста", "i-trash"]);
-    entries.push(["artist", "Перейти к исполнителю", "i-user"]);
+    if (state.view === "playlist" && inList) {
+      entries.push(["unlist", "Убрать из плейлиста", "i-trash"]);
+      // S15: порядок плейлиста — при сортировке «по умолчанию» (это и есть сохранённый порядок)
+      if (state.sort === "default" && li > 0) entries.push(["plup", "Переместить выше", "i-chev-u"]);
+      if (state.sort === "default" && li >= 0 && li < state.list.length - 1) entries.push(["pldown", "Переместить ниже", "i-chev-d"]);
+    }
+    if (state.view === "history" && inList) entries.push(["unhist", "Удалить из истории", "i-trash"]);      // S15
+    if (state.view === "local" && inList && local) entries.push(["unlocal", "Удалить из Wave", "i-trash"]);   // S15
+    if (!local || track.artist_id) entries.push(["artist", "Перейти к исполнителю", "i-user"]);
     if (track.album || track.album_id) entries.push(["album", "Открыть альбом", "i-disc"]);
     // S14: исключение из рекомендаций (история, избранное и плейлисты не меняются; вернуть — в настройках)
-    entries.push(["norec", "Не рекомендовать трек", "i-x"]);
-    if (track.artist) entries.push(["norecartist", "Не рекомендовать исполнителя", "i-user"]);
+    if (!local) entries.push(["norec", "Не рекомендовать трек", "i-x"]);
+    if (!local && track.artist) entries.push(["norecartist", "Не рекомендовать исполнителя", "i-user"]);
     const denied = !downloaded && state.dlDenied.has(trackKey(track));
     const job = state.jobs[trackKey(track)];
     const busy = !downloaded && job && BUSY.includes(job.state);      // S11: идущую или ждущую загрузку можно отменить
-    if (!downloaded && state.dlStarting.has(trackKey(track))) {
+    if (local) {                                         // S15: локальный файл уже на компьютере — пункта загрузки нет
+    } else if (!downloaded && state.dlStarting.has(trackKey(track))) {
       entries.push(["download", "Загрузка запускается…", "i-download", true]);   // отменять ещё нечего
     } else {
       entries.push(["download", downloaded ? "Удалить загрузку" : busy ? "Отменить загрузку" : denied ? "Скачивание недоступно" : "Скачать",

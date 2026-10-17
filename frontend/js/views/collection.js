@@ -5,7 +5,7 @@ import { api, enc, jsonOpts, trackKey, trackPayload } from "../core/api.js";
 import { el } from "../core/elements.js";
 import { state, nav } from "../state/store.js";
 import { askText, askConfirm, pickPlaylist } from "../components/dialogs.js";
-import { renderRow } from "../components/cards.js";
+import { renderRow, trackCard } from "../components/cards.js";
 import { setBlock, skelCards } from "../components/skeleton.js";
 import { toast } from "../components/toast.js";
 import { layout } from "./shell.js";
@@ -13,6 +13,7 @@ import { resetList, setTracks, setStatus, showSkeleton, clearSkeleton, fetchPage
 import { showDetail } from "./detail.js";
 import { refreshDownloads, showDownloads } from "./downloads.js";
 import { computeArtists, renderArtistMixes } from "./sidebar.js";
+import { loadLibrary, showLocal } from "./library.js";
 
 // ---------- «Нравится» и история ----------
 export async function showLiked() {
@@ -145,6 +146,8 @@ export async function removeFromPlaylist(t) {
 }
 
 // ---------- «Коллекция»: сводка пользовательской библиотеки ----------
+// S15: поиск по коллекции (треки из «Нравится» и локальные, альбомы, исполнители, плейлисты) и фильтр разделов.
+// Всё ищется по уже загруженным данным, без запросов к источникам.
 export async function showCollection() {
   state.reopen = () => showCollection();
   state.searchCtl?.abort();
@@ -154,6 +157,7 @@ export async function showCollection() {
     api("/api/playlists").catch(() => null),
     api("/api/favorites").then((d) => { state.fav = new Set(d.items.map(trackKey)); state.favItems = d.items; }).catch(() => {}),
     refreshDownloads(),
+    loadLibrary(),
   ]);
   if (state.view !== "collection") return;
   const tile = (go, ico, title, sub) => {
@@ -169,9 +173,9 @@ export async function showCollection() {
     tile("liked", "i-heart", "Нравится", n(state.favItems.length, "трек", "трека", "треков")),
     tile("downloads", "i-download", "Скачанные", n(state.dl.size, "трек", "трека", "треков")),
     tile("history", "i-clock", "Недавно слушали", "История прослушивания"),
+    tile("local", "i-src-local", "Локальная музыка", n(state.localItems.length, "файл", "файла", "файлов")),
   );
-  state.colPl = [{ kind: "new", id: "new" }, ...(pl ? pl.items.map((p) => ({ kind: "playlist", id: String(p.id), name: p.name, count: p.count, cover: p.cover })) : [])];
-  renderRow(el.colPlaylists, state.colPl, "colpl");
+  state.colPlAll = pl ? pl.items.map((p) => ({ kind: "playlist", id: String(p.id), name: p.name, count: p.count, cover: p.cover })) : [];
   const seen = new Set();
   state.colAr = state.favItems.flatMap((t) => {
     const name = (t.artists && t.artists[0]) || t.artist, id = (t.artist_ids && t.artist_ids[0]) || t.artist_id, k = (name || "").toLowerCase();
@@ -180,12 +184,62 @@ export async function showCollection() {
     return [{ kind: "artist", source: t.source, id: String(id), name, cover: t.cover, subtitle: "Из избранного" }];
   }).slice(0, 20);
   renderRow(el.colArtists, state.colAr, "colar");
-  el.colArtistsSec.hidden = !state.colAr.length;
+  renderCollection();
+}
+
+const norm = (s) => String(s || "").toLowerCase().replace(/ё/g, "е");
+const COL_EMPTY = {
+  tracks: "Треков пока нет: отметь трек сердечком или добавь файлы в «Локальную музыку».",
+  albums: "Альбомов в коллекции пока нет. Открой альбом и нажми «В коллекцию».",
+  artists: "Исполнителей в коллекции пока нет. Открой страницу исполнителя и нажми «В коллекцию».",
+};
+
+/** Перерисовывает разделы «Коллекции» по запросу state.colQuery и фильтру state.colFilter. */
+export function renderCollection() {
+  const raw = state.colQuery.trim(), q = norm(raw), f = state.colFilter;
+  const has = (...xs) => !q || xs.some((x) => norm(x).includes(q));
+  const show = (k) => f === "all" || f === k;
+  // Треки: «Нравится» и локальные файлы, без повторов. Без запроса — только по фильтру «Треки» (иначе это дубль плиток)
+  const seen = new Set();
+  const tracks = [...state.favItems, ...state.localItems].filter((t) => {
+    const k = trackKey(t);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return has(t.title, t.artist, t.album);
+  });
+  const showTracks = f === "tracks" || (f === "all" && !!q);
+  state.colTracks = showTracks ? tracks : [];
+  el.colTracks.replaceChildren(...state.colTracks.map((t, i) => trackCard(t, i)));
+  el.colTracksN.textContent = state.colTracks.length ? plural(state.colTracks.length, "трек", "трека", "треков") : "";
+  el.colTracksSec.hidden = !state.colTracks.length;
+  state.colAlbums = show("albums") ? state.libAlbums.filter((c) => has(c.title, c.artist)) : [];
+  renderRow(el.colAlbums, state.colAlbums, "colal");
+  el.colAlbumsSec.hidden = !state.colAlbums.length;
+  state.colFavAr = show("artists") ? state.libArtists.filter((c) => has(c.name)) : [];
+  renderRow(el.colFavArtists, state.colFavAr, "colfa");
+  el.colFavArtistsSec.hidden = !state.colFavAr.length;
+  const pls = state.colPlAll.filter((c) => has(c.name));
+  state.colPl = show("playlists") ? (q ? pls : [{ kind: "new", id: "new" }, ...pls]) : [];
+  renderRow(el.colPlaylists, state.colPl, "colpl");
+  el.colPlSec.hidden = !state.colPl.length;
+  el.colArtistsSec.hidden = !(f === "all" && !q && state.colAr.length);
+  el.colTiles.hidden = f !== "all" || !!q;
+  const nothing = [el.colTracksSec, el.colAlbumsSec, el.colFavArtistsSec, el.colPlSec, el.colArtistsSec, el.colTiles].every((n) => n.hidden);
+  el.colEmpty.hidden = !nothing;
+  el.colEmpty.textContent = !nothing ? "" : q ? `В коллекции ничего не найдено по запросу «${raw}».` : (COL_EMPTY[f] || "");
+  el.colFilter.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.f === f)));
 }
 export function initCollectionTiles() {
   el.colTiles.addEventListener("click", (e) => {
     const b = e.target.closest("[data-go]");
     if (!b) return;
-    nav.to(() => ({ liked: showLiked, downloads: showDownloads, history: showHistory })[b.dataset.go]());
+    nav.to(() => ({ liked: showLiked, downloads: showDownloads, history: showHistory, local: showLocal })[b.dataset.go]());
+  });
+  el.colQ.addEventListener("input", () => { state.colQuery = el.colQ.value; renderCollection(); });
+  el.colFilter.addEventListener("click", (e) => {
+    const b = e.target.closest(".chip");
+    if (!b) return;
+    state.colFilter = b.dataset.f;
+    renderCollection();
   });
 }

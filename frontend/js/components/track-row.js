@@ -103,6 +103,8 @@ function dlStatus(t) {
 
 /** Рисует кнопку загрузки: скачать / этап и прогресс (клик = отменить) / скачано (клик = удалить) / недоступно / ошибка. */
 export function paintDl(btn, t) {
+  btn.hidden = t.source === "local";                     // S15: локальный файл уже на компьютере — скачивать нечего
+  if (btn.hidden) return;
   const st = dlStatus(t);
   btn.classList.toggle("is-done", st.kind === "done");
   btn.classList.toggle("is-busy", st.kind === "busy");

@@ -2,7 +2,7 @@
 // и защиты от запоздавших ответов — state/settings.js.
 import { $, mk } from "../core/dom.js";
 import { clamp } from "../core/format.js";
-import { api, jsonOpts } from "../core/api.js";
+import { api, jsonOpts, trackKey } from "../core/api.js";
 import { el, audio } from "../core/elements.js";
 import { state } from "../state/store.js";
 import { uiSave, round3, markLocal, settingsGeneration, flags, applySettings, fetchSettings, migrateLocalUi } from "../state/settings.js";
@@ -13,6 +13,8 @@ import { listExclusions, removeExclusion, resetSignals, undoReset } from "../com
 import { focusSafely, rescueFocus } from "../components/focus.js";
 import { layout, syncTabs } from "./shell.js";
 import { renderThemeMixes, computeArtists, renderArtistMixes } from "./sidebar.js";
+import { repaintFav } from "../components/favorites.js";
+import { loadLibrary } from "./library.js";
 
 /** Поле формы настроек: не перезаписываем то, что пользователь сейчас редактирует. */
 function setField(sel, prop, value) {
@@ -32,6 +34,17 @@ function applyUiSettings(v) {
   renderThemeMixes();
   renderProfile();
   document.body.dataset.settings = "ready";              // признак готовности (используют e2e-тесты)
+}
+/** Настройки интерфейса после импорта библиотеки (S15): громкость, тексты, обложки миксов, имя профиля. */
+function applyImportedUi(v) {
+  if (Number.isFinite(v.volume)) audio.volume = clamp(v.volume, 0, 1);
+  if (Number.isFinite(v.last_volume) && v.last_volume >= 0.05) state.lastVol = v.last_volume;
+  state.lyricsOn = v.lyrics_visible !== false;
+  Object.assign(covers, v.mix_covers || {});
+  for (const m of themeMixes) if (covers[m.themeId]) m.cover = covers[m.themeId];
+  paintVolume();
+  renderThemeMixes();
+  renderProfile();
 }
 /** Настройки при запуске: из backend, при первом запуске новой версии — перенос старых из localStorage. */
 export async function loadSettings() {
@@ -147,6 +160,37 @@ export function initSettingsView() {
   });
   $("#set-clear-cache").addEventListener("click", async () => {
     try { await api("/api/settings/clear-cache", { method: "POST" }); setMsg("Кэш очищен. Загрузки не затронуты."); } catch (e) { setMsg(e.message); }
+  });
+  // S15: резервная копия библиотеки (JSON). Экспорт пишет файл в папку загрузок: окно Wave (WebView2) не сохраняет
+  // скачивания браузера. Импорт — содержимое выбранного файла; backend проверяет его целиком и пишет одной транзакцией.
+  $("#set-export").addEventListener("click", async () => {
+    try { const r = await api("/api/library/export/file", { method: "POST" }); setMsg(`Библиотека сохранена в файл: ${r.path}`); }
+    catch (e) { setMsg(`Экспорт не удался: ${e.message}`); }
+  });
+  $("#set-import").addEventListener("click", () => $("#set-import-file").click());
+  $("#set-import-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";                                   // тот же файл можно выбрать ещё раз
+    if (!file) return;
+    if (!await askConfirm({ title: "Импортировать библиотеку?", ok: "Импортировать",
+      text: `Из файла «${file.name}» добавятся избранное и плейлисты, которых здесь нет, а настройки заменятся сохранёнными в файле. Если в файле есть ошибка, ничего не изменится.` })) return;
+    let d;
+    try { d = await api("/api/library/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: await file.text() }); }
+    catch (err) { setMsg(`Импорт не выполнен: ${err.message}`); return; }
+    const im = d.imported, sk = d.skipped;
+    setMsg(`Импорт выполнен: треков в избранном ${im.tracks}, альбомов ${im.albums}, исполнителей ${im.artists}, плейлистов ${im.playlists}`
+      + ` (треков в них ${im.playlist_tracks}), настроек ${im.settings}.`
+      + (sk.existing || sk.duplicate_playlists ? ` Уже было: ${sk.existing + sk.duplicate_playlists}.` : "")
+      + (sk.missing_local ? ` Локальных файлов нет на этом компьютере: ${sk.missing_local}.` : ""));
+    try {
+      const fav = await api("/api/favorites");
+      state.fav = new Set(fav.items.map(trackKey));
+      state.favItems = fav.items;
+      repaintFav(); computeArtists(); renderArtistMixes();
+    } catch { /* обновится при следующем открытии экранов */ }
+    loadLibrary();
+    await showSettings();                                  // настройки из файла — на экран и в интерфейс (тема — там же)
+    applyImportedUi(state.settings);
   });
   $("#set-name").addEventListener("change", (e) => {
     const name = [...e.target.value.trim()].slice(0, 24).join("");

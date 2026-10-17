@@ -60,6 +60,9 @@
       <rect x="2" y="5" width="20" height="14" rx="4" fill="none" stroke="currentColor"/>
       <path d="M10 9v6l5-3z" fill="currentColor" stroke="none"/>
     </symbol>
+    <!-- S15: локальный файл (лист с нотой) и «добавить файлы» -->
+    <symbol id="i-src-local" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4" fill="none" stroke="currentColor"/><circle cx="10.500" cy="16.500" r="1.800" fill="currentColor" stroke="none"/><path d="M12.300 16.500V10l2.700 1" fill="none" stroke="currentColor"/></symbol>
+    <symbol id="i-file-add" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4M12 11v6M9 14h6"/></symbol>
     <symbol id="i-src-sc" viewBox="0 0 24 24">
       <path d="M2 14v3M5 11v6M8 9v8M11 8v9" fill="none" stroke="currentColor"/>
       <path d="M13.500 17.500V8.300A5 5 0 0 1 22.500 12a3 3 0 0 1-.8 5.500z" fill="currentColor" stroke="none"/>
@@ -226,6 +229,7 @@
               <div class="detail__actions">
                 <button class="btn btn--accent" id="d-play" type="button"><svg class="icon icon--fill"><use href="#i-play"/></svg>Слушать</button>
                 <button class="btn btn--ghost" id="d-shuffle" type="button"><svg class="icon"><use href="#i-shuffle"/></svg>Вперемешку</button>
+                <button class="btn btn--ghost" id="d-fav" type="button" aria-pressed="false" hidden><svg class="icon"><use href="#i-heart"/></svg><span id="d-fav-t">В коллекцию</span></button>
                 <button class="btn btn--ghost" id="d-rename" type="button" hidden><svg class="icon"><use href="#i-edit"/></svg>Переименовать</button>
                 <button class="btn btn--ghost btn--danger" id="d-delete" type="button" hidden><svg class="icon"><use href="#i-trash"/></svg>Удалить плейлист</button>
               </div>
@@ -255,6 +259,8 @@
           <div class="results__head">
             <h2 class="results__title" id="results-title" tabindex="-1">Треки</h2>
             <p class="results__status" id="status" role="status" aria-live="polite"></p>
+            <button class="btn btn--ghost btn--sm" id="local-add" type="button" hidden><svg class="icon"><use href="#i-file-add"/></svg>Добавить файлы</button>
+            <input type="file" id="local-file" accept=".mp3,.m4a,.ogg,.oga,.opus,.flac,.wav,.webm,.weba,audio/*" multiple hidden tabindex="-1" aria-hidden="true">
             <button class="btn btn--ghost btn--sm" id="clear-history" type="button" hidden><svg class="icon"><use href="#i-trash"/></svg>Очистить историю</button>
             <select class="sort" id="sort" aria-label="Сортировка" hidden></select>
           </div>
@@ -268,8 +274,32 @@
       <!-- ================= Коллекция ================= -->
       <div class="view" id="view-collection" hidden>
         <h1 class="page-h" tabindex="-1">Коллекция</h1>
+        <div class="colbar" role="search">
+          <label class="colbar__q"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="search" id="col-q" placeholder="Найти в коллекции" aria-label="Найти в коллекции" spellcheck="false" autocomplete="off"></label>
+          <div class="chips" id="col-filter" role="group" aria-label="Что показывать">
+            <button class="chip" type="button" data-f="all" aria-pressed="true">Всё</button>
+            <button class="chip" type="button" data-f="tracks" aria-pressed="false">Треки</button>
+            <button class="chip" type="button" data-f="albums" aria-pressed="false">Альбомы</button>
+            <button class="chip" type="button" data-f="artists" aria-pressed="false">Исполнители</button>
+            <button class="chip" type="button" data-f="playlists" aria-pressed="false">Плейлисты</button>
+          </div>
+        </div>
+        <p class="col-empty" id="col-empty" role="status" hidden></p>
         <div class="tiles" id="col-tiles"></div>
-        <section class="sec" aria-labelledby="h-col-pl">
+        <section class="sec" id="col-tracks-sec" aria-labelledby="h-col-tr" hidden>
+          <header class="sec__head"><h2 class="sec__h" id="h-col-tr">Треки</h2><span class="sec__count" id="col-tracks-n"></span></header>
+          <div class="tgrid" id="col-tracks"></div>
+        </section>
+        <section class="sec" id="col-albums-sec" aria-labelledby="h-col-al" hidden>
+          <header class="sec__head"><h2 class="sec__h" id="h-col-al">Альбомы</h2></header>
+          <div class="scroller" id="col-albums" style="--card-w:168px"></div>
+        </section>
+        <section class="sec" id="col-fav-artists-sec" aria-labelledby="h-col-fa" hidden>
+          <header class="sec__head"><h2 class="sec__h" id="h-col-fa">Исполнители</h2></header>
+          <div class="scroller" id="col-fav-artists" style="--card-w:150px"></div>
+        </section>
+        <section class="sec" id="col-pl-sec" aria-labelledby="h-col-pl">
           <header class="sec__head"><h2 class="sec__h" id="h-col-pl">Плейлисты</h2><button class="sec__link" type="button" data-view="playlists">Смотреть всё</button></header>
           <div class="scroller" id="col-playlists" style="--card-w:168px"></div>
         </section>
@@ -322,6 +352,13 @@
             <button class="btn btn--ghost" id="set-clear-history" type="button">Очистить историю</button>
             <button class="btn btn--ghost" id="set-clear-cache" type="button">Очистить кэш</button>
           </div>
+          <h4 class="set__sub">Резервная копия библиотеки</h4>
+          <div class="set__actions">
+            <button class="btn btn--ghost" id="set-export" type="button">Экспорт в файл</button>
+            <button class="btn btn--ghost" id="set-import" type="button">Импорт из файла…</button>
+            <input type="file" id="set-import-file" accept=".json,application/json" hidden tabindex="-1" aria-hidden="true">
+          </div>
+          <p class="set__hint">Избранное (треки, альбомы, исполнители), плейлисты с порядком треков и настройки — в JSON-файл в папке загрузок. Импорт добавляет недостающее и заменяет настройки; если в файле есть ошибка, ничего не меняется. Локальные аудиофайлы в файл не входят.</p>
           <p class="set__hint" id="set-paths"></p>
         </div>
         <p class="set__msg" id="set-msg" role="status"></p>

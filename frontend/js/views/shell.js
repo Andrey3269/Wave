@@ -7,7 +7,7 @@ import { closeFs } from "./fullscreen.js";
 import { setFocusFallback, keepFocus } from "../components/focus.js";
 
 const NAV_OF = { home: "home", search: "search", playlists: "playlists", playlist: "playlists", collection: "collection",
-  liked: "liked", downloads: "downloads", history: "history", settings: "settings" };
+  liked: "liked", downloads: "downloads", history: "history", settings: "settings", local: "collection" };
 
 /** Показывает нужные блоки для state.view. Мини-плеер скрывает CSS по body[data-view] и body[data-track]. */
 export function layout() {
@@ -22,6 +22,8 @@ export function layout() {
   el.albumsSec.hidden = !(v === "artist" && state.albums.length);
   el.relatedSec.hidden = !(v === "artist" && state.related.length);
   el.clearHistory.hidden = v !== "history";
+  el.localAdd.hidden = v !== "local";                    // S15
+  el.dFav.hidden = !(v === "artist" || v === "album") || !state.detailCard;
   const showCards = isCards() || v === "playlists";
   el.cards.hidden = !showCards;
   el.tracks.hidden = showCards;

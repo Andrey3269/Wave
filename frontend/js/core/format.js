@@ -1,7 +1,7 @@
 // Чистые функции форматирования и мелкие утилиты. Без DOM: тестируются через node --test (tests/js/format.test.mjs).
 
 // Источники: ключ совпадает с track.source с бэкенда; иконка берётся из спрайта #i-src-<ключ>
-export const SOURCES = { yt: "YouTube Music", sc: "SoundCloud" };
+export const SOURCES = { yt: "YouTube Music", sc: "SoundCloud", local: "Локальный файл" };   // local — S15
 
 export const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 export const rand = (n) => Math.floor(Math.random() * n);

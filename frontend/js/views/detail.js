@@ -8,6 +8,7 @@ import { renderRow, markMix } from "../components/cards.js";
 import { setBlock, setMore } from "../components/skeleton.js";
 import { toast, hideToast } from "../components/toast.js";
 import { layout } from "./shell.js";
+import { setDetailCard } from "./library.js";
 import { resetList, setTracks, setStatus, showSkeleton, clearSkeleton, emptyText } from "./list.js";
 
 export function showDetail(kind, title, sub, cover, round) {
@@ -32,6 +33,7 @@ export async function openArtist(source, id) {
   try {
     const d = await getJSON(`/api/artist/${source}/${enc(id)}`, ctl.signal);
     showDetail("Артист", d.artist.name, d.artist.subtitle, d.artist.cover, true);
+    if (state.view === "artist") setDetailCard({ kind: "artist", source, id, name: d.artist.name, cover: d.artist.cover, subtitle: d.artist.subtitle });
     state.albums = d.albums || [];
     state.related = d.related || [];
     renderRow(el.albumsRow, state.albums, "albums");
@@ -66,6 +68,7 @@ export async function openAlbum(source, id, pl) {
     const mins = Math.round(d.tracks.reduce((s, t) => s + (t.duration || 0), 0) / 60);
     const info = [d.album.artist, d.album.year, d.tracks.length ? `${d.tracks.length} тр.${mins ? `, ${mins} мин` : ""}` : ""].filter(Boolean).join(" · ");
     showDetail("Альбом", d.album.title, info, d.album.cover, false);
+    if (state.view === "album") setDetailCard({ ...d.album, kind: "album", source, id: d.album.id || id, playlist_id: d.album.playlist_id || pl || null });
     setTracks(d.tracks);
     setBlock(el.empty, d.tracks.length ? "" : (d.unavailable
       ? "Источник не отдаёт эти треки: они закрыты в твоём регионе или доступны только по подписке (на SoundCloud это часто 30-секундные превью)."

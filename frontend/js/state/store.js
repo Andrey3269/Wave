@@ -15,6 +15,9 @@ export const state = {
   tab: "tracks",     // вкладка поиска: tracks | artists | albums
   sort: "default",
   cards: [], albums: [], related: [], colPl: [], colAr: [],
+  // S15: библиотека — избранные альбомы и исполнители (/api/library), локальные треки, поиск и фильтр коллекции
+  libAlbums: [], libArtists: [], localItems: [], colPlAll: [], colTracks: [], colAlbums: [], colFavAr: [], colQuery: "", colFilter: "all",
+  detailCard: null,  // карточка открытого артиста или альбома (кнопка «В коллекцию»)
   ctx: null, reopen: null,
   fav: new Set(),    // ключи избранных треков (единственный источник правды)
   favItems: [],      // сами избранные треки (для рекомендаций и коллекции)

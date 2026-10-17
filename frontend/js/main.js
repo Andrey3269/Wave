@@ -19,7 +19,7 @@ import { initEmptyRetry } from "./components/skeleton.js";
 import { initFocusKeeper, canFocus } from "./components/focus.js";
 import { initPickPlaylist } from "./components/dialogs.js";
 import { initLyrics } from "./components/lyrics.js";
-import { bindCardClicks, initRowScroll } from "./components/cards.js";
+import { bindCardClicks, bindTrackGrid, initRowScroll } from "./components/cards.js";
 import { openMenu, closeMenu, initMenu } from "./components/menu.js";
 import { repaintFav, toggleFav } from "./components/favorites.js";
 import { shareTrack } from "./components/share.js";
@@ -41,6 +41,7 @@ import { queueAdd, queueRemove, queueMove, queueMoveTo, toggleQueue, closeQueue,
 import { showLiked, showHistory, initHistory, createPlaylistFlow, showPlaylists, openPlaylist, initPlaylistActions,
   addToPlaylistFlow, removeFromPlaylist, showCollection, initCollectionTiles } from "./views/collection.js";
 import { refreshDownloads, pollJobs, toggleDownload, showDownloads } from "./views/downloads.js";
+import { loadLibrary, toggleDetailFav, importLocalFiles, removeLocal, movePlaylistTrack, removeFromHistory } from "./views/library.js";
 import { loadSettings, showSettings, renderProfile, initSettingsView } from "./views/settings.js";
 import { initOffline } from "./views/offline.js";
 
@@ -58,8 +59,10 @@ nav.fallback = () => goHome(false);
 // ---------- Карточки ----------
 // Карточки артистов, альбомов и плейлистов на всех экранах: по имени списка обработчик находит данные карточки
 const CARD_LISTS = { cards: () => state.cards, albums: () => state.albums, related: () => state.related,
-  colpl: () => state.colPl, colar: () => state.colAr, simar: () => similar.artists };
-bindCardClicks([el.cards, el.albumsRow, el.relatedRow, el.colPlaylists, el.colArtists, now.similarArtists], CARD_LISTS, (c) => {
+  colpl: () => state.colPl, colar: () => state.colAr, simar: () => similar.artists,
+  colal: () => state.colAlbums, colfa: () => state.colFavAr };              // S15: альбомы и исполнители коллекции
+bindCardClicks([el.cards, el.albumsRow, el.relatedRow, el.colPlaylists, el.colArtists, now.similarArtists, el.colAlbums,
+  el.colFavArtists], CARD_LISTS, (c) => {
   if (c.kind === "new") { createPlaylistFlow(); return; }
   if (c.kind === "artist") navTo(() => openArtist(c.source, c.id));
   else if (c.kind === "playlist") navTo(() => openPlaylist(c.id));
@@ -67,6 +70,7 @@ bindCardClicks([el.cards, el.albumsRow, el.relatedRow, el.colPlaylists, el.colAr
 });
 initHomeGrids();                                         // карточки треков главной и «Продолжить слушать»
 initSimilarGrid();                                       // «Похожие» на странице трека
+bindTrackGrid(el.colTracks, () => state.colTracks, () => "Коллекция");   // S15: найденные в коллекции треки
 initRowScroll();                                         // стрелки у горизонтальных рядов
 
 initSidebar();                                           // «Твоя музыка» и «Миксы по артистам»
@@ -114,6 +118,18 @@ initMenu({
   share: (t) => shareTrack(t),
   norec: (t) => excludeTrack(t),                         // S14
   norecartist: (t) => excludeArtist(t),
+  plup: (t) => movePlaylistTrack(t, -1),                 // S15: порядок плейлиста
+  pldown: (t) => movePlaylistTrack(t, 1),
+  unhist: (t) => removeFromHistory(t),                   // S15: одна запись истории
+  unlocal: (t) => removeLocal(t),                        // S15: локальный трек
+});
+// S15: «В коллекцию» на странице артиста и альбома; импорт локальных файлов (системный диалог выбора файлов)
+el.dFav.addEventListener("click", () => toggleDetailFav());
+el.localAdd.addEventListener("click", () => el.localFile.click());
+el.localFile.addEventListener("change", () => {
+  const files = [...el.localFile.files];
+  el.localFile.value = "";                               // тот же файл можно выбрать снова
+  importLocalFiles(files);
 });
 
 initPlaylistActions();                                   // «Переименовать», «Удалить» плейлист
@@ -242,6 +258,7 @@ async function boot() {
     saved,
     api("/api/favorites").then((d) => { state.fav = new Set(d.items.map(trackKey)); state.favItems = d.items; computeArtists(); renderArtistMixes(); repaintFav(); }),
     loadSettings(),
+    loadLibrary(),                                       // S15: альбомы и исполнители в коллекции, локальные треки
   ]);
   // Первый экран — только если пользователь, пока шли запросы выше, сам ничего не открыл (каждый экран
   // выставляет state.reopen). Иначе поиск, начатый в первые секунды, уводило на главную.

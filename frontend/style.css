@@ -499,6 +499,21 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .tile__title { font-weight: 600; }
 .tile__sub { color: var(--muted); font-size: 13px; }
 .tile__go { color: var(--faint); }
+/* S15: поиск и фильтры коллекции (компоненты прежней системы: поле как у поиска, кнопки как вкладки) */
+.colbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-top: 16px; }
+.colbar__q { display: flex; align-items: center; gap: 8px; flex: 1 1 260px; max-width: 420px; height: 42px; padding: 0 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.colbar__q:focus-within { border-color: var(--line-2); }
+.colbar__q input { flex: 1; min-width: 0; height: 100%; background: none; border: 0; outline: none; color: var(--text); }
+.colbar__q input::placeholder { color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { padding: 8px 16px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-weight: 600; transition: background-color .12s, color .12s; }
+.chip:hover { color: var(--text); }
+.chip[aria-pressed="true"] { background: var(--text); color: var(--bg); }
+.col-empty { margin-top: 20px; color: var(--muted); }
+.sec__count { color: var(--muted); font-size: 13px; }
+#d-fav[aria-pressed="true"] { color: var(--accent-ink); }
+#d-fav[aria-pressed="true"] .icon { fill: currentColor; }
 
 .settings { max-width: 720px; }
 .set { padding: 20px 0; border-bottom: 1px solid var(--line); }

@@ -157,7 +157,8 @@ export async function fetchPage(append) {
 export function resetList(extra) {
   state.searchCtl?.abort();
   // S12: подгрузка прежнего экрана отменена — её флаг больше не держит «Загрузить ещё» нового экрана
-  Object.assign(state, { query: "", offset: 0, more: false, loadingMore: false, sort: "default", cards: [], albums: [], related: [] }, extra);
+  Object.assign(state, { query: "", offset: 0, more: false, loadingMore: false, sort: "default", cards: [], albums: [], related: [],
+    detailCard: null }, extra);
   setMore(el.more, "none");
 }
 
