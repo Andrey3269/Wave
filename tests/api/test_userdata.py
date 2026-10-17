@@ -100,11 +100,18 @@ def test_favorite_saved_before_s6_is_read_as_is(api):
 
 
 def test_saved_favorite_can_always_be_removed(api):
-    """M6 (исправлено в S6): запись с «/» в id удаляется — и как шлёт фронтенд (%2F), и как есть."""
+    """
+    M6 (S6, проверка формата id — S13): запись с «/» в id, сохранённая версией до проверки формата, удаляется —
+    и как шлёт фронтенд (%2F), и как есть. Новую такую запись сохранить нельзя (422); при чтении старая
+    строка пропускается (воспроизвести её нельзя), но DELETE по ключу её удаляет.
+    """
+    assert api.post("/api/favorites", json=track_payload(id_="a/b")).status_code == 422
     for path in ("/api/favorites/yt/a%2Fb", "/api/favorites/yt/a/b"):
-        assert api.post("/api/favorites", json=track_payload(id_="a/b")).status_code == 200
-        assert api.delete(path).json() == {"ok": True}
+        _write(api.profile, "INSERT INTO favorites (key, data, added_at) VALUES (?, ?, 1)",
+               [("yt:a/b", json.dumps(track_payload(id_="a/b")))])
         assert api.get("/api/favorites").json()["items"] == []
+        assert api.delete(path).json() == {"ok": True}
+        assert api.profile.sql("SELECT COUNT(*) FROM favorites") == [(0,)]
 
 
 def test_favorites_survive_restart(harness):
@@ -295,3 +302,104 @@ def test_album_id_is_kept_in_snapshots_and_validated(api):
         assert api.post("/api/favorites", json=track_payload(id_=B, album_id=bad)).status_code == 422
     old = track_payload(id_=C)                                             # снимок до S10: поля нет вовсе
     assert "album_id" not in old and api.post("/api/history", json=old).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# S13: серверная валидация снимков (TrackIn) и чтение старых строк
+# ---------------------------------------------------------------------------
+WRITE_ENDPOINTS = ["/api/favorites", "/api/history"]
+GOOD_COVERS = ["https://lh3.googleusercontent.com/x=w544-h544", "https://i.ytimg.com/vi/x/hq.jpg",
+               "https://yt3.ggpht.com/a", "https://i1.sndcdn.com/artworks-x-t500x500.jpg", f"/api/local/yt/{A}/cover"]
+BAD_COVERS = ["http://lh3.googleusercontent.com/x", "https://evil.example/c.jpg", "https://evilgoogleusercontent.com/x",
+              "https://googleusercontent.com.evil.example/x", "https://user@lh3.googleusercontent.com/x",
+              "https://lh3.googleusercontent.com:8443/x", "javascript:alert(1)", "//lh3.googleusercontent.com/x",
+              "/api/local/yt/../../x/cover", "/api/local/yt/bad/cover", "/api/stream/yt/" + A, "data:image/png;base64,AA",
+              "https://lh3.googleusercontent.com/a b", "https://lh3.googleusercontent.com/\\x", ""]
+
+
+@pytest.mark.parametrize("url", WRITE_ENDPOINTS)
+def test_stream_url_is_computed_by_server(api, url):
+    body = track_payload(id_=A, stream_url="https://evil.example/x.mp3")
+    assert api.post(url, json=body).status_code == 200
+    table = url.rsplit("/", 1)[-1]
+    stored = json.loads(api.profile.sql(f"SELECT data FROM {table}")[0][0])
+    assert stored["stream_url"] == f"/api/stream/yt/{A}"
+
+
+@pytest.mark.parametrize("cover", GOOD_COVERS)
+def test_allowed_covers_are_kept(api, cover):
+    api.post("/api/favorites", json=track_payload(id_=A, cover=cover))
+    assert api.get("/api/favorites").json()["items"][0]["cover"] == cover
+
+
+@pytest.mark.parametrize("cover", BAD_COVERS)
+def test_covers_outside_allowlist_are_dropped(api, cover):
+    """Обложка не из разрешённого списка не отклоняет трек, а сохраняется как null (и в базе её нет)."""
+    assert api.post("/api/favorites", json=track_payload(id_=A, cover=cover)).status_code == 200
+    stored = json.loads(api.profile.sql("SELECT data FROM favorites")[0][0])
+    assert stored["cover"] is None
+    assert api.get("/api/favorites").json()["items"][0]["cover"] is None
+
+
+@pytest.mark.parametrize("link, kept", [("https://music.youtube.com/watch?v=" + A, True), ("https://soundcloud.com/u/t", True),
+                                        ("javascript:alert(1)", False), ("https://evil.example/w", False),
+                                        ("http://music.youtube.com/watch?v=1", False)])
+def test_public_link_is_checked(api, link, kept):
+    api.post("/api/favorites", json=track_payload(id_=A, url=link))
+    assert api.get("/api/favorites").json()["items"][0]["url"] == (link if kept else None)
+
+
+@pytest.mark.parametrize("source, bad_id", [("yt", "a/b"), ("yt", "short"), ("yt", "../../etc/x"), ("yt", A + "Z"),
+                                            ("sc", "abc"), ("sc", "1" * 16), ("sc", A), ("yt", "")])
+def test_track_id_must_match_its_source(api, source, bad_id):
+    body = track_payload(source, bad_id)
+    for url in WRITE_ENDPOINTS:
+        assert api.post(url, json=body).status_code == 422, url
+    assert api.post("/api/history/skip", json={"source": source, "id": bad_id}).status_code == 422
+    assert api.post("/api/history/skip", json={"source": source, "id": bad_id, "track": body}).status_code == 422
+    assert api.profile.sql("SELECT (SELECT COUNT(*) FROM favorites) + (SELECT COUNT(*) FROM history)") == [(0,)]
+
+
+LEGACY_BAD_ROWS = [
+    pytest.param("not json", id="not-json"),
+    pytest.param("[1, 2]", id="not-object"),
+    pytest.param(json.dumps(track_payload("spotify", A)), id="unknown-source"),
+    pytest.param(json.dumps(track_payload(id_="../x")), id="bad-id"),
+    pytest.param(json.dumps({"title": "без id"}), id="no-id"),
+]
+
+
+@pytest.mark.parametrize("raw", LEGACY_BAD_ROWS)
+def test_invalid_legacy_rows_are_skipped_not_500(api, raw):
+    """Строка, записанная мимо API (старая версия, повреждение), при чтении пропускается; остальные видны; строка цела."""
+    good = json.dumps(track_payload(id_=B))
+    _write(api.profile, "INSERT INTO favorites (key, data, added_at) VALUES (?, ?, ?)", [("x:bad", raw, 2), (f"yt:{B}", good, 1)])
+    _write(api.profile, "INSERT INTO history (key, data, played_at) VALUES (?, ?, ?)", [("x:bad", raw, 2), (f"yt:{B}", good, 1)])
+    favs = api.get("/api/favorites")
+    assert favs.status_code == 200 and [t["id"] for t in favs.json()["items"]] == [B]
+    hist = api.get("/api/history")
+    assert hist.status_code == 200 and [t["id"] for t in hist.json()["tracks"]] == [B]
+    assert [p["track"]["id"] for p in userdata.recent_plays()] == [B]
+    assert api.get("/api/recommendations").status_code == 200
+    assert api.profile.sql("SELECT COUNT(*) FROM favorites") == [(2,)]
+
+
+def test_legacy_row_urls_are_rechecked_on_read(api):
+    """Старая строка с чужими адресами: stream_url — от сервера, обложка и ссылка вне списков — null."""
+    old = track_payload(id_=A, stream_url="https://evil.example/a.mp3", cover="javascript:alert(1)",
+                        url="https://evil.example/w")
+    _write(api.profile, "INSERT INTO favorites (key, data, added_at) VALUES (?, ?, 1)", [(f"yt:{A}", json.dumps(old))])
+    _write(api.profile, "INSERT INTO history (key, data, played_at) VALUES (?, ?, 1)", [(f"yt:{A}", json.dumps(old))])
+    for t in (api.get("/api/favorites").json()["items"][0], api.get("/api/history").json()["tracks"][0],
+              userdata.recent_plays()[0]["track"], userdata.favorite_tracks()[0]):
+        assert (t["stream_url"], t["cover"], t["url"]) == (f"/api/stream/yt/{A}", None, None)
+    assert "evil.example" in api.profile.sql("SELECT data FROM favorites")[0][0]      # сама строка не переписана
+
+
+def test_history_paging_is_not_cut_by_skipped_row(api, monkeypatch):
+    """has_more считается по строкам базы: пропущенная испорченная строка не обрывает листание истории."""
+    rows = [(f"yt:EEEEEEEEEE{i}", json.dumps(track_payload(id_=f"EEEEEEEEEE{i}")), 100 - i) for i in range(3)]
+    rows.append(("x:bad", "oops", 50))
+    _write(api.profile, "INSERT INTO history (key, data, played_at) VALUES (?, ?, ?)", rows)
+    page = api.get("/api/history", params={"limit": 4}).json()
+    assert len(page["tracks"]) == 3 and page["has_more"] is True

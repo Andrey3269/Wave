@@ -20,6 +20,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError
 
 import jsruntime
+from domain.models import TRACK_ID_RE
 from streaming import config, errors
 
 log = logging.getLogger("musicmeta.stream")
@@ -27,8 +28,8 @@ log = logging.getLogger("musicmeta.stream")
 # Дочерние процессы yt-dlp (JS-runtime Deno): без окна консоли, с таймаутом и завершением при выходе
 jsruntime.install_process_guard()
 
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")      # videoId YouTube
-SC_ID_RE = re.compile(r"^\d{1,15}$")                  # числовой id трека SoundCloud
+VIDEO_ID_RE = TRACK_ID_RE["yt"]                      # videoId YouTube (domain/models.py)
+SC_ID_RE = TRACK_ID_RE["sc"]                         # числовой id трека SoundCloud
 
 DEFAULT_TTL = 30 * 60             # TTL ссылки, если в ней нет параметра expire
 EXPIRY_MARGIN = 120               # обновляем ссылку за 2 минуты до истечения

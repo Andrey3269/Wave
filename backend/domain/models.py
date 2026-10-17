@@ -12,6 +12,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+# Формат id трека в каждом источнике: videoId YouTube и числовой id SoundCloud (S13: здесь единое определение;
+# резолвер потоков, загрузки, очередь плеера и проверка снимков берут его отсюда)
+TRACK_ID_RE: dict[str, re.Pattern] = {
+    "yt": re.compile(r"^[A-Za-z0-9_-]{11}$"),
+    "sc": re.compile(r"^\d{1,15}$"),
+}
+
 # browseId альбома YouTube Music. Плейлисты (VL…, PL…, OLAK5uy_…) сюда не подходят: их за альбом не выдаём.
 ALBUM_ID_RE = re.compile(r"^MPRE[\w-]{1,80}$")
 

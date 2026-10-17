@@ -203,7 +203,9 @@ def test_resolver_error_message_reaches_job(dl):
 
 
 @pytest.mark.parametrize("cover", ["http://lh3.googleusercontent.com/x", "https://evil.example/cover.jpg",
-                                   "https://googleusercontent.com.evil.example/x", None])
+                                   "https://googleusercontent.com.evil.example/x",
+                                   "https://evilgoogleusercontent.com/x",       # S13: раньше проходило проверку по окончанию имени
+                                   "https://user@lh3.googleusercontent.com/x", None])
 def test_cover_only_from_allowed_https_hosts(dl, cover):
     dl.post("/api/downloads", json={**REQ, "cover": cover})
     assert wait_job(dl)["state"] == "done"

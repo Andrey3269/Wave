@@ -41,7 +41,6 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -51,6 +50,7 @@ from pydantic import BaseModel
 import download_policy
 import library
 import paths
+from domain import snapshot
 from download_io import ThreadFile, clear_part_dir, is_link, remove_partial, run_in_thread
 from lyrics import fetch_lyrics
 from streaming import hls_download
@@ -78,7 +78,7 @@ SHUTDOWN_WAIT = 6.0
 # готовности backend 40 с: дальше очистка идёт в фоне и не трогает папки идущих загрузок (_live_parts)
 CLEANUP_STARTUP_WAIT = 5.0
 ACTIVE = {"queued", "preparing", "downloading", "processing"}
-COVER_HOSTS = ("googleusercontent.com", "ytimg.com", "ggpht.com", "sndcdn.com")   # откуда разрешено брать обложки
+COVER_HOSTS = snapshot.COVER_HOSTS          # откуда разрешено брать обложки (S13: один список с интерфейсом)
 EXT = {"mp4": ".m4a", "mpeg": ".mp3", "webm": ".webm", "ogg": ".ogg"}
 # Временная папка загрузки: имя library.safe_folder() + ".part" — «… [источник-id].part» с id, допустимым для
 # своего источника (S11: только такие папки удаляет очистка при старте)
@@ -349,8 +349,9 @@ async def _download_audio(client, rs, req: DownloadRequest, out: ThreadFile, job
 async def _download_cover(client, url: str | None, folder) -> str | None:
     if not url:
         return None
-    u = urlparse(url)
-    if u.scheme != "https" or not (u.hostname or "").endswith(COVER_HOSTS):
+    # S13: только https:// с хостов обложек и их поддоменов. Раньше проверка по окончанию имени пропускала
+    # «evilgoogleusercontent.com»
+    if snapshot.safe_cover(url, local=False) is None:
         return None
     try:
         r = await client.get(url, timeout=10)

@@ -165,6 +165,16 @@ def test_urls_and_unknown_fields_are_not_trusted(api):
     assert "evil.example" not in json.dumps(stored) and "javascript" not in json.dumps(stored)
 
 
+def test_cover_must_be_from_allowlist(api):
+    """S13: обложка в очереди — только с хостов обложек источников (раньше проходил любой https://)."""
+    ok = "https://i1.sndcdn.com/artworks-x-t500x500.jpg"
+    t = [{**track_payload(id_=YT[0]), "cover": "https://evil.example/c.jpg"},
+         {**track_payload(id_=YT[1]), "cover": "https://evilgoogleusercontent.com/c"},
+         {**track_payload(id_=YT[2]), "cover": ok}]
+    assert api.put("/api/player/state", json={"tracks": t, "index": 0}).status_code == 200
+    assert [x["cover"] for x in api.get("/api/player/state").json()["state"]["tracks"]] == [None, None, ok]
+
+
 def test_control_characters_in_text_are_neutralised(api):
     t = {**track_payload(id_=YT[0]), "title": "Песня\x00\nвторая строка", "artists": ["A\x1b", 7, "B"]}
     api.put("/api/player/state", json={"tracks": [t], "index": 0, "label": "Метка\r\n"})

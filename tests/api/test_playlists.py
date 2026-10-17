@@ -1,6 +1,7 @@
 """Локальные плейлисты /api/playlists (backend/playlists.py) на временной SQLite-базе."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -216,12 +217,21 @@ def test_delete_playlist_is_atomic(db):
 
 
 def test_track_with_slash_in_id_can_be_removed(api):
-    """Как у избранного (M6): трек с «/» в id удаляется и закодированным путём, и как есть."""
+    """
+    Как у избранного (M6): трек с «/» в id, сохранённый версией до проверки формата id, удаляется и закодированным
+    путём, и как есть. С S13 такой трек не добавить (422), а при чтении старая строка пропускается.
+    """
     pid = _create(api)
+    assert api.post(f"/api/playlists/{pid}/tracks", json=track_payload(id_="a/b")).status_code == 422
     for path in (f"/api/playlists/{pid}/tracks/yt/a%2Fb", f"/api/playlists/{pid}/tracks/yt/a/b"):
-        assert api.post(f"/api/playlists/{pid}/tracks", json=track_payload(id_="a/b")).json() == {"added": True}
-        assert api.delete(path).json() == {"ok": True}
+        con = sqlite3.connect(api.profile.db_path)
+        with con:
+            con.execute("INSERT INTO playlist_tracks (playlist_id, position, key, data, added_at) VALUES (?, 0, ?, ?, 1)",
+                        (pid, "yt:a/b", json.dumps(track_payload(id_="a/b"))))
+        con.close()
         assert api.get(f"/api/playlists/{pid}").json()["tracks"] == []
+        assert api.delete(path).json() == {"ok": True}
+        assert api.profile.sql("SELECT COUNT(*) FROM playlist_tracks") == [(0,)]
 
 
 def test_playlist_track_keeps_all_fields(api):
@@ -239,3 +249,21 @@ def test_unique_constraint_backs_duplicate_check(db):
     library._q("INSERT INTO playlist_tracks (playlist_id, position, key, data, added_at) VALUES (?, 0, 'yt:x', '{}', 0)", (pid,))
     with pytest.raises(sqlite3.IntegrityError):
         library._q("INSERT INTO playlist_tracks (playlist_id, position, key, data, added_at) VALUES (?, 1, 'yt:x', '{}', 0)", (pid,))
+
+
+def test_invalid_legacy_playlist_rows_are_skipped_and_urls_rechecked(api):
+    """S13: строки плейлиста, записанные мимо API, при чтении проверяются; испорченная пропускается, а не даёт 500."""
+    pid = _create(api)
+    first = track_payload(id_=A, cover="javascript:alert(1)", stream_url="https://evil.example/a.mp3")
+    con = sqlite3.connect(api.profile.db_path)
+    with con:
+        con.executemany("INSERT INTO playlist_tracks (playlist_id, position, key, data, added_at) VALUES (?, ?, ?, ?, 1)",
+                        [(pid, 0, f"yt:{A}", json.dumps(first)), (pid, 1, "x:bad", "{испорчено"),
+                         (pid, 2, f"yt:{B}", json.dumps(track_payload(id_=B)))])
+    con.close()
+    body = api.get(f"/api/playlists/{pid}").json()
+    assert [t["id"] for t in body["tracks"]] == [A, B]
+    assert body["tracks"][0]["cover"] is None and body["tracks"][0]["stream_url"] == f"/api/stream/yt/{A}"
+    assert body["playlist"]["cover"] == track_payload(id_=B)["cover"]
+    assert api.get("/api/playlists").json()["items"][0]["cover"] is None          # обложка первого трека отброшена
+

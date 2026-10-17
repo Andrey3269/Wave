@@ -145,6 +145,20 @@ def test_corrupt_stored_values_fall_back_to_defaults(api):
     assert (values["volume"], values["last_volume"], values["mix_covers"], values["theme"]) == (1.0, 1.0, {}, "auto")
 
 
+@pytest.mark.parametrize("cover", ["http://lh3.googleusercontent.com/a", "https://evil.example/x.png",
+                                   "https://evilgoogleusercontent.com/a", "/api/local/whatever"])
+def test_mix_cover_must_be_from_cover_allowlist(api, cover):
+    """S13: обложка микса — из того же разрешённого списка, что обложки треков (domain/snapshot.py)."""
+    assert api.put("/api/settings", json={"mix_covers": {"mood": cover}}).status_code == 400
+    assert api.put("/api/settings", json={"mix_covers": {"mood": f"/api/local/yt/{'A' * 11}/cover"}}).status_code == 200
+
+
+def test_stored_mix_covers_outside_allowlist_are_dropped_on_read(api):
+    library._q("INSERT INTO settings (key, value) VALUES (?, ?)",
+               ("mix_covers", '{"mood":"https://lh3.googleusercontent.com/ok","bad":"http://evil.example/x"}'))
+    assert api.get("/api/settings").json()["values"]["mix_covers"] == {"mood": "https://lh3.googleusercontent.com/ok"}
+
+
 # ---------------------------------------------------------------------------
 # Однократный перенос из localStorage (S2a)
 # ---------------------------------------------------------------------------

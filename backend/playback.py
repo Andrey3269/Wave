@@ -8,8 +8,9 @@
 
 Сохранённому не доверяем: при записи и при чтении проверяются структура, размеры, типы и значения.
 * Адрес потока не хранится: его всегда вычисляет сервер (/api/stream/{source}/{id}), как у остальных треков.
-* Обложка — только https:// или /api/local/…; публичная ссылка — только https:// на сайтах источников;
-  остальное отбрасывается (None), а не попадает в интерфейс.
+* Обложка и публичная ссылка — только из разрешённых списков (S13, domain/snapshot.py: https:// с хостов обложек
+  источников или /api/local/{source}/{id}/cover; ссылка — https:// на сайтах источников); остальное отбрасывается
+  (None), а не попадает в интерфейс.
 * Неизвестные поля трека и состояния отбрасываются.
 * Строка, которая при чтении не проходит проверку (испорчена, неполная, от другой версии), считается
   отсутствующей: интерфейс начинает с пустой очереди, в журнале — предупреждение. Строку перезапишет
@@ -32,13 +33,12 @@ import math
 import re
 import time
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 
 import library
+from domain import snapshot
 from domain.models import album_id_or_none
-from streaming.resolver import SC_ID_RE, VIDEO_ID_RE
 
 log = logging.getLogger("musicmeta.playback")
 router = APIRouter(prefix="/api", tags=["playback"])
@@ -50,11 +50,8 @@ MAX_TRACKS = 500                    # длинную очередь фронте
 MAX_HISTORY = 500
 MAX_POSITION = 24 * 3600.0          # секунд
 REPEAT = ("off", "all", "one")
-_ID = {"yt": VIDEO_ID_RE, "sc": SC_ID_RE}
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _ARTIST_ID = re.compile(r"^[\w-]{1,128}$")
-_LINK_HOSTS = {"music.youtube.com", "www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be",
-               "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"}
 
 
 class BadState(ValueError):
@@ -79,30 +76,13 @@ def _int(v: Any, lo: int, hi: int) -> int:
     return v
 
 
-def _cover(v: Any) -> str | None:
-    if (isinstance(v, str) and len(v) <= 2048 and not _CONTROL.search(v) and " " not in v
-            and (v.startswith("https://") or v.startswith("/api/local/"))):
-        return v
-    return None
-
-
-def _link(v: Any) -> str | None:
-    if not isinstance(v, str) or len(v) > 2048 or _CONTROL.search(v) or " " in v:
-        return None
-    try:
-        u = urlsplit(v)
-    except ValueError:
-        return None
-    return v if u.scheme == "https" and (u.hostname or "") in _LINK_HOSTS else None
-
-
 def _track(t: Any) -> dict:
     """Трек очереди в форме Track. Обязательные поля проверяются строго, необязательные — мягко (плохое → None)."""
     if not isinstance(t, dict):
         raise BadState("track")
     source = t.get("source")
     tid = t.get("id")
-    if source not in _ID or not isinstance(tid, str) or not _ID[source].fullmatch(tid):
+    if not snapshot.valid_track(source, tid):
         raise BadState("track id")
     artists = t.get("artists")
     if not isinstance(artists, list) or len(artists) > 20:
@@ -125,14 +105,14 @@ def _track(t: Any) -> dict:
         "album": _soft_text(t.get("album"), 500),
         "album_id": album_id_or_none(t.get("album_id")),
         "duration": duration if isinstance(duration, int) and not isinstance(duration, bool) and 0 <= duration <= MAX_POSITION else None,
-        "cover": _cover(t.get("cover")),
+        "cover": snapshot.safe_cover(t.get("cover")),
         "explicit": t.get("explicit") is True,
-        "stream_url": f"/api/stream/{source}/{tid}",          # вычисляет сервер, сохранённому не доверяем
+        "stream_url": snapshot.stream_url(source, tid),       # вычисляет сервер, сохранённому не доверяем
         "artist_id": artist_id if isinstance(artist_id, str) and _ARTIST_ID.fullmatch(artist_id) else None,
         "artist_ids": [x if isinstance(x, str) and _ARTIST_ID.fullmatch(x) else None for x in artist_ids],
         "plays": plays if isinstance(plays, int) and not isinstance(plays, bool) and plays >= 0 else None,
         "released": released if isinstance(released, str) and len(released) <= 40 and not _CONTROL.search(released) else None,
-        "url": _link(t.get("url")),
+        "url": snapshot.safe_link(t.get("url")),
     }
     return out
 

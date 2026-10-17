@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import library
 import paths
+from domain import snapshot
 
 log = logging.getLogger("musicmeta.user")
 router = APIRouter(prefix="/api", tags=["user"])
@@ -31,7 +32,13 @@ def register_cache_clear(fn: Callable[[], None]) -> None:
 
 
 class TrackIn(BaseModel):
-    """Снимок трека для избранного, истории и плейлистов. Поля и типы — как у main.Track (находка M6)."""
+    """
+    Снимок трека для избранного, истории и плейлистов. Поля и типы — как у main.Track (находка M6).
+
+    S13 (M6, валидация): id обязан быть в формате своего источника (иначе 422); stream_url клиент по-прежнему
+    присылает (контракт не меняется), но сохраняется вычисленный сервером /api/stream/{source}/{id}; обложка и
+    публичная ссылка — только из разрешённых списков (domain/snapshot.py), иначе сохраняются как null.
+    """
     id: str
     source: Literal["yt", "sc"]
     title: str
@@ -49,10 +56,25 @@ class TrackIn(BaseModel):
     released: str | None = None              # дата выхода ISO (есть только у SoundCloud)
     url: str | None = None
 
+    @model_validator(mode="after")
+    def _server_side_fields(self):
+        if not snapshot.valid_track(self.source, self.id):
+            raise ValueError("Некорректный идентификатор трека для этого источника")
+        self.stream_url = snapshot.stream_url(self.source, self.id)
+        self.cover = snapshot.safe_cover(self.cover)
+        self.url = snapshot.safe_link(self.url)
+        return self
+
 
 class KeyIn(BaseModel):
     source: Literal["yt", "sc"]
     id: str
+
+    @model_validator(mode="after")
+    def _valid_id(self):
+        if not snapshot.valid_track(self.source, self.id):
+            raise ValueError("Некорректный идентификатор трека для этого источника")
+        return self
 
 
 def _dump(t: TrackIn) -> dict:
@@ -83,7 +105,6 @@ UI_KEYS = ("volume", "last_volume", "lyrics_visible", "profile_name", "mix_cover
 MIGRATED_KEY = "ui_local_migrated"      # служебная отметка: перенос из localStorage уже был
 PROFILE_NAME_MAX = 24
 MIX_COVERS_MAX = 16
-_COVER_PREFIXES = ("https://", "http://", "/api/local/")
 _THEME_ID = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _DIGITS = re.compile(r"[0-9]{1,7}")                 # только ASCII-цифры: «²» и «٥» int() не примет
@@ -132,8 +153,8 @@ def _clean_covers(value, lenient: bool) -> dict[str, str]:
         raise BadValue("mix_covers")
     out: dict[str, str] = {}
     for k, v in value.items():
-        ok = (isinstance(k, str) and _THEME_ID.fullmatch(k) and isinstance(v, str) and len(v) <= 2048
-              and v.startswith(_COVER_PREFIXES) and not _CONTROL.search(v))
+        # S13: адрес обложки — из того же разрешённого списка, что у треков (domain/snapshot.safe_cover)
+        ok = isinstance(k, str) and _THEME_ID.fullmatch(k) and snapshot.safe_cover(v) is not None
         if ok:
             out[k] = v
         elif v is not None and not lenient:          # None = «обложки нет», это не ошибка
@@ -357,9 +378,14 @@ def clear_cache():
 
 
 # ---------- избранное ----------
+def _snapshots(rows, where: str) -> list[dict]:
+    """Снимки треков из строк базы: недопустимые строки пропускаются, адреса проверены (S13, domain/snapshot.py)."""
+    return [t for t in (snapshot.read_snapshot(r["data"], where, r["key"]) for r in rows) if t is not None]
+
+
 @router.get("/favorites")
 def list_favorites():
-    return {"items": [json.loads(r["data"]) for r in _q("SELECT data FROM favorites ORDER BY added_at DESC")]}
+    return {"items": favorite_tracks()}
 
 
 @router.post("/favorites")
@@ -378,7 +404,7 @@ def remove_favorite(source: str, track_id: str):
 
 
 def favorite_tracks() -> list[dict]:
-    return [json.loads(r["data"]) for r in _q("SELECT data FROM favorites ORDER BY added_at DESC")]
+    return _snapshots(_q("SELECT key, data FROM favorites ORDER BY added_at DESC"), "favorites")
 
 
 # ---------- история ----------
@@ -448,8 +474,9 @@ def mark_skip(k: SkipIn):
 
 @router.get("/history")
 def list_history(limit: int = Query(20, ge=1, le=50), offset: int = Query(0, ge=0, le=2000)):
-    rows = _q("SELECT data FROM history GROUP BY key ORDER BY MAX(played_at) DESC LIMIT ? OFFSET ?", (limit, offset))
-    return {"tracks": [json.loads(r["data"]) for r in rows], "has_more": len(rows) == limit}
+    rows = _q("SELECT key, data FROM history GROUP BY key ORDER BY MAX(played_at) DESC LIMIT ? OFFSET ?", (limit, offset))
+    # has_more — по строкам базы: пропущенная недопустимая строка не обрывает листание
+    return {"tracks": _snapshots(rows, "history"), "has_more": len(rows) == limit}
 
 
 @router.delete("/history")
@@ -460,4 +487,9 @@ def clear_history():
 
 def recent_plays(n: int = 300) -> list[dict]:
     rows = _q("SELECT key, data, skipped FROM history ORDER BY id DESC LIMIT ?", (n,))
-    return [{"key": r["key"], "track": json.loads(r["data"]), "skipped": bool(r["skipped"])} for r in rows]
+    out = []
+    for r in rows:
+        t = snapshot.read_snapshot(r["data"], "history", r["key"])
+        if t is not None:
+            out.append({"key": r["key"], "track": t, "skipped": bool(r["skipped"])})
+    return out

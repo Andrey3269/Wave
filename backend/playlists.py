@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 import library
 import userdata
+from domain import snapshot
 
 router = APIRouter(prefix="/api", tags=["playlists"])
 # Таблицы playlists и playlist_tracks создаёт persistence/migrations.py (версия схемы v1).
@@ -45,8 +46,13 @@ def list_playlists():
         "SELECT p.id, p.name, p.updated_at, COUNT(t.id) AS n,"
         " (SELECT data FROM playlist_tracks WHERE playlist_id = p.id ORDER BY position LIMIT 1) AS first"
         " FROM playlists p LEFT JOIN playlist_tracks t ON t.playlist_id = p.id GROUP BY p.id ORDER BY p.updated_at DESC")
-    return {"items": [{"id": r["id"], "name": r["name"], "count": r["n"],
-                       "cover": json.loads(r["first"]).get("cover") if r["first"] else None} for r in rows]}
+    return {"items": [{"id": r["id"], "name": r["name"], "count": r["n"], "cover": _first_cover(r["first"])} for r in rows]}
+
+
+def _first_cover(raw: str | None) -> str | None:
+    """Обложка первого трека плейлиста — только проверенная (S13: старые строки базы не доверенные)."""
+    t = snapshot.read_snapshot(raw, "playlist_tracks") if raw else None
+    return t.get("cover") if t else None
 
 
 @router.post("/playlists", status_code=201)
@@ -79,8 +85,8 @@ def get_playlist(pid: int):
     rows = library._q("SELECT name FROM playlists WHERE id = ?", (pid,))
     if not rows:
         raise HTTPException(404, "Плейлист не найден.")
-    tracks = [json.loads(r["data"]) for r in
-              library._q("SELECT data FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", (pid,))]
+    stored = library._q("SELECT key, data FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", (pid,))
+    tracks = userdata._snapshots(stored, "playlist_tracks")     # недопустимые строки пропускаются (S13)
     return {"playlist": {"id": pid, "name": rows[0]["name"], "count": len(tracks),
                          "cover": next((t["cover"] for t in tracks if t.get("cover")), None)},
             "tracks": tracks}
