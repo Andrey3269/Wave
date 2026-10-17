@@ -11,7 +11,7 @@ import { toast } from "../components/toast.js";
 import { openMenu } from "../components/menu.js";
 import { paintFav } from "../components/track-row.js";
 import { toggleFav } from "../components/favorites.js";
-import { focusSafely, focusLost, rescueFocus, keyboardMode } from "../components/focus.js";
+import { focusSafely, focusLost, rescueFocus, keyboardMode, dropLostFocus } from "../components/focus.js";
 
 // Правки очереди — методами модели (player/queue.js); здесь — то, что видит пользователь.
 // Баннер главной показывает «Далее»: после добавления и переноса он перерисовывается (bus "hero").
@@ -94,7 +94,9 @@ export function closeQueue() {
   el.queue.hidden = true;
   const opener = queueOpener;
   queueOpener = null;
-  if (inside && keyboardMode() && !focusSafely(opener)) rescueFocus();   // закрыли мышью — фокус не переносим
+  if (!inside) return;
+  if (!keyboardMode()) { dropLostFocus(); return; }      // закрыли мышью — фокус не переносим, но и не держим в панели
+  if (!focusSafely(opener)) rescueFocus();
 }
 /** Куда вернуть фокус после действия меню строки полноэкранной очереди: «⋯» того же трека, иначе строки на его
  *  месте (трек убран), иначе кнопка Play/Pause. Строки перерисовываются целиком, прежний узел «⋯» уже не годится. */
@@ -169,7 +171,8 @@ export function initQueueDrawer() {
     // кнопки у него больше нет (стал текущим, дошёл до края) — на строку, вставшую на это место. Перерисовка
     // синхронная: правки очереди вызывают renderQueue сами, «Играть сейчас» — через событие "track", которое
     // playIndex отправляет сразу (player/controller.js). После клика мышью фокус не переносим (focus.js).
-    if (!keyboardMode() || !focusLost() || el.queue.hidden) return;
+    if (!keyboardMode()) { dropLostFocus(); return; }
+    if (!focusLost() || el.queue.hidden) return;
     const j = t ? queue.tracks.indexOf(t) : -1, kind = b.dataset.q ? `[data-q="${b.dataset.q}"]` : ".q__main";
     const at = (k, sel) => el.queueList.querySelector(`${sel}[data-index="${k}"]`);
     focusSafely(j >= 0 ? at(j, kind) : null) || focusSafely(at(j >= 0 ? j : i, ".q__main"))

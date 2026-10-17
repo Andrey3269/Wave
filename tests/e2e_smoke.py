@@ -2556,13 +2556,21 @@ def main() -> int:
         au.keyboard.press("Space")
         au.wait_for_function(playing, arg="trk00000041")
         au.click("#queue-close")
-        au.click("#tracks .row:nth-child(6) .track__more")
-        au.click("#menu [data-act=add]")
-        fm = au.evaluate("document.activeElement.className")
+        fc = au.evaluate("document.activeElement === document.body")
         au.keyboard.press("Space")
         au.wait_for_timeout(200)
         paused = audio_state(au)["paused"]
-        check(paused and au.is_hidden("#menu") and "track__more" not in fm,
+        check(fc and paused and au.is_hidden("#queue"), f"мышь: «Закрыть» панели очереди — фокус не остаётся в скрытой панели, пробел — пауза ({fc}, {paused})")
+        au.keyboard.press("Space")
+        au.wait_for_function(playing, arg="trk00000041")
+        au.click("#tracks .row:nth-child(6) .track__more")
+        au.click("#menu [data-act=add]")
+        # фокус не на «⋯» и не в скрытом меню (Chromium на Windows снимает его со скрытого пункта не сразу — CI S12)
+        fm = au.evaluate("(() => { const a = document.activeElement; return a === document.body ? 'body' : `${a.tagName}.${a.className}${a.closest('#menu') ? ' в меню' : ''}` })()")
+        au.keyboard.press("Space")
+        au.wait_for_timeout(200)
+        paused = audio_state(au)["paused"]
+        check(paused and au.is_hidden("#menu") and fm == "body",
               f"мышь: пункт меню «Добавить в очередь» — фокус не возвращается на «⋯», пробел ставит паузу, меню не открывается ({fm})")
         au.keyboard.press("Space")
         au.wait_for_function(playing, arg="trk00000041")

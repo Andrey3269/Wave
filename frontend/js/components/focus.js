@@ -37,6 +37,16 @@ export function focusLost() {
  */
 export function keyboardMode() { return keyboard; }
 
+/**
+ * Фокус остался на скрытом элементе (кнопку нажали мышью, и она скрылась вместе с меню или панелью) — снимаем его.
+ * Иначе до того, как браузер сам уберёт фокус (Chromium на Windows делает это не сразу), пробел достаётся невидимой
+ * кнопке, а не переключает паузу.
+ */
+export function dropLostFocus() {
+  const a = document.activeElement;
+  if (a && a !== document.body && !canFocus(a)) a.blur();
+}
+
 /** Переносит потерянный фокус на заголовок текущего экрана. */
 export function rescueFocus() { return focusSafely(fallback()); }
 

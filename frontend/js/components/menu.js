@@ -12,7 +12,7 @@ import { el } from "../core/elements.js";
 import { navTarget, firstEnabled } from "../core/keynav.js";
 import { state, queue } from "../state/store.js";
 import { BUSY } from "./track-row.js";
-import { focusSafely, focusLost, rescueFocus, keyboardMode } from "./focus.js";
+import { focusSafely, focusLost, rescueFocus, keyboardMode, dropLostFocus } from "./focus.js";
 
 let menuTrack = null, menuCtx = null, menuAnchor = null;
 
@@ -94,7 +94,8 @@ export function closeMenu({ restore = false } = {}) {
   el.menu.hidden = true;
   menuTrack = null; menuCtx = null; menuAnchor = null;
   anchor?.removeAttribute("aria-expanded");
-  if (restore && inMenu && !focusSafely(anchor) && !focusSafely(ctx?.refocus?.())) rescueFocus();
+  if (restore && inMenu) { if (!focusSafely(anchor) && !focusSafely(ctx?.refocus?.())) rescueFocus(); }
+  else if (inMenu) dropLostFocus();                      // пункт выбран мышью: фокус не остаётся в скрытом меню
   return anchor;
 }
 

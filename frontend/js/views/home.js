@@ -10,7 +10,7 @@ import { play, warmTrack, playerEvents } from "../player/controller.js";
 import { mixCard, miniCard, trackCard, markMix, bindTrackGrid } from "../components/cards.js";
 import { paintFav, markPlaying } from "../components/track-row.js";
 import { setBlock, skelCards, setMore } from "../components/skeleton.js";
-import { focusLost, focusSafely, rescueFocus, keyboardMode } from "../components/focus.js";
+import { focusLost, focusSafely, rescueFocus, keyboardMode, dropLostFocus } from "../components/focus.js";
 import { toast, hideToast } from "../components/toast.js";
 import { layout } from "./shell.js";
 import { openMix } from "./detail.js";
@@ -163,9 +163,10 @@ export async function loadMoreHome() {
   setMore(el.homeMore, state.more ? "idle" : "none");
   // Подгрузка кнопкой, а ленте больше нечего добавить: кнопка скрылась вместе с фокусом — на первую новую карточку;
   // новых нет — на последнюю карточку ленты, иначе на заголовок экрана
-  if (moreFocused && keyboardMode() && focusLost()) {
+  if (moreFocused && focusLost()) {
     const first = firstNew >= 0 ? el.newGrid.querySelector(`.tcard[data-index="${firstNew}"] .tcard__open`) : null;
-    focusSafely(first) || focusSafely(el.newGrid.querySelector(".tcard:last-child .tcard__open")) || rescueFocus();
+    if (!keyboardMode()) dropLostFocus();                    // нажали мышью — фокус никуда не переносим
+    else focusSafely(first) || focusSafely(el.newGrid.querySelector(".tcard:last-child .tcard__open")) || rescueFocus();
   }
 }
 
