@@ -171,6 +171,26 @@
 
 Приёмка S11: **ACCEPTED BY OWNER — 2026-10-16**. Владелец подтвердил прохождение всех 19 пунктов ручного WIN-14. `main` не менялся, merge/PR не выполнялись; S12 начинается только по отдельной команде владельца.
 
+### Состояние после S12 (2026-10-17; ветка `claude/s12-accessibility`, подробности — [reports/S12.md](reports/S12.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 1488 passed + 10 skipped + 1 xfail (было 1396 + 10 + 1; новый `tests/unit/test_contrast.py` — 92 случая) | Linux, Python 3.12; CI `ubuntu-latest`, `windows-latest` |
+| `node --test "tests/js/*.test.mjs"` | **PASS**: 79 (было 72; новый `tests/js/keynav.test.mjs` — 7) | Linux Node 22 |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 341 + 33 (было 221 + 33). Разделы «Доступность (S12)»: мышь без изменений, ссылки исполнителей, меню, «Загрузить ещё», вкладки, обходы Tab с проверкой рамки фокуса, сценарий только с клавиатуры, контраст в обеих темах, исправления по аудиту | Linux Chromium; CI Linux, Windows |
+| `python tests/run_checks.py` | **PASS** 8/8 на итоговом коде | Linux |
+| `tests/ui_snapshots.py` (S11 против S12) | 64/76 совпадают; 12 различий объяснены в отчёте §5.4, эталоны не обновлялись | Linux Chromium headless |
+| Независимый аудит | 3 раунда; 4-й раунд и часть мутационных прогонов раунда 3 — NOT RUN (решение владельца) | отчёт §7 |
+| Окно WebView2, экранный диктор, [checklists/S12_ACCESSIBILITY_CHECK.md](checklists/S12_ACCESSIBILITY_CHECK.md) | **NOT RUN** | Windows 11, WebView2 |
+
+Приёмы, введённые в S12:
+- `FOCUS_RING` + `tab_walk` в `e2e_smoke.py`: рамка фокуса ≥ 2px, не обрезана предками с overflow, элемент не перекрыт; обходы ждут конца анимаций появления;
+- `CONTRAST_JS`: контраст вычисленных цветов против фактического фона; `tests/unit/test_contrast.py` — пары токенов из `style.css` (печатает таблицу);
+- синхронные проверки фокуса в том же задании (Chromium на Linux снимает фокус со скрытого элемента раньше, чем на Windows);
+- придержанные ответы: `MORE["hold"]` (вторая страница поиска), `RECS["hold"]`/`recs_release()` (лента главной).
+
+Приёмка S12: **READY FOR OWNER ACCEPTANCE** — владельцем не принято. `main` не менялся, merge/PR не выполнялись; S13 не начат.
+
 ## 3. Изоляция данных (обязательно с этапа S0)
 
 Тесты никогда не трогают `%LOCALAPPDATA%\Wave`, `~/.local/share/wave`, `~/Downloads/Wave`.
