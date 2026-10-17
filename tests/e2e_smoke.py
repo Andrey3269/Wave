@@ -3188,9 +3188,9 @@ def main() -> int:
         check(len(held) == 1 and pf.get_attribute("#about-check", "aria-busy") == "true"
               and pf.text_content("#about-diag-state").startswith("Проверяем"),
               "повторная проверка: пока идёт проверка, кнопка недоступна и второй запрос не уходит")
-        held[0].fallback()
-        pf.unroute("**/api/diagnostics")
+        held[0].continue_()                                          # тот же запрос уходит в настоящий backend
         pf.wait_for_function("!document.querySelector('#about-check').disabled", timeout=30000)
+        pf.unroute("**/api/diagnostics")                             # после ответа: незавершённых перехватов нет
         pf.set_viewport_size({"width": 980, "height": 800})
         check(pf.evaluate("document.querySelector('#main').scrollWidth <= document.querySelector('#main').clientWidth"),
               "«О программе» без горизонтальной прокрутки на 980 px")
