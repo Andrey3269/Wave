@@ -10,7 +10,7 @@ import { play, warmTrack, playerEvents } from "../player/controller.js";
 import { mixCard, miniCard, trackCard, markMix, bindTrackGrid } from "../components/cards.js";
 import { paintFav, markPlaying } from "../components/track-row.js";
 import { setBlock, skelCards, setMore } from "../components/skeleton.js";
-import { focusLost, focusSafely } from "../components/focus.js";
+import { focusLost, focusSafely, rescueFocus } from "../components/focus.js";
 import { toast, hideToast } from "../components/toast.js";
 import { layout } from "./shell.js";
 import { openMix } from "./detail.js";
@@ -23,7 +23,7 @@ const HOME_TTL = 10 * 60 * 1000;
 export function goHome(refresh = true) {
   state.reopen = () => goHome(false);
   state.searchCtl?.abort();
-  Object.assign(state, { view: "home", query: "", cards: [], albums: [], related: [], sort: "default" });
+  Object.assign(state, { view: "home", query: "", cards: [], albums: [], related: [], sort: "default", loadingMore: false });
   state.list = [];
   el.tracks.replaceChildren(); el.cards.replaceChildren();
   setMore(el.more, "none");
@@ -120,7 +120,8 @@ function appendFeedCards(from) {
  */
 export async function loadMoreHome() {
   const my = home.seq;
-  state.loadingMore = true;
+  const mine = {};                                       // флаг подгрузки принадлежит этому запуску (S12)
+  state.loadingMore = mine;
   const moreFocused = document.activeElement === el.homeMore;
   setMore(el.homeMore, "loading", "Подбираем ещё…");
   let firstNew = -1;                                     // индекс первой подгруженной карточки
@@ -148,10 +149,14 @@ export async function loadMoreHome() {
   } catch {
     setMore(el.homeMore, "error");
     return;
-  } finally { state.loadingMore = false; }
+  } finally { if (state.loadingMore === mine) state.loadingMore = false; }
   setMore(el.homeMore, state.more ? "idle" : "none");
-  // Подгрузка кнопкой, а ленте больше нечего добавить: кнопка скрылась вместе с фокусом — на первую новую карточку
-  if (moreFocused && focusLost() && firstNew >= 0) focusSafely(el.newGrid.querySelector(`.tcard[data-index="${firstNew}"] .tcard__open`));
+  // Подгрузка кнопкой, а ленте больше нечего добавить: кнопка скрылась вместе с фокусом — на первую новую карточку;
+  // новых нет — на последнюю карточку ленты, иначе на заголовок экрана
+  if (moreFocused && focusLost()) {
+    const first = firstNew >= 0 ? el.newGrid.querySelector(`.tcard[data-index="${firstNew}"] .tcard__open`) : null;
+    focusSafely(first) || focusSafely(el.newGrid.querySelector(".tcard:last-child .tcard__open")) || rescueFocus();
+  }
 }
 
 /** Название ленты главной по тому, как она реально собрана (поля personalized и radio ответа). */

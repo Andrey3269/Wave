@@ -29,7 +29,7 @@
   --on-accent: #1A0B08;               /* текст на акценте (контраст 6.6:1); белый даёт только 2.9:1 */
   --bar: #34353C;
   /* тексты песен */
-  --ly: #6A6A74;
+  --ly: #898990;                      /* S12: светлее прошедших строк (1.6:1 к ним), иначе «прошло / будет» не различить */
   --ly-past: #67676E;                 /* S12: было #4A4A53 (2.0:1 на панели текста); крупный текст — от 3:1 */
   --ly-plain: #C9C9D1;
   /* геометрия */
@@ -50,17 +50,17 @@
   --line: #E4E4EA;
   --line-2: #D2D2DA;
   --text: #17171A;
-  /* S12, контраст WCAG (tests/unit/test_contrast.py): было muted #6C6C78 (4.48:1 на --surface-2), faint #9A9AA6
+  /* S12, контраст WCAG (tests/unit/test_contrast.py): было muted #6C6C78 (4.48:1 на --surface-2, 4.09:1 на --surface-3), faint #9A9AA6
      (2.8:1 для значков), белый текст на коралле 3.8:1, коралл как цвет текста 3.8:1, тексты песен 2.2 и 1.5:1 */
-  --muted: #696975;
+  --muted: #646470;
   --faint: #868691;
   --accent: #E5502F;                  /* заливки, рамки, шкалы — фирменный коралл без изменений */
-  --accent-hover: #E75D3E;            /* светлее заливки: тёмный текст на ней 5.5:1 (было #C73F21) */
+  --accent-hover: #E96A4E;            /* светлее заливки (1.2:1 к ней — наведение заметно): тёмный текст 6.1:1 (было #C73F21) */
   --accent-soft: rgba(229, 80, 47, .12);
   --accent-ink: #B13E24;              /* акцент как цвет текста и значков на светлых поверхностях: от 4.6:1 */
   --on-accent: #1A0B08;               /* тёмный текст на коралле, как в тёмной теме (5.0:1; белый — 3.8:1) */
   --bar: #DADAE1;
-  --ly: #7C7C86;
+  --ly: #6F6F78;
   --ly-past: #8B8B91;
   --ly-plain: #3A3A42;
 }
@@ -357,6 +357,10 @@ body[data-focus="1"] .side, body[data-focus="1"] .topbar, body[data-focus="1"] .
 .mixcard:hover { background: var(--surface-2); }
 .mixcard.is-active { border-color: var(--accent); }
 .mixcard__open { display: block; width: 100%; text-align: left; }
+/* S12: рамка фокуса — у всей карточки, двухцветная (акцент + тёмная линия внутри): видна и на коралловой обложке */
+.mixcard__open:focus-visible { outline: none; }
+.mixcard:has(.mixcard__open:focus-visible) { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
+.mixcard:has(.mixcard__open:focus-visible)::after { content: ""; position: absolute; inset: 2px; border: 2px solid var(--bg); border-radius: calc(var(--r-m) - 3px); pointer-events: none; }
 .mixcard__cv { width: 100%; aspect-ratio: 16 / 10; }
 .mixcard__body { display: flex; flex-direction: column; gap: 2px; padding: 12px 60px 14px 14px; }
 .mixcard__title, .mixcard__sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -455,7 +459,8 @@ body[data-audio="playing"] .is-playing .ico-play { display: none; }
 .track__play:focus-visible { outline: none; }
 .track__play::after { content: ""; position: absolute; inset: 0; border-radius: var(--r-s); pointer-events: none; }
 .track__play:focus-visible::after { outline: 2px solid var(--accent-ink); outline-offset: -2px; }
-.track__title, .track__artist, .track__album { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track__title, .track__album { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track__artist { white-space: nowrap; }               /* строка имён — flex с overflow: clip, ниже */
 .track__title { display: block; }
 .track__sub { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .track__title { font-weight: 600; }
@@ -470,6 +475,13 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .who.is-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .who.is-link:focus-visible { outline-offset: 0; }
 .track__artist, .mp__artist { margin: -2px -3px; padding: 2px 3px; }
+/* Строка имён — flex: каждое имя сжимается со своим многоточием и остаётся видимым хотя бы частично, фокус не
+   попадает на имя, целиком скрытое за многоточием. overflow: clip — не прокручиваемая область: фокус на имени не
+   сдвигает строку (при overflow: hidden браузер прокручивал её к имени, и сдвиг оставался). */
+.track__artist, .mp__artist, .fs__artist { display: flex; min-width: 0; overflow: clip; text-overflow: clip; }
+.fs__artist { justify-content: center; }
+.track__artist > .who, .mp__artist > .who, .fs__artist > .who { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who__sep { flex: none; white-space: pre; }
 
 /* ---------- 9. Коллекция и настройки ---------- */
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }
@@ -539,7 +551,8 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .mp__thumb { width: 56px; height: 56px; border-radius: var(--r-s); border: 1px solid var(--line); }
 .mp__text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .mp__open { display: block; min-width: 0; text-align: left; }       /* S12: кнопка «Открыть страницу трека» */
-.mp__title, .mp__artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp__artist { white-space: nowrap; }                   /* строка имён — flex с overflow: clip (раздел 8) */
 .mp__title { display: block; font-weight: 600; }
 .mp__sub { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .mp__artist { color: var(--muted); }
@@ -602,7 +615,7 @@ button.who { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-s
 .dlg h3 { margin-bottom: 14px; font-size: 18px; }
 .dlg__text { color: var(--muted); line-height: 1.5; }
 .dlg input { width: 100%; padding: 10px 14px; background: var(--surface-2); color: var(--text); border: 1px solid var(--faint); border-radius: var(--r-m); }
-.dlg input:focus { outline: none; border-color: var(--accent); }
+.dlg input:focus { border-color: var(--accent); }      /* S12: и обычная рамка фокуса — смена цвета границы почти не видна */
 .dlg__actions { display: flex; flex-direction: row-reverse; gap: 12px; margin-top: 20px; }
 .pick { display: flex; flex-direction: column; gap: 2px; max-height: 300px; overflow-y: auto; }
 .pick__item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--r-s); text-align: left; }
@@ -729,7 +742,7 @@ body[data-track="1"]:not([data-view="home"]):not([data-view="now"]) .toast { bot
   font-size: clamp(22px, 3.2vh, 32px); line-height: 1.15; font-weight: 700; letter-spacing: -.01em;
 }
 /* Поле 2px/3px — место для рамки фокуса ссылок на исполнителей внутри overflow: hidden (S12); раскладка прежняя */
-.fs__artist { max-width: calc(100% + 6px); margin: 4px -3px -2px; padding: 2px 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: clamp(15px, 2.1vh, 18px); }
+.fs__artist { max-width: calc(100% + 6px); margin: 4px -3px -2px; padding: 2px 3px; white-space: nowrap; color: var(--muted); font-size: clamp(15px, 2.1vh, 18px); }
 .fs__meta { max-width: 100%; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 13px; }
 
 .fs__controls { display: flex; align-items: center; justify-content: center; gap: clamp(14px, 2vw, 28px); margin-top: clamp(16px, 3.2vh, 32px); }

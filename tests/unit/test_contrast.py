@@ -116,7 +116,7 @@ PAIRS: list[tuple[tuple, str, str, str, str]] = [
     (APP, "--muted", "--bg", "text", "исполнитель и альбом в строке, статус, пустые состояния, подсказки, «Загрузить ещё»"),
     (APP, "--muted", "--surface", "text", "исполнитель в мини-плеере и очереди, время, подписи карточек, плейсхолдер поиска"),
     (APP, "--muted", "--surface-2", "text", "невыбранная вкладка поиска, подписи карточек при наведении, недоступная загрузка"),
-    (APP, "--muted", "--accent-soft over --bg", "text", "подсказки на плитках коллекции"),
+    (APP, "--muted", "--surface-3", "text", "«Недоступно» и «В очереди» на кнопке-пилюле при наведении"),
     # акцент как цвет текста и значков
     (APP, "--accent-ink", "--bg", "text", "играющий трек, тип страницы, надзаголовок, сообщение настроек, % загрузки"),
     (APP, "--accent-ink", "--surface", "text", "играющий трек при наведении и в очереди, нажатые кнопки мини-плеера"),
@@ -194,11 +194,19 @@ def test_focus_outline_uses_the_text_accent():
     assert outlines and set(outlines) == {"--accent-ink"}, outlines
 
 
-def test_faint_is_not_a_text_colour_on_app_surfaces():
-    """--faint в приложении — для значков и рамок (3:1); текст «Скачивание недоступно» — вторичным цветом."""
+def test_denied_pill_text_uses_the_secondary_colour():
+    """У пилюли «Недоступно» есть текст — вторичный цвет (4.5:1), а не --faint (только значки и рамки, 3:1)."""
     css = re.sub(r"/\*.*?\*/", "", CSS.read_text(encoding="utf-8"), flags=re.S)
     rule = re.search(r"\.abtn\.is-denied\s*\{([^}]*)\}", css)
     assert rule and "var(--muted)" in rule.group(1)
+
+
+def test_lyric_lines_stay_distinguishable():
+    """Прошедшие и следующие строки текста песни различимы по яркости (не только порог каждой к фону)."""
+    tok = theme_tokens()
+    for scope in APP:
+        r = ratio(color(tok[scope], "--ly"), color(tok[scope], "--ly-past"))
+        assert r >= 1.4, f"{scope}: --ly / --ly-past = {r:.2f}:1"
 
 
 def table() -> str:

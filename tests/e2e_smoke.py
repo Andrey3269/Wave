@@ -330,6 +330,13 @@ def handle(route: Route) -> None:
             return route.abort("failed")
         return js(route, {"query": "m11", "count": 20, "tracks": [track(100 + off + i) for i in range(20)] if off < 40 else [],
                           "failed_sources": [], "has_more": off + 20 < 40})
+    if path == "/api/search" and q.get("q") == "long3":               # три длинных имени исполнителей (S12, аудит)
+        names = ["Номер Один Очень Длинное Имя Исполнителя", "Номер Два Ещё Более Длинное Имя", "Номер Три С Длинным Именем"]
+        t = {**track(450), "artist": ", ".join(names), "artists": names, "artist_ids": ["UCart0001", "UCart0002", "UCart0003"]}
+        return js(route, {"query": "long3", "count": 2, "tracks": [t, track(451)], "failed_sources": [], "has_more": False})
+    if path == "/api/search" and q.get("q") == "dup12":               # вторая страница — одни повторы (S12, аудит)
+        return js(route, {"query": "dup12", "count": 20, "tracks": [track(600 + i) for i in range(20)], "failed_sources": [],
+                          "has_more": not int(q.get("offset", 0))})
     if path == "/api/search" and q.get("q") == "more12":              # «Загрузить ещё» (S12)
         off = int(q.get("offset", 0))
         if off and MORE["mode"] == "fail":
@@ -506,6 +513,7 @@ FOCUS_RING = """() => {
   let box = a, cs = getComputedStyle(a);
   if (a.classList.contains("track__play")) { box = a.closest(".track"); cs = getComputedStyle(a, "::after"); }
   if (a.id === "np-lyrics") { box = a.parentElement; cs = getComputedStyle(box); }
+  if (a.classList.contains("mixcard__open")) { box = a.closest(".mixcard"); cs = getComputedStyle(box); }
   if (cs.outlineStyle === "none" || parseFloat(cs.outlineWidth) < 2) return { ok: false, why: "нет рамки", who: who(a) };
   if (!a.checkVisibility()) return { ok: false, why: "элемент не виден", who: who(a) };
   const r = box.getBoundingClientRect(), g = parseFloat(cs.outlineOffset) + parseFloat(cs.outlineWidth);
@@ -513,6 +521,8 @@ FOCUS_RING = """() => {
   for (let p = box.parentElement; p && p !== document.documentElement; p = p.parentElement) {
     const s = getComputedStyle(p);
     if (s.overflowX === "visible" && s.overflowY === "visible") continue;
+    if ((s.overflowX === "hidden" || s.overflowY === "hidden") && (p.scrollLeft || p.scrollTop))
+      return { ok: false, why: `фокус прокрутил необрезаемую область (${who(p)})`, who: who(a) };
     const pr = p.getBoundingClientRect();
     const c = { l: pr.left + parseFloat(s.borderLeftWidth), t: pr.top + parseFloat(s.borderTopWidth),
       r: pr.right - parseFloat(s.borderRightWidth), b: pr.bottom - parseFloat(s.borderBottomWidth) };
@@ -523,8 +533,11 @@ FOCUS_RING = """() => {
     if (s.overflowY !== "visible" && ring.b > c.b + 0.5) out.push("снизу");
     if (out.length) return { ok: false, why: `рамка обрезана ${out.join(",")} (${who(p)})`, who: who(a) };
   }
-  const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2, hit = document.elementFromPoint(cx, cy);
-  if (!hit || !(box.contains(hit) || hit.contains(box))) return { ok: false, why: `перекрыт (${hit ? who(hit) : "вне окна"})`, who: who(a) };
+  const cx = (r.left + r.right) / 2;
+  for (const y of [(r.top + r.bottom) / 2, r.top + 3, r.bottom - 3]) {     // центр, верх и низ: закреплённые панели
+    const hit = document.elementFromPoint(cx, y);
+    if (!hit || !(box.contains(hit) || hit.contains(box))) return { ok: false, why: `перекрыт (${hit ? who(hit) : "вне окна"})`, who: who(a) };
+  }
   return { ok: true, who: who(a) };
 }"""
 
@@ -1764,7 +1777,9 @@ def main() -> int:
         ax_search("feat", 2)
         names = "(s) => [...document.querySelectorAll(s)].map(n => [n.tagName, n.textContent, n.getAttribute('aria-label')])"
         check(ax.evaluate(names, "#tracks .row:nth-child(1) .track__artist .who") == [["BUTTON", "GSPD", "Исполнитель: GSPD"], ["BUTTON", "Vtornik", "Исполнитель: Vtornik"]]
-              and ax.inner_text("#tracks .row:nth-child(1) .track__artist") == "GSPD, Vtornik",
+              and ax.text_content("#tracks .row:nth-child(1) .track__artist") == "GSPD, Vtornik"
+              # строка имён — flex (аудит S12): innerText разбивает её по элементам, поэтому видимую «одну строку» проверяем по раскладке
+              and ax.evaluate("new Set([...document.querySelectorAll('#tracks .row:nth-child(1) .track__artist > *')].map(n => Math.round(n.getBoundingClientRect().top))).size") == 1,
               "несколько исполнителей — раздельные ссылки, видимый текст «GSPD, Vtornik»")
         check(ax.evaluate(names, "#tracks .row:nth-child(2) .track__artist .who") == [["BUTTON", "Кино", "Исполнитель: Кино"], ["SPAN", "Безымянный", None]],
               "исполнитель без id — обычный текст, ложной ссылки нет")
@@ -2197,11 +2212,13 @@ def main() -> int:
         kb.wait_for_function(rows_ready, arg=20)
         check(on_title == "d-title" and back_ok and kb.evaluate("document.activeElement.id") == "results-title",
               "клавиатура: исполнитель → фокус на заголовке, Shift+Tab — «Назад», Enter — снова результаты, фокус на их заголовке")
+        src_before = audio_state(kb)["src"]
         kb.keyboard.press("Space")
-        kb.wait_for_function("document.querySelector('#audio').paused")
+        paused_ok = poll(kb, "document.querySelector('#audio').paused", timeout=5)
         kb.keyboard.press("Space")
-        kb.wait_for_function("!document.querySelector('#audio').paused")
-        check(True, "клавиатура: пробел вне кнопок — пауза и продолжение")
+        resumed_ok = poll(kb, "!document.querySelector('#audio').paused", timeout=5)
+        check(paused_ok and resumed_ok and audio_state(kb)["src"] == src_before,
+              "клавиатура: пробел вне кнопок — пауза и продолжение того же трека")
         reached = tab_to("document.activeElement.id === 'player-open'")
         kb.keyboard.press("Enter")
         kb.wait_for_selector("#view-now:not([hidden])")
@@ -2271,6 +2288,165 @@ def main() -> int:
             cx.select_option("#set-theme", "dark")
             cx.wait_for_function("document.documentElement.dataset.theme === 'dark'")
             cx.close()
+
+        print("Доступность (S12): исправления по независимому аудиту")
+        au = ctx.new_page()
+        au.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        au.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        clear_playback()
+        au.goto(BASE)
+        au.wait_for_function("document.querySelector('#hero').dataset.feed === 'ready'", timeout=15000)
+        au_active = "() => { const a = document.activeElement; return {cls: a.className, idx: a.dataset.index ?? null, q: a.dataset.q ?? null," \
+                    " row: a.closest('.q') ? a.closest('.q').querySelector('.q__title').textContent : null} }"
+
+        def au_search(q: str, n: int) -> None:
+            au.fill("#search-input", q)
+            au.keyboard.press("Enter")
+            au.wait_for_selector("#tabs:not([hidden])")
+            if au.get_attribute("#tabs [data-tab=tracks]", "aria-selected") != "true":
+                au.click("#tabs [data-tab=tracks]")
+            au.wait_for_function(rows_ready, arg=n)
+
+        # 1 (HIGH): уход с экрана во время подгрузки не оставляет «Загрузить ещё» нового экрана мёртвой
+        RECS.update(paged=False, fail_more=False)
+        au.focus("#home-more")
+        au.keyboard.press("Enter")                                    # радио последнего: 3 новых трека
+        au.wait_for_function("document.querySelector('#home-more').dataset.state === 'idle' || document.querySelector('#home-more').hidden")
+        for _ in range(3):
+            if au.is_hidden("#home-more"):
+                break
+            au.focus("#home-more")
+            au.keyboard.press("Enter")                                # дальше новых нет — кнопка скрывается
+            au.wait_for_function("document.querySelector('#home-more').dataset.state !== 'loading'")
+        f = au.evaluate("() => { const a = document.activeElement, c = document.querySelectorAll('#new-grid .tcard');"
+                        " return [a.className, a.closest('.tcard') === c[c.length - 1]] }")
+        check(au.is_hidden("#home-more") and f == ["tcard__open", True],
+              f"главная: кнопка скрылась без новых карточек — фокус на последней карточке ленты, не на body ({f})")
+        au_search("dup12", 20)
+        au.focus("#more")
+        au.keyboard.press("Enter")
+        au.wait_for_function("document.querySelector('#more').hidden")
+        f = au.evaluate(active)
+        check(f["cls"] == "track__play" and f["row"] == 20, f"список: вторая страница из одних повторов — фокус на последней строке ({f})")
+        MORE["mode"] = "hold"
+        au_search("more12", 20)
+        au.evaluate(to_bottom)
+        au.wait_for_function("document.querySelector('#more').dataset.state === 'loading'")
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        au.click("#tracks .row:nth-child(3) .who.is-link")              # уход посреди подгрузки
+        au.wait_for_selector("#albums-row .card")
+        art_more: list[str] = []
+        on_art = lambda r: art_more.append(r.url) if "/tracks?" in r.url and "offset=20" in r.url else None   # noqa: E731
+        au.on("request", on_art)
+        au.evaluate(to_bottom)
+        for _ in range(50):
+            if art_more:
+                break
+            au.wait_for_timeout(100)
+        au.remove_listener("request", on_art)
+        for r in MORE["held"]:                                        # придержанный запрос уже отменён страницей
+            try:
+                r.abort()
+            except Exception:
+                pass
+        MORE["held"].clear()
+        MORE["mode"] = "fail"
+        check(len(art_more) == 1, f"уход с экрана посреди подгрузки: на странице артиста следующая страница грузится ({len(art_more)})")
+
+        # 3: длинные имена исполнителей — фокус не прокручивает строку имён, каждое имя видно
+        au.set_viewport_size({"width": 1100, "height": 760})
+        au_search("long3", 2)
+        au.focus("#tracks .row:nth-child(1) .track__play")
+        seen_w = []
+        for _ in range(3):
+            au.keyboard.press("Tab")
+            seen_w.append(au.evaluate("""() => { const a = document.activeElement, c = a.parentElement, r = a.getBoundingClientRect(),
+                q = c.getBoundingClientRect(); return [a.textContent.slice(0, 9), Math.round(Math.min(r.right, q.right) - Math.max(r.left, q.left)),
+                c.scrollLeft, a.getAttribute('aria-label').startsWith('Исполнитель: ')] }"""))
+        ring = au.evaluate(FOCUS_RING)
+        au.keyboard.press("Tab")
+        check([w[0] for w in seen_w] == ["Номер Оди", "Номер Два", "Номер Три"] and all(w[1] >= 8 and w[2] == 0 and w[3] for w in seen_w)
+              and ring["ok"] and au.evaluate("document.querySelector('#tracks .row .track__artist').scrollLeft") == 0,
+              f"три длинных имени: каждое — видимая ссылка со своим многоточием, фокус не сдвигает строку ({seen_w})")
+        au.set_viewport_size({"width": 1440, "height": 900})
+
+        # 4: сообщение «Нет подключения» — фокус при обходе вверх не уходит под выросшую верхнюю панель
+        au_search("gspd", 20)
+        au.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        au.wait_for_function("!document.querySelector('#audio').paused")
+        au.set_viewport_size({"width": 1000, "height": 640})
+        ctx.set_offline(True)
+        au.wait_for_selector("#offline:not([hidden])")
+        au.focus("#tracks .row:nth-child(20) .track__more")
+        bad, n = tab_walk(au, 40, "Shift+Tab")
+        top_h = au.evaluate("document.querySelector('.topbar').offsetHeight")
+        ctx.set_offline(False)
+        au.wait_for_selector("#offline", state="hidden")
+        au.set_viewport_size({"width": 1440, "height": 900})
+        check(not bad and top_h > 100, f"«Нет подключения» (верхняя панель {top_h}px): обход Shift+Tab, фокус не перекрыт {bad}")
+
+        # 5: панель очереди — «Ниже», «Выше», «Убрать» с клавиатуры не теряют фокус
+        au.focus("#btn-queue")
+        au.keyboard.press("Enter")
+        au.wait_for_selector("#queue:not([hidden]) .q")
+        title_at = "(i) => document.querySelector(`#queue-list .q__main[data-index='${i}'] .q__title`).textContent"
+        mover_i = 3
+        mover_t = au.evaluate(title_at, mover_i)
+        au.focus(f"#queue-list [data-q=down][data-index='{mover_i}']")
+        au.keyboard.press("Enter")
+        f_down = au.evaluate(au_active)
+        au.keyboard.press("Tab")                                      # с «Ниже» на «Убрать» той же строки
+        au.keyboard.press("Enter")
+        f_rm = au.evaluate(au_active)
+        next_t = au.evaluate(title_at, mover_i + 1)
+        check(f_down == {"cls": "q__btn", "idx": str(mover_i + 1), "q": "down", "row": mover_t}
+              and f_rm["idx"] == str(mover_i + 1) and f_rm["row"] == next_t and mover_t not in au.evaluate(q_titles),
+              f"панель очереди: «Ниже» — фокус на «Ниже» того же трека, «Убрать» — на строке, вставшей на место ({f_down}, {f_rm})")
+        au.keyboard.press("Escape")
+
+        # 6: полноэкранный режим — пробел на исполнителе открывает его, а не ставит паузу
+        au.click("#player-open")
+        au.wait_for_selector("#view-now:not([hidden])")
+        au.click("[data-do=expand]")
+        au.wait_for_selector("#fs:not([hidden])")
+        au.focus("#fs-artist .who.is-link")
+        au.keyboard.press("Space")
+        au.wait_for_function("document.querySelector('#d-kind').textContent === 'Артист'")
+        check(au.is_hidden("#fs") and not audio_state(au)["paused"], "полноэкранный режим: пробел на исполнителе — его страница, музыка играет")
+
+        # n1: Esc в меню полноэкранной очереди закрывает только меню
+        au.click("#player-open")
+        au.wait_for_selector("#view-now:not([hidden])")
+        au.click("[data-do=expand]")
+        au.wait_for_selector("#fs:not([hidden])")
+        au.click("#fs-queue-btn")
+        au.wait_for_selector("#fs-q-list .fq__more")
+        au.focus("#fs-q-list .fq__more")
+        au.keyboard.press("Enter")
+        au.keyboard.press("Escape")
+        check(au.is_hidden("#menu") and au.get_attribute("#fs", "data-mode") == "queue" and au.is_visible("#fs")
+              and au.evaluate("document.activeElement.classList.contains('fq__more')"),
+              "меню полноэкранной очереди: Esc закрывает только меню (панель и режим на месте), фокус на «⋯»")
+        au.keyboard.press("Escape")
+        au.keyboard.press("Escape")
+        au.wait_for_selector("#fs", state="hidden")
+
+        # 8: поле ввода в диалоге — обычная рамка фокуса
+        au.click("[data-do=back]")
+        au.wait_for_selector("#player:not([hidden])")
+        au.wait_for_function(rows_ready, arg=20)                      # снова страница артиста
+        au.focus("#tracks .row:nth-child(2) .track__more")
+        au.keyboard.press("Enter")
+        menu_to(au, "playlist")
+        au.keyboard.press("Enter")
+        au.wait_for_selector("#dlg-pick[open] [data-pl=new]")
+        au.focus("#dlg-pick [data-pl=new]")
+        au.keyboard.press("Enter")
+        au.wait_for_selector("#dlg[open]")
+        ring = au.evaluate(FOCUS_RING)
+        au.keyboard.press("Escape")
+        check(ring["ok"] and "dlg-input" in ring["who"], f"диалог: поле ввода в фокусе с видимой рамкой ({ring})")
+        au.close()
 
         browser.close()
 

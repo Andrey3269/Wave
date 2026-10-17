@@ -48,10 +48,17 @@ function viewHeading() {
 }
 setFocusFallback(viewHeading);
 
+/** S12: элемент, к которому прокрутил фокус, не уходит под закреплённую верхнюю панель. Её высота меняется
+ *  (сообщение «Нет подключения»), поэтому отступ прокрутки #main следует за ней; в CSS — значение по умолчанию. */
+export function initTopbarPadding() {
+  const bar = document.querySelector(".topbar");
+  if (!bar || typeof ResizeObserver !== "function") return;
+  new ResizeObserver(() => { if (bar.offsetHeight) el.main.style.scrollPaddingTop = `${Math.ceil(bar.offsetHeight) + 16}px`; }).observe(bar);
+}
+
 /** Вкладки поиска и источник. S12: в порядке Tab только выбранная вкладка (tabindex 0), остальные — стрелками. */
 export function syncTabs() {
   const mark = (b, on) => { b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1; };
   $$(".tab", el.tabs).forEach((b) => mark(b, b.dataset.tab === state.tab));
   $$(".seg__btn", el.sourceSwitch).forEach((b) => mark(b, b.dataset.source === state.source));
-  if (!el.tabs.hidden) el.results.setAttribute("aria-labelledby", `tab-${state.tab}`);
 }

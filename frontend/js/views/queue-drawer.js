@@ -11,7 +11,7 @@ import { toast } from "../components/toast.js";
 import { openMenu } from "../components/menu.js";
 import { paintFav } from "../components/track-row.js";
 import { toggleFav } from "../components/favorites.js";
-import { focusSafely, rescueFocus } from "../components/focus.js";
+import { focusSafely, focusLost, rescueFocus } from "../components/focus.js";
 
 // Правки очереди — методами модели (player/queue.js); здесь — то, что видит пользователь.
 // Баннер главной показывает «Далее»: после добавления и переноса он перерисовывается (bus "hero").
@@ -159,12 +159,23 @@ export function initQueueDrawer() {
   el.queueList.addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    const i = Number(b.dataset.index);
-    if (b.classList.contains("q__fav")) { const t = queue.at(i); if (t) toggleFav(t); return; }
+    const i = Number(b.dataset.index), t = queue.at(i);
+    if (b.classList.contains("q__fav")) { if (t) toggleFav(t); return; }
     if (b.dataset.q === "up") queueMove(i, -1);
     else if (b.dataset.q === "down") queueMove(i, 1);
     else if (b.dataset.q === "rm") queueRemove(i);
     else if (b.classList.contains("q__main")) playIndex(i);   // «играть сейчас»
+    // S12: список перерисован целиком — фокус на ту же кнопку того же трека на новом месте, а если трек убран или
+    // кнопки у него больше нет (стал текущим, дошёл до края) — на строку, вставшую на это место
+    const fix = () => {
+      if (!focusLost() || el.queue.hidden) return;
+      const j = t ? queue.tracks.indexOf(t) : -1, kind = b.dataset.q ? `[data-q="${b.dataset.q}"]` : ".q__main";
+      const at = (k, sel) => el.queueList.querySelector(`${sel}[data-index="${k}"]`);
+      focusSafely(j >= 0 ? at(j, kind) : null) || focusSafely(at(j >= 0 ? j : i, ".q__main"))
+        || focusSafely([...el.queueList.querySelectorAll(".q__main")].pop()) || focusSafely($("#queue-close"));
+    };
+    fix();
+    requestAnimationFrame(fix);                          // «Играть сейчас» перерисовывает очередь по событию плеера
   });
   $("#queue-close").addEventListener("click", closeQueue);
   $("#queue-clear").addEventListener("click", queueClearFlow);

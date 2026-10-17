@@ -8,7 +8,7 @@ import { play, togglePlay, setShuffle, scheduleWarm, warmTrack } from "../player
 import { buildRow, markPlaying } from "../components/track-row.js";
 import { buildCard, cardKey } from "../components/cards.js";
 import { setBlock, skelRows, skelCards, setMore } from "../components/skeleton.js";
-import { focusLost, focusSafely } from "../components/focus.js";
+import { focusLost, focusSafely, rescueFocus } from "../components/focus.js";
 import { openMenu } from "../components/menu.js";
 import { toggleFav } from "../components/favorites.js";
 
@@ -102,7 +102,7 @@ export function clearSkeleton() { el.tracks.replaceChildren(); el.cards.replaceC
 export async function fetchPage(append) {
   const q = state.query;
   const ctl = (state.searchCtl = new AbortController());
-  state.loadingMore = append;
+  state.loadingMore = append ? ctl : false;           // подгрузку ведёт этот запрос (S12: флаг принадлежит ему)
   const moreFocused = append && document.activeElement === el.more;
   if (append) setMore(el.more, "loading");
   try {
@@ -126,8 +126,12 @@ export async function fetchPage(append) {
     state.offset = (append ? state.offset : 0) + got.length;
     state.more = !!data.has_more && got.length > 0;
     setMore(el.more, state.more ? "idle" : "none");
-    // Подгрузка кнопкой, а страниц больше нет: кнопка скрылась вместе с фокусом — переносим его на первую новую строку
-    if (moreFocused && focusLost()) focusSafely(firstNew);
+    // Подгрузка кнопкой, а страниц больше нет: кнопка скрылась вместе с фокусом — переносим его на первую новую строку;
+    // новых нет (пустая страница, одни повторы) — на последнюю строку списка, иначе на заголовок экрана
+    if (moreFocused && focusLost()) {
+      const last = isCards() ? el.cards.lastElementChild : el.tracks.lastElementChild?.querySelector(".track__play");
+      focusSafely(firstNew) || focusSafely(last) || rescueFocus();
+    }
 
     const n = isCards() ? state.cards.length : state.list.length;
     setBlock(el.empty, n ? "" : emptyText());
@@ -144,14 +148,15 @@ export async function fetchPage(append) {
     }
     return null;
   } finally {
-    if (ctl === state.searchCtl) state.loadingMore = false;
+    if (state.loadingMore === ctl) state.loadingMore = false;   // и отменённый запрос освобождает только свою подгрузку
   }
 }
 
 /** Новый экран списка: отменить прошлую загрузку, сбросить поиск, сортировку, карточки. */
 export function resetList(extra) {
   state.searchCtl?.abort();
-  Object.assign(state, { query: "", offset: 0, more: false, sort: "default", cards: [], albums: [], related: [] }, extra);
+  // S12: подгрузка прежнего экрана отменена — её флаг больше не держит «Загрузить ещё» нового экрана
+  Object.assign(state, { query: "", offset: 0, more: false, loadingMore: false, sort: "default", cards: [], albums: [], related: [] }, extra);
   setMore(el.more, "none");
 }
 

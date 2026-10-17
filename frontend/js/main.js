@@ -28,7 +28,7 @@ import { setIdleAction, playIndex, togglePlay, playNext, playPrev, setShuffle, c
   initPlayer, restorePlayback } from "./player/controller.js";
 import { initPersist, loadSaved } from "./player/persist.js";
 import { fetchPage, playFromList, initList, initListWarm } from "./views/list.js";
-import { syncTabs } from "./views/shell.js";
+import { syncTabs, initTopbarPadding } from "./views/shell.js";
 import { openArtist, openAlbum, goAlbum } from "./views/detail.js";
 import { showSearch, goArtist, initSearchForm, initSearchTabs } from "./views/search.js";
 import { renderThemeMixes, renderArtistMixes, computeArtists, initSidebar } from "./views/sidebar.js";
@@ -47,6 +47,7 @@ initImageFallback();
 initSettingsSync();
 initEmptyRetry();
 initFocusKeeper();                                       // фокус не остаётся в скрытом DOM после смены экрана (S12)
+initTopbarPadding();                                     // фокус не уходит под верхнюю панель (S12)
 
 // ---------- Навигация «Назад» ----------
 const navTo = (fn) => nav.to(fn);
@@ -208,15 +209,16 @@ document.addEventListener("keydown", (e) => {
   const typing = t.matches && t.matches("input, textarea, select, [contenteditable]");
   if (e.key === "/" && !typing && !state.fs.open) { e.preventDefault(); el.input.focus(); return; }
   if (e.code === "KeyM" && !typing) { toggleMute(); return; }
-  // В полноэкранном плеере пробел всегда пауза/пуск (кроме полей ввода и меню), а не нажатие на кнопку в фокусе
-  const spaceOk = state.fs.open ? !(t.closest && t.closest("#menu")) : !(t.closest && t.closest("button, [role=slider], [role=button]"));
+  // В полноэкранном плеере пробел всегда пауза/пуск (кроме полей ввода, меню и ссылки на исполнителя — S12: пробел на
+  // ней открывает исполнителя, как везде), а не нажатие на кнопку в фокусе
+  const spaceOk = state.fs.open ? !(t.closest && t.closest("#menu, .who.is-link")) : !(t.closest && t.closest("button, [role=slider], [role=button]"));
   if (e.code === "Space" && !typing && spaceOk) {
     e.preventDefault();
     togglePlay();
   }
 });
 document.addEventListener("keyup", (e) => {              // кнопка в фокусе нажимается по keyup: не даём пробелу сработать второй раз
-  if (e.code === "Space" && state.fs.open && !(e.target.closest && e.target.closest("input, textarea, select, #menu"))) e.preventDefault();
+  if (e.code === "Space" && state.fs.open && !(e.target.closest && e.target.closest("input, textarea, select, #menu, .who.is-link"))) e.preventDefault();
 });
 
 // Нет интернета (S10): сообщение с кнопкой «Скачанные» вместо перехода — текущий экран и плеер не меняются

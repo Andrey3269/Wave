@@ -26,7 +26,7 @@ export function renderArtists(node, t) {
   const ids = t.artist_ids && t.artist_ids.length ? t.artist_ids : (t.artist_id ? [t.artist_id] : []);
   node.replaceChildren();
   names.forEach((name, i) => {
-    if (i) node.append(", ");
+    if (i) node.append(mk("span", "who__sep", ", "));   // отдельным элементом: строка имён — flex (S12)
     if (!ids[i]) { node.append(mk("span", "who", name)); return; }
     const b = mk("button", "who is-link", name);
     b.type = "button";
