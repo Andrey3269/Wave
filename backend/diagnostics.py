@@ -162,7 +162,7 @@ def _sanitize(text: str, limit: int = 300) -> str:
     """Текст ошибки yt-dlp для отчёта: без ссылок (в них подписи и параметры потока)."""
     import applog
 
-    return applog._SECRET.sub(r"\1\2***", _URL_RE.sub("<url>", text))[:limit]
+    return applog.redact(_URL_RE.sub("<url>", text))[:limit]
 
 
 def _http_client():

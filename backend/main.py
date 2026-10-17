@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import applog
 import catalog
 import diagnostics
 import jsruntime
@@ -48,8 +49,12 @@ from streaming.router import router as stream_router
 from version import __version__
 
 log = logging.getLogger("musicmeta")
+_handlers_before = list(logging.getLogger().handlers)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)  # иначе в консоль летят все URL googlevideo
+# S13 (L1): консоль разработки (uvicorn main:app), созданная basicConfig, маскирует секреты так же, как файл журнала
+# (applog.setup в лаунчере). Чужие обработчики (pytest, встраивающее приложение) не трогаем
+applog.protect([h for h in logging.getLogger().handlers if h not in _handlers_before])
 
 # ---------------------------------------------------------------------------
 # Конфигурация (через переменные окружения)
