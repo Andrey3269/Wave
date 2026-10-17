@@ -46,15 +46,44 @@ export function queueMoveTo(from, to) {
   renderQueue();
   bus.emit("hero");
 }
+// S12: строки очереди перерисовываются целиком — и по действию пользователя, и сами (трек доиграл, «следующий» с
+// медиаклавиш). Если фокус клавиатуры был в списке, он возвращается на ту же кнопку того же трека на новом месте;
+// если трек убран или такой кнопки у него больше нет (стал текущим, дошёл до края) — на строку, вставшую на его
+// место, иначе на последнюю строку, иначе на запасную кнопку. После клика мышью фокус не переносится (focus.js).
+const rowTrack = new WeakMap();                          // строка → её трек (номер строки после правки уже другой)
+function keepListFocus(list, render, o) {
+  const a = document.activeElement;
+  const li = a && a !== list && list.contains(a) ? a.closest("li") : null;
+  const t = li ? rowTrack.get(li) : null;
+  const kind = li ? o.kind(a) : null, was = li ? Number(a.dataset.index) : -1;
+  render();
+  if (!li || !focusLost()) return;
+  if (!keyboardMode()) return;                          // мышь: кнопка отсоединена, браузер уже перевёл фокус на body
+  const j = t ? queue.tracks.indexOf(t) : -1;
+  const at = (k, sel) => list.querySelector(`${sel}[data-index="${k}"]`);
+  focusSafely(j >= 0 ? at(j, kind) : null) || focusSafely(at(j >= 0 ? j : was, j >= 0 ? o.main : o.vanished))
+    || focusSafely([...list.querySelectorAll(o.main)].pop()) || focusSafely(o.fallback());
+}
+const DRAWER = {
+  kind: (b) => (b.dataset.q ? `[data-q="${b.dataset.q}"]` : b.classList.contains("q__fav") ? ".q__fav" : ".q__main"),
+  main: ".q__main", vanished: ".q__main", fallback: () => $("#queue-close"),
+};
+const FSQ = {
+  kind: (b) => (b.classList.contains("fq__more") ? ".fq__more" : ".fq__main"),
+  main: ".fq__main", vanished: ".fq__more", fallback: () => fs.play,
+};
+
 /** Перерисовывает очередь везде, где она сейчас видна. */
 export function renderQueue() {
   if (!el.queue.hidden) renderDrawer();
   if (state.fs.open && state.fs.mode === "queue") renderFsQueue();
 }
-function renderDrawer() {
+function renderDrawer() { keepListFocus(el.queueList, drawRows, DRAWER); }
+function drawRows() {
   el.queueLabel.textContent = queue.label ? `Из «${queue.label}»` : "";
   const rows = queue.tracks.map((t, i) => {
     const li = mk("li", i === queue.index ? "q is-current" : "q");
+    rowTrack.set(li, t);
     const main = mk("button", "q__main");
     main.type = "button";
     main.dataset.index = i;
@@ -111,6 +140,7 @@ function fqRow(t, i) {
   const cur = i === queue.index;
   const li = mk("li", cur ? "fq__row is-current" : "fq__row");
   li.dataset.index = i;
+  rowTrack.set(li, t);
   const grip = mk("span", "fq__grip");
   grip.title = "Перетащить";
   grip.append(icon("i-grip", "icon--fill"));
@@ -134,7 +164,8 @@ function fqRow(t, i) {
   li.append(grip, main, more);
   return li;
 }
-export function renderFsQueue() {
+export function renderFsQueue() { keepListFocus(fs.qList, drawFsRows, FSQ); }
+function drawFsRows() {
   const q = queue.tracks, cur = queue.index;
   fs.qCount.textContent = q.length ? plural(q.length, "трек", "трека", "треков") : "";
   fs.qClear.disabled = q.length <= 1;
@@ -166,17 +197,7 @@ export function initQueueDrawer() {
     if (b.dataset.q === "up") queueMove(i, -1);
     else if (b.dataset.q === "down") queueMove(i, 1);
     else if (b.dataset.q === "rm") queueRemove(i);
-    else if (b.classList.contains("q__main")) playIndex(i);   // «играть сейчас»
-    // S12: список перерисован целиком — фокус на ту же кнопку того же трека на новом месте, а если трек убран или
-    // кнопки у него больше нет (стал текущим, дошёл до края) — на строку, вставшую на это место. Перерисовка
-    // синхронная: правки очереди вызывают renderQueue сами, «Играть сейчас» — через событие "track", которое
-    // playIndex отправляет сразу (player/controller.js). После клика мышью фокус не переносим (focus.js).
-    if (!keyboardMode()) { dropLostFocus(); return; }
-    if (!focusLost() || el.queue.hidden) return;
-    const j = t ? queue.tracks.indexOf(t) : -1, kind = b.dataset.q ? `[data-q="${b.dataset.q}"]` : ".q__main";
-    const at = (k, sel) => el.queueList.querySelector(`${sel}[data-index="${k}"]`);
-    focusSafely(j >= 0 ? at(j, kind) : null) || focusSafely(at(j >= 0 ? j : i, ".q__main"))
-      || focusSafely([...el.queueList.querySelectorAll(".q__main")].pop()) || focusSafely($("#queue-close"));
+    else if (b.classList.contains("q__main")) playIndex(i);   // «играть сейчас»; фокус сохраняет renderDrawer
   });
   $("#queue-close").addEventListener("click", closeQueue);
   $("#queue-clear").addEventListener("click", queueClearFlow);

@@ -2548,7 +2548,7 @@ def main() -> int:
         au.wait_for_selector("#queue:not([hidden]) .q")
         q_n = au.evaluate(q_count)
         au.click("#queue-list [data-q=rm][data-index='3']")
-        au.wait_for_timeout(150)                                      # «исправление фокуса» в следующем кадре
+        au.wait_for_timeout(150)
         fb = au.evaluate(au_active)
         au.keyboard.press("Space")
         au.wait_for_timeout(200)
@@ -2586,19 +2586,20 @@ def main() -> int:
         au.click("#more")
         au.wait_for_function(rows_ready, arg=40)
         au.wait_for_function("document.querySelector('#more').hidden")
-        fl = au.evaluate("document.activeElement.className")
+        fl = au.evaluate("document.activeElement === document.body ? 'body' : document.activeElement.className")
         au.keyboard.press("Space")
         au.wait_for_timeout(200)
         paused = audio_state(au)["paused"]
         MORE["mode"] = "fail"
-        check(paused and fl != "track__play", f"мышь: «Загрузить ещё» скрылась — фокус не на строке трека, пробел ставит паузу ({fl!r})")
+        check(paused and fl == "body", f"мышь: «Загрузить ещё» скрылась — фокус не на строке трека и не на скрытой кнопке, пробел ставит паузу ({fl!r})")
         au.keyboard.press("Space")
         au.wait_for_function(playing, arg="trk00000041")
         au_search("gspd", 20)
         # то же синхронно, до пересчёта стилей: Chromium на Linux снимает фокус со скрытого элемента при ближайшем
         # пересчёте, на Windows (CI) — позже; проверка в том же задании показывает, снимает ли его само приложение
         mouse_click_sync = """(sel) => { const b = document.querySelector(sel); b.focus();
-            b.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); b.click();
+            b.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+            b.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, detail: 1}));   // клик мыши: detail ≥ 1
             const a = document.activeElement; return a === document.body ? 'body' : (a.dataset.act || a.id || a.className) }"""
         au.click("#tracks .row:nth-child(6) .track__more")
         s_menu = au.evaluate(mouse_click_sync, "#menu [data-act=add]")
@@ -2615,7 +2616,7 @@ def main() -> int:
         check(au.evaluate("document.activeElement === document.querySelector('#tracks .row:nth-child(6) .track__more')"),
               "клавиатура: после пункта меню фокус снова на «⋯» той же строки")
 
-        # c: Enter на треке в панели очереди — после перерисовки (асинхронно, по событию плеера) фокус на этом треке
+        # c: Enter на треке в панели очереди — после перерисовки (по событию плеера "track") фокус на этом треке
         au.focus("#btn-queue")
         au.keyboard.press("Enter")
         au.wait_for_selector("#queue:not([hidden]) .q")
@@ -2648,7 +2649,7 @@ def main() -> int:
             const q = c.getBoundingClientRect();
             return [...c.querySelectorAll('.who')].map((w) => { const r = w.getBoundingClientRect();
               return Math.round(Math.max(0, Math.min(r.right, q.right) - Math.max(r.left, q.left))) }) })""")
-        more6 = au.evaluate("[document.querySelector('#player-artist .who__more')?.textContent, document.querySelector('#player-artist .who__more')?.title]")
+        more6 = au.evaluate("[document.querySelector('#player-artist .who__more [aria-hidden=true]')?.textContent, document.querySelector('#player-artist .who__more')?.title]")
         check(len(widths) == 2 and len(widths[0]) == 6 and len(widths[1]) == 2 and all(w >= 16 for line in widths for w in line)
               and more6[0] == "+4" and more6[1].startswith("Ещё: Третий Исполнитель"),
               f"шесть исполнителей при ширине 980: в строке списка все имена шире 16px, в мини-плеере два имени и «+4» ({widths}, {more6})")
@@ -2704,6 +2705,124 @@ def main() -> int:
         recs_release()
         check((n1, n2, n3) == (1, 2, 3),
               f"перезагрузка ленты посреди подгрузки («Повторить», «Главная» и возврат): следующая подгрузка уходит сразу ({n1}, {n2}, {n3})")
+
+        print("Доступность (S12): исправления по независимому аудиту, раунд 3")
+        # stale(): ответ ленты пришёл, пока открыт другой экран — в скрытую ленту ничего не дописывается
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        RECS_HELD.clear()
+        RECS.update(paged=True, hold=True)
+        au.click(".brand")
+        au.wait_for_function(feed_ready)
+        au.evaluate(to_bottom)
+        h1 = held_n(1)
+        cards0 = au.locator("#new-grid .tcard").count()
+        au.evaluate("document.querySelector('#main').scrollTo({top: 0})")
+        au.click(".hero [data-do=now]")                               # другой экран; главная не перезагружается
+        au.wait_for_selector("#view-now:not([hidden])")
+        recs_release()
+        au.wait_for_timeout(500)
+        cards_hidden = au.locator("#new-grid .tcard").count()
+        au.click("[data-do=back]")
+        au.wait_for_selector("#view-home:not([hidden]) #new-grid .tcard")
+        cards_back = au.locator("#new-grid .tcard").count()
+        RECS.update(hold=False, paged=False)
+        check(h1 == 1 and cards_hidden == cards0 and cards_back == cards0,
+              f"ответ ленты, пришедший на другом экране, не дописывается в скрытую ленту ({h1}: {cards0} → {cards_hidden} → {cards_back})")
+
+        # нажатие без указателя (click с detail 0: экранный диктор, голосовое управление) — как с клавиатуры
+        au_search("gspd", 20)
+        au.locator("#tracks .row").nth(1).click(position={"x": 260, "y": 20})
+        au.wait_for_function(playing, arg="trk00000041")
+        au.click("#btn-queue")                                        # последнее действие — мышь
+        au.wait_for_selector("#queue:not([hidden]) .q")
+        title_i = "(i) => document.querySelector(`#queue-list .q__main[data-index='${i}'] .q__title`).textContent"
+        t3 = au.evaluate(title_i, 3)
+        at_click = au.evaluate("""() => { const b = document.querySelector("#queue-list [data-q=down][data-index='3']"); b.focus(); b.click();
+            const a = document.activeElement; return [a.dataset.q || a.className, a.dataset.index, a.closest('.q')?.querySelector('.q__title').textContent] }""")
+        check(at_click == ["down", "4", t3], f"нажатие без указателя (detail 0) после мыши: фокус остаётся на «Ниже» того же трека ({at_click})")
+        au.keyboard.press("Escape")
+
+        # асинхронная перерисовка: трек доиграл сам — фокус в панели очереди и на исполнителе в мини-плеере не теряется
+        au_search("s10h", 4)
+        au.locator("#tracks .row").first.click(position={"x": 260, "y": 20})
+        au.wait_for_function(playing, arg="trk00000300")
+        au.focus("#btn-queue")
+        au.keyboard.press("Enter")
+        au.wait_for_selector("#queue:not([hidden]) .q")
+        t_mover = au.evaluate(title_i, 2)
+        au.focus("#queue-list [data-q=down][data-index='2']")
+        au.wait_for_function(playing, arg="trk00000301", timeout=20000)
+        au.wait_for_timeout(200)
+        f_auto = au.evaluate(au_active)
+        check(f_auto["q"] == "down" and f_auto["row"] == t_mover, f"трек доиграл, очередь перерисована — фокус на «Ниже» того же трека ({f_auto})")
+        au.keyboard.press("Escape")
+        au.focus("#player-artist .who.is-link")
+        au.wait_for_function(playing, arg="trk00000302", timeout=20000)
+        au.wait_for_timeout(200)
+        f_art = au.evaluate("(() => { const a = document.activeElement; return [a.className, !!a.closest('#player-artist'), a.textContent] })()")
+        au.evaluate("document.querySelector('#audio').dispatchEvent(new Event('waiting'))")
+        f_wait = au.evaluate("(() => { const a = document.activeElement; return [a.className, document.querySelector('#player-artist').textContent] })()")
+        au.evaluate("document.querySelector('#audio').dispatchEvent(new Event('playing'))")
+        check(f_art[0] == "who is-link" and f_art[1] and f_wait[0] == "who is-link" and "Буфер" not in f_wait[1],
+              f"исполнитель в мини-плеере с фокусом: смена трека и буферизация не уносят фокус ({f_art}, {f_wait})")
+        # статус буферизации без фокуса в строке — элемент с многоточием (980px)
+        au.set_viewport_size({"width": 980, "height": 760})
+        au.focus("#search-input")
+        au.evaluate("document.querySelector('#audio').dispatchEvent(new Event('waiting'))")
+        st = au.evaluate("""() => { const w = document.querySelector('#player-artist > .who'); if (!w) return null; const s = getComputedStyle(w);
+            return [w.textContent, s.textOverflow, s.overflow, s.whiteSpace] }""")
+        au.evaluate("document.querySelector('#audio').dispatchEvent(new Event('playing'))")
+        au.set_viewport_size({"width": 1440, "height": 900})
+        check(st is not None and st[0].endswith("…") and st[1] == "ellipsis" and st[3] == "nowrap",
+              f"статус загрузки в мини-плеере — строка с многоточием ({st})")
+
+        # «+N» для экранного диктора: видимое «+4» скрыто, прочитается список остальных исполнителей
+        au_search("many6", 1)
+        au.locator("#tracks .row").first.click(position={"x": 200, "y": 20})
+        au.wait_for_selector("#player-artist .who__more")
+        more_ax = au.evaluate("""() => { const m = document.querySelector('#player-artist .who__more');
+            return [m.querySelector('[aria-hidden=true]')?.textContent, m.querySelector('.sr-only')?.textContent] }""")
+        check(more_ax == ["+4", " и ещё 4: Третий Исполнитель, Четвёртый, Пятый Исполнитель, Шестой"],
+              f"«+4» в мини-плеере: экранному диктору — «и ещё 4: …» ({more_ax})")
+
+        # Enter на карточке «Похожие» — ряд перестроен под новый трек, фокус на его первой карточке
+        au.click("#player-open")
+        au.wait_for_selector("#similar-row .tcard:not(.tcard--skel) .tcard__open")
+        au.evaluate("window.__simRebuilt = false; new MutationObserver(() => { window.__simRebuilt = true }).observe(document.querySelector('#similar-row'), {childList: true})")
+        au.focus("#similar-row .tcard:nth-child(2) .tcard__open")
+        au.keyboard.press("Enter")
+        au.wait_for_function("window.__simRebuilt && !document.querySelector('#similar-row .tcard--skel') && document.querySelector('#similar-row .tcard')", timeout=10000)
+        au.wait_for_timeout(200)
+        f_sim = au.evaluate("(() => { const a = document.activeElement; return [a.className, a.closest('#similar-row') && a.closest('.tcard') === document.querySelector('#similar-row .tcard')] })()")
+        check(f_sim == ["tcard__open", True], f"Enter на похожем треке: фокус на первой карточке перестроенного ряда ({f_sim})")
+        au.click("[data-do=back]")
+
+        # сообщение «Нет подключения»: «×» мышью и пробел — пауза; online, пока фокус в сообщении, — фокус снят
+        au.wait_for_function("!document.querySelector('#audio').paused")
+        ctx.set_offline(True)
+        au.wait_for_selector("#offline:not([hidden])")
+        au.click("#offline-close")
+        f_off = au.evaluate("document.activeElement === document.body")
+        au.keyboard.press("Space")
+        au.wait_for_timeout(200)
+        p_off = audio_state(au)["paused"]
+        au.keyboard.press("Space")
+        ctx.set_offline(False)
+        ctx.set_offline(True)
+        au.wait_for_selector("#offline:not([hidden])")
+        au.focus("#offline-close")
+        ctx.set_offline(False)
+        au.wait_for_selector("#offline", state="hidden")
+        f_on = au.evaluate("document.activeElement === document.body")
+        check(f_off and p_off and f_on, f"«Нет подключения»: «×» мышью — фокус не на скрытой кнопке, пробел — пауза; online — фокус снят ({f_off}, {p_off}, {f_on})")
+        # пробел, пока фокус ещё на скрытой кнопке (в том же задании, до того как браузер снимет его сам), — пауза
+        hid = au.evaluate("""() => { const q = document.querySelector('#queue'), b = document.querySelector('#queue-clear'), a = document.querySelector('#audio');
+            const was = a.paused; q.hidden = false; b.focus(); q.hidden = true;
+            b.dispatchEvent(new KeyboardEvent('keydown', {key: ' ', code: 'Space', bubbles: true, cancelable: true}));
+            return [was, a.paused, document.activeElement === b] }""")
+        check(hid[0] is False and hid[1] is True, f"пробел, когда фокус на скрытой кнопке, ставит паузу, а не нажимает кнопку ({hid})")
+        if audio_state(au)["paused"]:
+            au.keyboard.press("Space")
         au.close()
 
         browser.close()

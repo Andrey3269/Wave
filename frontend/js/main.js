@@ -16,7 +16,7 @@ import { el, now, fs } from "./core/elements.js";
 import { state, queue, current, heroTrack, nav } from "./state/store.js";
 import { initSettingsSync, initThemeFollowSystem } from "./state/settings.js";
 import { initEmptyRetry } from "./components/skeleton.js";
-import { initFocusKeeper } from "./components/focus.js";
+import { initFocusKeeper, canFocus } from "./components/focus.js";
 import { initPickPlaylist } from "./components/dialogs.js";
 import { initLyrics } from "./components/lyrics.js";
 import { bindCardClicks, initRowScroll } from "./components/cards.js";
@@ -211,7 +211,9 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "KeyM" && !typing) { toggleMute(); return; }
   // В полноэкранном плеере пробел всегда пауза/пуск (кроме полей ввода, меню и ссылки на исполнителя — S12: пробел на
   // ней открывает исполнителя, как везде), а не нажатие на кнопку в фокусе
-  const spaceOk = state.fs.open ? !(t.closest && t.closest("#menu, .who.is-link")) : !(t.closest && t.closest("button, [role=slider], [role=button]"));
+  // Цель скрыта или уже не на странице (кнопку нажали, и она исчезла вместе с меню или панелью) — как пробел на странице
+  const spaceOk = (t !== document.body && !canFocus(t)) ? true
+    : state.fs.open ? !(t.closest && t.closest("#menu, .who.is-link")) : !(t.closest && t.closest("button, [role=slider], [role=button]"));
   if (e.code === "Space" && !typing && spaceOk) {
     e.preventDefault();
     togglePlay();

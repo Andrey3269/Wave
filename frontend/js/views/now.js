@@ -10,6 +10,7 @@ import { updateProgress } from "../player/sliders.js";
 import { loadLyrics, syncLyrics } from "../components/lyrics.js";
 import { renderArtists, paintFav, paintDl, markPlaying } from "../components/track-row.js";
 import { trackCard, renderRow, bindTrackGrid } from "../components/cards.js";
+import { focusSafely, keyboardMode, rescueFocus } from "../components/focus.js";
 import { setBlock, skelCards } from "../components/skeleton.js";
 import { layout } from "./shell.js";
 
@@ -54,13 +55,17 @@ export function toggleLyrics() {
 
 // ---------- похожие треки и исполнители (радио текущего трека) ----------
 /** Данные блока «Похожие»: tracks — карточки треков, artists — карточки исполнителей (список "simar"). */
-export const similar = { key: "", tracks: [], artists: [], seq: 0 };
+export const similar = { key: "", tracks: [], artists: [], seq: 0, refocus: false };
 async function loadSimilar(t) {
   const key = trackKey(t);
   if (similar.key === key) return;
   similar.key = key;
   const my = ++similar.seq;
   similar.tracks = []; similar.artists = [];
+  // S12: Enter на карточке «Похожие» запускает трек, и ряд перестраивается под него — фокус клавиатуры, бывший в
+  // ряду, переходит на первую карточку нового ряда (или на заголовок экрана, если похожих нет)
+  const a = document.activeElement;
+  if (a && now.similarRow.contains(a)) similar.refocus = keyboardMode();
   now.similarRow.replaceChildren(...skelCards(5).map((c) => { c.classList.add("tcard--skel"); return c; }));
   now.similarArtistsSec.hidden = true;
   setBlock(now.similarEmpty, "");
@@ -90,6 +95,11 @@ async function loadSimilar(t) {
     similar.key = "";
     now.similarRow.replaceChildren();
     setBlock(now.similarEmpty, `Не удалось загрузить похожие треки: ${e.message}`, () => loadSimilar(t));
+  }
+  if (similar.refocus) {
+    similar.refocus = false;
+    const focusNow = document.activeElement;
+    if ((!focusNow || focusNow === document.body) && state.view === "now") focusSafely(now.similarRow.querySelector(".tcard__open")) || rescueFocus();
   }
 }
 

@@ -5,6 +5,7 @@ import { SOURCES, fmtTime } from "../core/format.js";
 import { trackKey } from "../core/api.js";
 import { el } from "../core/elements.js";
 import { state, current } from "../state/store.js";
+import { focusLost, focusSafely, rescueFocus } from "./focus.js";
 
 /** Показывает значок источника в узле .src (или прячет, если источник неизвестен). */
 export function setSource(node, source) {
@@ -26,6 +27,10 @@ export function setSource(node, source) {
 export function renderArtists(node, t, max = Infinity) {
   const names = t.artists && t.artists.length ? t.artists : [t.artist];
   const ids = t.artist_ids && t.artist_ids.length ? t.artist_ids : (t.artist_id ? [t.artist_id] : []);
+  // S12: строка перерисовывается при смене трека — фокус с ссылки исполнителя не пропадает, а переходит на ссылку на
+  // том же месте у нового трека (или на первую)
+  const a = document.activeElement, had = a !== node && node.contains(a);
+  const at = had ? [...node.querySelectorAll(".who.is-link")].indexOf(a) : -1;
   node.replaceChildren();
   const shown = names.length > max ? names.slice(0, max) : names;
   shown.forEach((name, i) => {
@@ -41,9 +46,16 @@ export function renderArtists(node, t, max = Infinity) {
   });
   if (shown.length < names.length) {
     const rest = names.slice(shown.length);
-    const more = mk("span", "who__more", `+${rest.length}`);
+    const more = mk("span", "who__more");
     more.title = `Ещё: ${rest.join(", ")}`;
+    const vis = mk("span", null, `+${rest.length}`);
+    vis.setAttribute("aria-hidden", "true");             // экранный диктор читает не «плюс 3», а кого именно
+    more.append(vis, mk("span", "sr-only", ` и ещё ${rest.length}: ${rest.join(", ")}`));
     node.append(more);
+  }
+  if (had && focusLost()) {
+    const links = node.querySelectorAll(".who.is-link");
+    focusSafely(links[at] || links[0]) || rescueFocus();
   }
 }
 

@@ -29,7 +29,12 @@ function setPlayingUI(playing) {
 }
 // Индикатор в плеере: пока идёт резолв/буферизация, вместо исполнителя пишем статус
 function setLoading(text) {
-  if (text != null) { el.artist.replaceChildren(mk("span", "who", text)); return; }   // flex-элемент с многоточием (S12)
+  if (text != null) {
+    // S12: фокус на ссылке исполнителя — строку не подменяем (ссылка с фокусом исчезла бы на каждой буферизации);
+    // статус в остальных случаях — flex-элемент с многоточием
+    if (!el.artist.contains(document.activeElement)) el.artist.replaceChildren(mk("span", "who", text));
+    return;
+  }
   const t = current();
   if (t) renderArtists(el.artist, t, 2);
 }

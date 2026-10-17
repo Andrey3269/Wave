@@ -67,4 +67,7 @@ export function initFocusKeeper() {
   document.addEventListener("focusin", (e) => { last = e.target; });
   document.addEventListener("keydown", () => { keyboard = true; }, true);
   document.addEventListener("pointerdown", () => { keyboard = false; }, true);
+  // Нажатие без указателя (Enter/пробел на кнопке, «нажатие» из экранного диктора или голосового управления) приходит
+  // как click с detail 0 без keydown и pointerdown: это не мышь — фокус после действия переносится, как с клавиатуры
+  document.addEventListener("click", (e) => { if (e.detail === 0) keyboard = true; }, true);
 }
