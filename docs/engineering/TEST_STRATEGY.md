@@ -191,6 +191,20 @@
 
 Приёмка S12: **ACCEPTED BY OWNER — 2026-10-17** по явному решению владельца на основании автотестов и зелёного CI, без ручного чек-листа. Список WebView2 из 24 пунктов остаётся NOT RUN, не PASS. `main` не менялся, merge/PR не выполнялись; S13 начинается только по отдельной команде владельца.
 
+### Состояние после S13 (2026-10-17; ветка `claude/s13-local-api-security`, подробности — [reports/S13.md](reports/S13.md))
+
+| Набор | Результат | Среда |
+|---|---|---|
+| `python -m pytest` | **PASS**: 1700 passed + 10 skipped + 0 xfail (было 1488 + 10 + 1; снят M7; новые `api/test_origin_guard.py` 47, `unit/test_snapshot.py` 67, `unit/test_applog.py` 27; `test_userdata.py` 37 → 79, `test_download_paths.py` 22 → 41, `test_settings.py` 64 → 69, `test_downloads.py` 37 → 39, `test_playback.py` 62 → 63, `test_playlists.py` 23 → 24) | Linux, Python 3.13; CI `ubuntu-latest`, `windows-latest` |
+| `node --test "tests/js/*.test.mjs"` | **PASS**: 79 (без изменений) | Linux Node 22 |
+| `tests/e2e_smoke.py` + `e2e_settings.py` | **PASS**: 341 + 33 (без изменений: фронтенд не менялся, штатные запросы проходят OriginGuard) | Linux Chromium; CI Linux, Windows |
+| `python tests/run_checks.py` | **PASS** 8/8 | Linux |
+| Окно WebView2 | **NOT RUN** (ручной чек-лист по заданию не создавался) | Windows 11 |
+
+Приёмы, введённые в S13: список изменяющих маршрутов для проверки OriginGuard строится по `main.app` (новый маршрут попадает в проверку сам); «старые строки» базы вставляются отдельным соединением SQLite, мимо API, которое такие данные уже не примет; браузерная проверка CSRF — страница на `http://localhost:<порт>` шлёт no-cors запросы на `127.0.0.1:<порт>` того же сервера.
+
+Статус S13: **READY FOR OWNER ACCEPTANCE**, владельцем не принят.
+
 ## 3. Изоляция данных (обязательно с этапа S0)
 
 Тесты никогда не трогают `%LOCALAPPDATA%\Wave`, `~/.local/share/wave`, `~/Downloads/Wave`.
@@ -290,9 +304,11 @@ Dev-зависимости живут в `requirements-dev.txt` и не попа
 | `tests/live/test_live_youtube_runtime.py` (S3) | LIVE-2, LIVE-3, LIVE-4 (§7) |
 | `tests/unit/test_ci_annotate.py` (S3) | аннотации CI для упавших тестов и итог pytest со списком пропущенных |
 | `tests/api/test_download_policy.py` (S5) | какие треки скачиваются: YouTube Music и SoundCloud — штатный поток плеера в исходном формате, без проверки лицензии и `downloadable`, один резолв на проверку и загрузку; недоступный поток (unavailable, age_restricted, bot_check, rate_limited, network, no_direct_stream) — та же причина, что у плеера, без файлов и запросов к CDN; фрагмент SoundCloud Go+ → `preview_only`; повтор после временной ошибки; скачанное SoundCloud играет с диска без источника; старые загрузки не проверяются |
-| `tests/api/test_download_paths.py` (S5, N3) | строки индекса с `../`, абсолютным путём, symlink наружу не читаются и не удаляются ни одним эндпоинтом, без 500; своя папка удаляется целиком |
+| `tests/api/test_download_paths.py` (S5, N3; S13) | строки индекса с `../`, абсолютным путём, symlink наружу не читаются и не удаляются ни одним эндпоинтом, без 500; своя папка удаляется целиком. S13: чужой каталог через `root`, папка другого трека под чужим ключом, недопустимый id, файл-ссылка в своей папке, испорченный `lyrics.json`, недопустимая и недоступная `downloads_dir` из базы |
 | `tests/unit/test_download_sources.py` (S5) | признак «только фрагмент» (`Resolved.preview`) берётся из того же извлечения yt-dlp, что и ссылка: `format_id` с `preview`, `requested_formats`, отсутствие `format_id`; поток YouTube фрагментом не считается |
-| `tests/api/test_origin_guard.py` (S13) | мутирующий запрос с чужим `Origin` → 403; без `Origin` и со своим → OK; GET не затронут |
+| `tests/api/test_origin_guard.py` (S13) | каждый изменяющий маршрут с чужим `Origin` → 403 и без изменений данных; варианты origin (`null`, другой порт или имя хоста, дубли); `Sec-Fetch-Site`; без `Origin` и со своим → OK; GET не затронут; настоящий uvicorn с портом и настоящий Chromium (no-cors fetch и sendBeacon с чужой страницы) |
+| `tests/unit/test_snapshot.py` (S13) | формат id источников (один для потоков и снимков), хосты обложек с границей домена, матрица обложек и ссылок, перепроверка снимков из базы |
+| `tests/unit/test_applog.py` (S13, L1) | маскирование googlevideo (параметры, путь, имя узла), IP, логинов в ссылках, cookie, токенов; трейсбеки и `stack_info`; файл журнала `applog.setup`; текст ошибок диагностики |
 | `tests/js/queue.test.mjs` (S9) | модель очереди: add/next/prev/remove/move/clear, индекс текущего при перестановках, shuffle без повторов и с историей для «назад», repeat off/one/all, сериализация и восстановление |
 | `tests/js/format.test.mjs` (S9) | `fmtTime`, `plural`, `thumb` |
 | `tests/e2e_smoke.py` | 137 проверок после S6 (+ лайк из строки списка сохраняет `explicit`, `plays`, `released`), 136 после S5 (123 после S3): + честные названия (S2e), сообщение о недоступном источнике с «Повторить», частичный сбой, пустой ответ (S2c), отдельное сообщение об отсутствии компонента воспроизведения YouTube (S3); S5 — раздел «Загрузки»: этапы «Подготовка»/«Скачивание N%»/«Обработка», «Скачано», причина недоступного потока без повторного запроса, меню без «Скачать» для недоступного трека, повтор после временной ошибки, список «Скачанных»; дальше — клавиатурная навигация (S12) |
@@ -434,11 +450,7 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 
 Тест описывает **правильное** поведение и сейчас падает по указанной причине (проверено запуском с `--runxfail`). Когда дефект исправят, тест начнёт проходить, `strict` превратит это в FAIL — значит, пора снять маркер в том же коммите, что и исправление.
 
-После S8 остался 1 (pytest: `1 xfailed`):
-
-| ID | Тест | Что происходит сейчас | Этап |
-|---|---|---|---|
-| M7 | `api/test_local_api_security.py::test_cross_origin_mutation_is_refused` | `POST /api/settings/clear-history` с чужого `Origin` выполняется | S13 |
+После S13 закреплённых дефектов нет (pytest: `0 xfailed`). Последний — M7 — снят в S13.
 
 Сняты (тест проходит без маркера):
 
@@ -451,6 +463,7 @@ python -m pytest -m live -rP tests\live\test_live_youtube_runtime.py
 | M5 | `api/test_playlists.py::test_concurrent_add_of_same_track` | `ebb44d6` (S6) |
 | M6 | `api/test_userdata.py::test_favorite_keeps_all_track_fields`, `test_saved_favorite_can_always_be_removed` | `dc070fd` (S6) |
 | M3 | `api/test_search_isolation.py::test_youtube_failure_enters_cooldown` | `42424f0` (S7) |
+| M7 | `api/test_local_api_security.py::test_cross_origin_mutation_is_refused` | `8190ea9` (S13) |
 | L2 | `api/test_stream_proxy.py::test_empty_range_is_not_forwarded`, `api/test_stream_local.py::test_malformed_range_is_ignored` (×3, плюс `items=0-10` и `bytes=0-9,abc`), `api/test_stream_local.py::test_head_request_supported` | `d77c187` (S8) |
 
 `test_concurrent_add_of_same_track` в S1 держал барьер после отдельного запроса проверки дубля — такого запроса в S6 больше нет. Теперь барьер выпускает оба потока к записи одновременно; дополнительно `test_concurrent_api_adds_keep_order_and_no_duplicates` шлёт 16 параллельных POST (на коде S5 падает с HTTP 500 в 3 из 3 запусков).
@@ -470,4 +483,4 @@ S7 также изменил закреплённые проверки вмес�
 | N1 | `PUT /api/settings` применял ключи по очереди: ключи до ошибочного уже сохранялись, хотя ответ 400 | `api/test_settings.py::test_write_is_atomic` (×4), `test_failed_downloads_dir_leaves_other_keys_untouched`, `test_invalid_key_prevents_downloads_dir_change` | **исправлено в S2a** (`1070aa8`): все ключи проверяются заранее и пишутся одной транзакцией |
 | N2 | При обрыве CDN посередине ответа прокси теряет уже полученные, но ещё не отданные байты (читает кусками по 64 КБ). Плеер видит короткое тело и перезапрашивает диапазон | `api/test_stream_proxy.py::test_upstream_break_mid_stream_ends_response`, `test_upstream_break_over_real_server_lets_player_continue` (настоящий uvicorn, с длиной и chunked), `test_upstream_closing_early_without_error_is_not_success`; сегменты HLS — `api/test_hls_proxy.py::test_segment_break_keeps_received_bytes`; загрузки — `api/test_downloads.py::test_upstream_break_mid_portion_resumes_without_loss` | **исправлено в S8** (`d77c187`): байты отдаются по мере получения, обрыв прерывает ответ без завершающего сообщения |
 | N4 | (S7, живая проверка) SoundCloud отдаёт прогрессивный mp3 лишь в части ответов: 4 из 9 резолвов трека `soundcloud_track_id`, в остальных — только HLS (`m3u8_native`). Плеер требует прогрессивный поток, резолв падает с `Requested format is not available`, пользователь видит текст «изменил формат ответа / yt-dlp устарел» (`extractor`) | `unit/test_format_choice.py` (живой список форматов), `api/test_hls_proxy.py`, `api/test_hls_browser.py`, `api/test_hls_downloads.py`; live — `live/test_live_hls.py` (LIVE-S8-3: 6 из 6 резолвов воспроизводимы) | **исправлено в S8** (`a174239`, `eae548a`, `620d340`): HLS через backend-прокси и hls.js, загрузка HLS-only в `.mp3` / `.m4a`, честные ошибки для неподдерживаемых вариантов |
-| N3 | Запись индекса загрузок с `folder`, выходящим за каталог загрузок (`../`), даёт HTTP 500: чужой файл не отдаётся (`library.folder_path` бросает `ValueError`), но ответ — ошибка сервера, а не отказ | `api/test_stream_local.py::test_index_row_outside_downloads_is_not_served` (как есть: 500, посторонний файл не прочитан) | **S11 и S13**, критерии безопасности в ROADMAP: ни один эндпоинт не читает, не отдаёт и не удаляет файлы вне разрешённых каталогов, ответ — отказ, а не 500 |
+| N3 | Запись индекса загрузок с `folder`, выходящим за каталог загрузок (`../`), даёт HTTP 500: чужой файл не отдаётся (`library.folder_path` бросает `ValueError`), но ответ — ошибка сервера, а не отказ | `api/test_stream_local.py::test_index_row_outside_downloads_is_not_served` (как есть: 500, посторонний файл не прочитан) | **исправлено в S5/S11, остаток — в S13** (`df904b5`): строка читается только для папки, созданной Wave для этого трека; файлы-ссылки, испорченный `lyrics.json` и `downloads_dir` из базы не дают ни чужого файла, ни 500 (`api/test_download_paths.py`) |
