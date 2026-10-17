@@ -10,7 +10,7 @@ import { toast } from "../components/toast.js";
 import { repaintFav } from "../components/favorites.js";
 import { focusSafely, rescueFocus, keyboardMode } from "../components/focus.js";
 import { layout } from "./shell.js";
-import { resetList, setTracks, setStatus, showSkeleton, clearSkeleton, emptyText } from "./list.js";
+import { resetList, setTracks, showRows, setStatus, showSkeleton, clearSkeleton, emptyText } from "./list.js";
 
 /** Альбомы и исполнители в коллекции и локальные треки — в state (кнопка «В коллекцию», страница «Коллекция»). */
 export async function loadLibrary() {
@@ -153,7 +153,8 @@ export async function movePlaylistTrack(t, dir) {
   try { await api(`/api/playlists/${id}/tracks/order`, jsonOpts("PATCH", { keys: next.map(trackKey) })); }
   catch (e) { toast(`Не удалось изменить порядок: ${e.message}`); return; }
   if (state.view !== "playlist" || state.ctx?.id !== id) return;
-  setTracks(next);
+  setTracks(next, { keep: true });                          // S16: те же отрисованные строки, прокрутка не прыгает
+  showRows(j + 1);                                          // трек сдвинули за последнюю отрисованную строку
   setStatus(`«${t.title}»: позиция ${j + 1} из ${next.length}`);   // объявляется экранным диктором (aria-live)
   const more = el.tracks.querySelector(`.row[data-key="${CSS.escape(trackKey(t))}"] .track__more`);
   if (kb) focusSafely(more) || rescueFocus();
@@ -169,7 +170,7 @@ export async function removeFromHistory(t) {
   const rest = state.list.filter((x) => x !== t);
   state.offset = Math.max(0, state.offset - 1);           // следующая страница не пропустит запись
   state.hist = state.hist.filter((x) => trackKey(x) !== trackKey(t));
-  setTracks(rest);
+  setTracks(rest, { keep: true });
   setBlock(el.empty, rest.length ? "" : emptyText());
   setStatus(rest.length ? `Найдено: ${rest.length}${state.more ? "+" : ""}` : "");
   const row = el.tracks.querySelectorAll(".row")[Math.min(Math.max(i, 0), rest.length - 1)];

@@ -41,17 +41,46 @@ export function updateSort() {
   el.sort.hidden = sectionOf(state.view) !== "list" || isCards() || state.list.length < 2;
 }
 
-function renderList() {
-  el.tracks.replaceChildren(...state.list.map((t, i) => buildRow(t, i)));
+// ---------- отрисовка порциями (S16) ----------
+// Замер S16: «Нравится» на 5000 треков строилось ~3 с и держало ~150 тыс. DOM-узлов (по ~30 на строку), плейлист на
+// 2000 — ~1,3 с; почти всё время — раскладка и отрисовка, а не данные. Поэтому строки рисуются порциями: сначала
+// RENDER_CHUNK, следующая порция — когда прокрутка подходит к последней отрисованной строке. state.list по-прежнему
+// содержит весь список: воспроизведение, очередь, перемешивание, сортировка и счётчики работают со всем списком.
+export const RENDER_CHUNK = 200;
+let tailIO = null;
+/** Следит за последней отрисованной строкой, пока отрисован не весь список. */
+function watchTail() {
+  tailIO ??= new IntersectionObserver((e) => { if (e.some((x) => x.isIntersecting)) showRows(state.shown + RENDER_CHUNK); },
+    { root: el.main, rootMargin: "1200px" });
+  tailIO.disconnect();
+  const last = el.tracks.lastElementChild;
+  if (state.shown < state.list.length && last) tailIO.observe(last);
+}
+/** Дорисовывает строки так, чтобы были отрисованы первые n треков (не больше длины списка). */
+export function showRows(n) {
+  const to = Math.min(state.list.length, n), from = state.shown;
+  if (to <= from) return;
+  el.tracks.append(...state.list.slice(from, to).map((t, k) => buildRow(t, from + k)));
+  state.shown = to;
+  watchTail();
+  markPlaying();
+}
+/** Перерисовка списка: count — сколько первых строк нарисовать (по умолчанию одна порция). */
+function renderList(count = RENDER_CHUNK) {
+  state.shown = Math.min(state.list.length, Math.max(count, RENDER_CHUNK));
+  el.tracks.replaceChildren(...state.list.slice(0, state.shown).map((t, i) => buildRow(t, i)));
+  watchTail();
   markPlaying();
   updateSort();
 }
-/** Новый список треков: первая страница поиска, страница артиста/альбома, загрузки. */
-export function setTracks(tracks) {
+/** Новый список треков: первая страница поиска, страница артиста/альбома, загрузки.
+ *  keep: тот же экран после правки (перестановка, удаление) — отрисовано столько же строк, сколько было. */
+export function setTracks(tracks, { keep = false } = {}) {
   tracks.forEach((t) => { t._i = nextSeq(); });
+  const shown = state.shown;
   state.list = tracks;
   if (state.sort !== "default") sortList();
-  renderList();
+  renderList(keep ? shown : RENDER_CHUNK);
   scheduleWarm(state.list.slice(0, 3));
 }
 /** Следующая страница: без дублей, в тот же список. Если очередь играет этот список, она продолжается
@@ -60,11 +89,11 @@ function appendTracks(raw) {
   const have = new Set(state.list.map(trackKey));
   const fresh = raw.filter((t) => !have.has(trackKey(t)));
   fresh.forEach((t) => { t._i = nextSeq(); });
-  const from = state.list.length;
+  const from = state.list.length, all = state.shown >= from;   // всё ли до подгрузки было отрисовано
   state.list.push(...fresh);
   if (fresh.length && queue.isFrom(state.list)) queue.extend();
-  if (state.sort !== "default") { sortList(); renderList(); }
-  else { fresh.forEach((t, i) => el.tracks.appendChild(buildRow(t, from + i))); updateSort(); }
+  if (state.sort !== "default") { sortList(); renderList(all ? state.list.length : state.shown); }
+  else { if (all) showRows(state.list.length); updateSort(); }   // иначе новые строки дорисуются при прокрутке
   return fresh[0] ? el.tracks.querySelector(`.row[data-key="${CSS.escape(trackKey(fresh[0]))}"] .track__play`) : null;
 }
 
@@ -178,7 +207,7 @@ export function playFromList(i) {
  * onArtist(source, artistId), onDownload(track).
  */
 export function initList({ onArtist, onDownload }) {
-  el.sort.addEventListener("change", () => { state.sort = el.sort.value; sortList(); renderList(); });
+  el.sort.addEventListener("change", () => { state.sort = el.sort.value; sortList(); renderList(state.shown); });
   el.dPlay.addEventListener("click", () => playFromList(0));
   el.dShuffle.addEventListener("click", () => {
     if (!state.list.length) return;

@@ -446,6 +446,8 @@ body[data-audio="playing"] .is-playing .ico-play { display: none; }
 
 /* Строки треков */
 .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-bottom: 1px solid var(--line); border-radius: var(--r-s); transition: background-color .12s; }
+/* S16: строки за пределами экрана не раскладываются и не рисуются (замер: «Нравится» на 5000 треков 0,53 → 0,38 с) */
+.row { content-visibility: auto; contain-intrinsic-size: auto 61px; }
 .row:hover { background: var(--surface); }
 /* S12: .track — не кнопка, а сетка строки (клик в любом месте играет трек — обработчик списка). Кнопка трека —
    .track__play (название); её фокус рисуется рамкой всей строки (::after), как раньше у button.track. */

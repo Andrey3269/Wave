@@ -28,7 +28,7 @@ export function goHome(refresh = true) {
   // S12: подгрузка ленты, начатая до ухода с главной, ещё идёт, а лента не перезагружается — флаг подгрузки снова её:
   // второй запрос не уйдёт, её ответ допишет карточки. При перезагрузке ленты прежняя подгрузка устаревает (loadHome).
   Object.assign(state, { view: "home", query: "", cards: [], albums: [], related: [], sort: "default", loadingMore: (!reload && home.pending) || false });
-  state.list = [];
+  state.list = []; state.shown = 0;
   el.tracks.replaceChildren(); el.cards.replaceChildren();
   setMore(el.more, "none");
   layout();

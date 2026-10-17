@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 import library
@@ -405,7 +406,9 @@ def _snapshots(rows, where: str) -> list[dict]:
 
 @router.get("/favorites")
 def list_favorites():
-    return {"items": favorite_tracks()}
+    # S16: снимки уже JSON-совместимы (json.loads + проверка), поэтому ответ сериализуется сразу, без обхода
+    # jsonable_encoder: на 5000 треков он занимал больше половины времени ответа. Тело ответа то же самое.
+    return JSONResponse({"items": favorite_tracks()})
 
 
 @router.post("/favorites")

@@ -9,6 +9,7 @@ import json
 import time
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import library
@@ -88,9 +89,10 @@ def get_playlist(pid: int):
         raise HTTPException(404, "Плейлист не найден.")
     stored = library._q("SELECT key, data FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", (pid,))
     tracks = userdata._snapshots(stored, "playlist_tracks")     # недопустимые строки пропускаются (S13)
-    return {"playlist": {"id": pid, "name": rows[0]["name"], "count": len(tracks),
-                         "cover": next((t["cover"] for t in tracks if t.get("cover")), None)},
-            "tracks": tracks}
+    # S16: как /api/favorites — готовый JSON без jsonable_encoder (длинные плейлисты), тело ответа прежнее
+    return JSONResponse({"playlist": {"id": pid, "name": rows[0]["name"], "count": len(tracks),
+                                      "cover": next((t["cover"] for t in tracks if t.get("cover")), None)},
+                         "tracks": tracks})
 
 
 @router.post("/playlists/{pid}/tracks")
