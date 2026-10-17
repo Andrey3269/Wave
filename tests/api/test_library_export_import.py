@@ -258,3 +258,14 @@ def test_local_tracks_are_imported_only_if_file_exists(api):
     body = _post(api, doc).json()
     assert body["skipped"]["missing_local"] == 2 and body["imported"]["tracks"] == 1
     assert [t["id"] for t in api.get("/api/favorites").json()["items"]] == [A]
+
+
+def test_playlist_with_hidden_row_is_recognised_on_reimport(api):
+    """Строка, которую GET пропускает (S13), не делает плейлист «другим»: повторный импорт его не дублирует."""
+    import library
+    _fill(api)
+    pid = api.profile.sql("SELECT id FROM playlists WHERE name = 'Дорога'")[0][0]
+    library._q("INSERT INTO playlist_tracks (playlist_id, position, key, data, added_at) VALUES (?, 9, 'yt:bad/id', ?, 1)",
+               (pid, json.dumps({"id": "bad/id", "source": "yt"})))
+    body = _post(api, api.get("/api/library/export").json()).json()
+    assert body["skipped"]["duplicate_playlists"] == 2 and body["imported"]["playlists"] == 0

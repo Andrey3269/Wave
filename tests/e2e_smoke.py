@@ -298,6 +298,8 @@ def handle(route: Route) -> None:
             return js(route, {"kind": "hls", "url": f"/api/stream/hls/{HLS_TOKEN}/main.m3u8", "preview": False, "codec": "mp3"})
         return js(route, {"kind": "progressive", "url": f"/api/stream/sc/{m.group(1)}", "preview": False})
 
+    if path.startswith("/api/stream/local/"):                          # S15: локальная музыка — настоящий backend и файл
+        return route.continue_()
     if path.startswith("/api/stream/"):
         if q.get("warm"):
             return route.fulfill(status=204)
@@ -976,7 +978,8 @@ def main() -> int:
         page.click(".nav__item[data-view=collection]")
         page.wait_for_selector("#col-tiles .tile")
         page.wait_for_timeout(300)
-        check(page.locator("#col-tiles .tile").count() == 3 and page.locator("#col-artists .card").count() >= 1, "коллекция: плитки и исполнители из избранного")
+        check(page.locator("#col-tiles .tile").count() == 4 and page.locator("#col-artists .card").count() >= 1,   # S15: + «Локальная музыка»
+              "коллекция: плитки (с «Локальной музыкой») и исполнители из избранного")
         page.screenshot(path=str(SHOTS / "11-collection.png"))
         page.click(".nav__item[data-view=liked]")
         page.wait_for_selector("#tracks .row:not(.row--skel)")
@@ -2913,6 +2916,202 @@ def main() -> int:
               "настройки рекомендаций без горизонтальной прокрутки на 980 px")
         rc.screenshot(path=str(SHOTS / "s14-settings-recs.png"))
         rc.close()
+
+        print("Библиотека (S15): локальная музыка, альбомы и исполнители в коллекции, поиск и фильтры, порядок плейлиста, история, экспорт и импорт")
+        clear_playback()
+        lb = ctx.new_page()
+        lb.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        lb.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and "Failed to load resource" not in m.text else None)
+        lb.goto(BASE)
+        lb.wait_for_function(feed_ready, timeout=15000)
+        lb.click(".nav__item[data-view=collection]")
+        lb.wait_for_selector("#col-tiles .tile[data-go=local]")
+        lb.click("#col-tiles .tile[data-go=local]")
+        lb.wait_for_selector("#local-add:not([hidden])")
+        check(lb.text_content("#results-title") == "Локальная музыка" and "Добавить файлы" in lb.text_content("#empty")
+              and lb.get_attribute(".nav__item[aria-current='page']", "data-view") == "collection",
+              "«Локальная музыка» открывается из коллекции: пустое состояние подсказывает «Добавить файлы»")
+        local_wav = wav(4)
+        lb.set_input_files("#local-file", files=[{"name": "Тестовый Исполнитель - Локальный трек.wav", "mimeType": "audio/wav", "buffer": local_wav}])
+        lb.wait_for_selector("#tracks .row .track__title")
+        row = lb.evaluate("""(() => { const r = document.querySelector('#tracks .row'); return [r.dataset.key, r.querySelector('.track__title').textContent,
+            r.querySelector('.track__artist').textContent, r.querySelector('.src use').getAttribute('href'), r.querySelector('.track__dl').hidden] })()""")
+        local_key = row[0]
+        check(local_key.startswith("local:") and row[1:] == ["Локальный трек", "Тестовый Исполнитель", "#i-src-local", True],
+              f"файл импортирован через окно выбора: название и исполнитель из имени, значок «Локальный файл», без кнопки загрузки ({row})")
+        check(wait_toast(lb, "Добавлено: 1 трек"), "после импорта — сообщение «Добавлено: 1 трек»")
+        lb.click("#tracks .row .track__play")
+        lb.wait_for_function("(() => { const a = document.querySelector('#audio'); return !a.paused && a.currentTime > 0.3 })()", timeout=15000)
+        src = lb.evaluate("document.querySelector('#audio').src")
+        check(f"/api/stream/local/{local_key[6:]}" in src, f"локальный трек играет внутри Wave с backend ({src})")
+        lb.evaluate("document.querySelector('#audio').currentTime = 3")
+        lb.wait_for_function("document.querySelector('#audio').currentTime >= 3", timeout=8000)
+        check(True, "перемотка локального трека работает (Range с диска)")
+        lb.click("#tracks .row .track__more")
+        lb.wait_for_selector("#menu:not([hidden])")
+        acts = lb.evaluate("[...document.querySelectorAll('#menu [role=menuitem]')].map(b => b.dataset.act)")
+        check("unlocal" in acts and not {"download", "norec", "norecartist", "artist"} & set(acts),
+              f"меню локального трека: «Удалить из Wave», без загрузки, исключений и перехода к неизвестному исполнителю ({acts})")
+        lb.keyboard.press("Escape")
+        lb.click("#tracks .row .track__fav")
+        lb.wait_for_function("(k) => fetch('/api/favorites').then(r => r.json()).then(d => d.items.some(t => `${t.source}:${t.id}` === k))", arg=local_key)
+        check(True, "локальный трек добавляется в «Нравится»")
+        lb.set_input_files("#local-file", files=[{"name": "другое имя.wav", "mimeType": "audio/wav", "buffer": local_wav}])
+        check(wait_toast(lb, "уже были в Wave: 1") and lb.locator("#tracks .row").count() == 1,
+              "повторный импорт того же файла не создаёт копию")
+        lb.set_input_files("#local-file", files=[{"name": "не аудио.mp3", "mimeType": "audio/mpeg", "buffer": b"MZ" + bytes(200)}])
+        check(wait_toast(lb, "не удалось: не аудио.mp3") and lb.locator("#tracks .row").count() == 1,
+              "файл, который не похож на аудио, отклонён с понятной причиной")
+
+        # альбом и исполнитель в коллекции
+        lb.fill("#search-input", "gspd")
+        lb.press("#search-input", "Enter")
+        lb.wait_for_selector("#tracks .row")
+        lb.click("#tab-albums")
+        lb.wait_for_selector("#cards .card--album")
+        lb.locator("#cards .card--album").first.click()
+        lb.wait_for_selector("#d-fav:not([hidden])")
+        check(lb.get_attribute("#d-fav", "aria-pressed") == "false" and lb.text_content("#d-fav-t") == "В коллекцию",
+              "на странице альбома есть кнопка «В коллекцию»")
+        lb.click("#d-fav")
+        lb.wait_for_function("document.querySelector('#d-fav').getAttribute('aria-pressed') === 'true'")
+        albums = lb.evaluate("fetch('/api/library/albums').then(r => r.json()).then(d => d.items.map(c => [c.id, c.title]))")
+        check(albums == [["MPRE0", "Альбом 1"]] and lb.text_content("#d-fav-t") == "В коллекции", f"альбом сохранён в коллекции ({albums})")
+        lb.click("#back")
+        lb.wait_for_selector("#cards .card--album")
+        lb.click("#tab-artists")
+        lb.wait_for_selector("#cards .card--artist")
+        lb.locator("#cards .card--artist").first.click()
+        lb.wait_for_selector("#d-fav:not([hidden])")
+        lb.focus("#d-fav")
+        lb.keyboard.press("Enter")
+        lb.wait_for_function("document.querySelector('#d-fav').getAttribute('aria-pressed') === 'true'")
+        artists = lb.evaluate("fetch('/api/library/artists').then(r => r.json()).then(d => d.items.map(c => [c.id, c.name]))")
+        check(artists == [["UCart0000", "GSPD"]], f"исполнитель сохранён в коллекции с клавиатуры ({artists})")
+
+        # коллекция: разделы, фильтры, поиск
+        lb.click(".nav__item[data-view=collection]")
+        lb.wait_for_selector("#col-albums .card--album")
+        check(lb.locator("#col-albums .card").count() == 1 and lb.locator("#col-fav-artists .card").count() == 1
+              and visible(lb, "#col-tiles") and lb.locator("#col-tiles .tile").count() == 4,
+              "в коллекции видны разделы «Альбомы» и «Исполнители» и четыре плитки")
+        lb.click("#col-filter [data-f=albums]")
+        check(visible(lb, "#col-albums-sec") and not visible(lb, "#col-fav-artists-sec") and not visible(lb, "#col-pl-sec")
+              and not visible(lb, "#col-tiles") and lb.get_attribute("#col-filter [data-f=albums]", "aria-pressed") == "true",
+              "фильтр «Альбомы» оставляет только альбомы")
+        lb.click("#col-filter [data-f=tracks]")
+        n_tracks = lb.locator("#col-tracks .tcard").count()
+        favs_n = lb.evaluate("fetch('/api/favorites').then(r => r.json()).then(d => d.items.length)")
+        check(visible(lb, "#col-tracks-sec") and n_tracks == favs_n and not visible(lb, "#col-albums-sec"),
+              f"фильтр «Треки»: избранное и локальные файлы без повторов ({n_tracks} из {favs_n} в избранном, локальный — среди них)")
+        lb.click("#col-filter [data-f=all]")
+        lb.fill("#col-q", "локальный")
+        lb.wait_for_function("document.querySelectorAll('#col-tracks .tcard').length === 1")
+        check(lb.get_attribute("#col-tracks .tcard", "data-key") == local_key and not visible(lb, "#col-tiles")
+              and not visible(lb, "#col-albums-sec"), "поиск по коллекции находит локальный трек по названию")
+        lb.click("#col-tracks .tcard .tcard__open")
+        lb.wait_for_function("(k) => document.querySelector('#audio').src.includes(k.slice(6))", arg=local_key)
+        check(True, "найденный трек играет из результатов поиска по коллекции")
+        lb.fill("#col-q", "Альбом")
+        lb.wait_for_function("document.querySelectorAll('#col-albums .card').length === 1")
+        check(not visible(lb, "#col-empty"), "поиск находит альбом по названию")
+        lb.fill("#col-q", "нет-такого-zzz")
+        lb.wait_for_selector("#col-empty:not([hidden])")
+        check("ничего не найдено" in lb.text_content("#col-empty") and not visible(lb, "#col-pl-sec"),
+              "пустой результат поиска по коллекции назван прямо")
+        lb.fill("#col-q", "")
+        lb.set_viewport_size({"width": 980, "height": 760})
+        check(lb.evaluate("document.querySelector('#main').scrollWidth <= document.querySelector('#main').clientWidth"),
+              "коллекция с поиском и фильтрами без горизонтальной прокрутки на 980 px")
+        lb.screenshot(path=str(SHOTS / "s15-collection.png"))
+        lb.set_viewport_size({"width": 1440, "height": 900})
+
+        # порядок треков плейлиста
+        pid = lb.evaluate("""(async () => {
+            const p = await (await fetch('/api/playlists', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name: 'Порядок S15'})})).json();
+            for (const t of %s) await fetch(`/api/playlists/${p.id}/tracks`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(t)});
+            return p.id })()""" % json.dumps([track(701), track(702), track(703)], ensure_ascii=False))
+        lb.click(".nav__item[data-view=playlists]")
+        lb.wait_for_selector("#cards .card--playlist")
+        lb.evaluate("(n) => [...document.querySelectorAll('#cards .card--playlist')].find(c => c.textContent.includes(n)).click()", "Порядок S15")
+        lb.wait_for_selector("#tracks .row:nth-child(3)")
+        ids = "[...document.querySelectorAll('#tracks .row')].map(r => r.dataset.key)"
+        lb.click("#tracks .row:nth-child(1) .track__more")
+        lb.wait_for_selector("#menu:not([hidden])")
+        acts = lb.evaluate("[...document.querySelectorAll('#menu [role=menuitem]')].map(b => b.dataset.act)")
+        check("pldown" in acts and "plup" not in acts, f"у первого трека плейлиста есть «Переместить ниже», нет «Выше» ({acts})")
+        lb.click("#menu [data-act=pldown]")
+        lb.wait_for_function(f"{ids}[0] === 'yt:trk00000702'")
+        saved = lb.evaluate(f"fetch('/api/playlists/{pid}').then(r => r.json()).then(d => d.tracks.map(t => t.id))")
+        check(lb.evaluate(ids) == ["yt:trk00000702", "yt:trk00000701", "yt:trk00000703"] and saved == ["trk00000702", "trk00000701", "trk00000703"],
+              f"«Переместить ниже» меняет порядок на экране и в backend ({saved})")
+        lb.focus("#tracks .row:nth-child(3) .track__more")
+        lb.keyboard.press("Enter")
+        lb.wait_for_selector("#menu:not([hidden])")
+        menu_to(lb, "plup")
+        lb.keyboard.press("Enter")
+        lb.wait_for_function(f"{ids}[1] === 'yt:trk00000703'")
+        f_moved = lb.evaluate("document.activeElement.closest('.row')?.dataset.key")
+        lb.goto(BASE)
+        lb.wait_for_function(feed_ready, timeout=15000)
+        after = lb.evaluate(f"fetch('/api/playlists/{pid}').then(r => r.json()).then(d => d.tracks.map(t => t.id))")
+        check(f_moved == "yt:trk00000703" and after == ["trk00000702", "trk00000703", "trk00000701"],
+              f"«Переместить выше» с клавиатуры: фокус остаётся на перемещённом треке, порядок сохранён после перезагрузки ({f_moved}, {after})")
+
+        # история: одна запись
+        lb.evaluate("""(async () => { for (const t of %s) await fetch('/api/history', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(t)}) })()"""
+                    % json.dumps([track(711), track(712)], ensure_ascii=False))
+        lb.click(".nav__item[data-view=history]")
+        lb.wait_for_selector("#tracks .row[data-key='yt:trk00000712']")
+        n_hist = lb.locator("#tracks .row").count()
+        lb.click("#tracks .row[data-key='yt:trk00000712'] .track__more")
+        lb.wait_for_selector("#menu:not([hidden])")
+        lb.click("#menu [data-act=unhist]")
+        lb.wait_for_function("!document.querySelector(\"#tracks .row[data-key='yt:trk00000712']\")")
+        keys = lb.evaluate("fetch('/api/history?limit=50').then(r => r.json()).then(d => d.tracks.map(t => t.id))")
+        check("trk00000712" not in keys and "trk00000711" in keys and lb.locator("#tracks .row").count() == n_hist - 1
+              and wait_toast(lb, "Убрано из истории"), "«Удалить из истории» убирает одну запись, остальная история на месте")
+
+        # экспорт и импорт
+        lb.click(".nav__item[data-view=settings]")
+        lb.wait_for_selector("#view-settings:not([hidden])")
+        lb.click("#set-export")
+        lb.wait_for_function("document.querySelector('#set-msg').textContent.includes('сохранена в файл')")
+        check(".json" in lb.text_content("#set-msg"), "экспорт библиотеки пишет JSON-файл и показывает путь")
+        doc = lb.evaluate("fetch('/api/library/export').then(r => r.text())")
+        before_lib = lb.evaluate("Promise.all(['/api/favorites', '/api/library/albums', '/api/playlists'].map(u => fetch(u).then(r => r.json())))")
+        broken = json.loads(doc)
+        broken["playlists"][0]["tracks"].append({"added_at": 1, "track": {"id": "плохой"}})
+        lb.set_input_files("#set-import-file", files=[{"name": "broken.json", "mimeType": "application/json", "buffer": json.dumps(broken).encode()}])
+        lb.wait_for_selector("#dlg-confirm[open]")
+        lb.click("#dc-ok")
+        lb.wait_for_function("document.querySelector('#set-msg').textContent.startsWith('Импорт не выполнен')")
+        same_lib = lb.evaluate("Promise.all(['/api/favorites', '/api/library/albums', '/api/playlists'].map(u => fetch(u).then(r => r.json())))")
+        check(same_lib == before_lib and "Ничего не изменено" in lb.text_content("#set-msg"),
+              "импорт файла с ошибкой отклонён целиком: библиотека не изменилась")
+        lb.set_input_files("#set-import-file", files=[{"name": "wave-library.json", "mimeType": "application/json", "buffer": doc.encode()}])
+        lb.wait_for_selector("#dlg-confirm[open]")
+        lb.click("#dc-ok")
+        lb.wait_for_function("document.querySelector('#set-msg').textContent.startsWith('Импорт выполнен')")
+        again = lb.evaluate("Promise.all(['/api/favorites', '/api/library/albums', '/api/playlists'].map(u => fetch(u).then(r => r.json())))")
+        check(again == before_lib and "Уже было" in lb.text_content("#set-msg"),
+              "повторный импорт своего же экспорта ничего не дублирует")
+
+        # удаление локального трека
+        lb.click(".nav__item[data-view=collection]")
+        lb.wait_for_selector("#col-tiles .tile[data-go=local]")
+        lb.click("#col-tiles .tile[data-go=local]")
+        lb.wait_for_selector("#tracks .row")
+        lb.click("#tracks .row .track__more")
+        lb.wait_for_selector("#menu:not([hidden])")
+        lb.click("#menu [data-act=unlocal]")
+        lb.wait_for_selector("#dlg-confirm[open]")
+        check("не удаляется" in lb.text_content("#dc-text"), "удаление локального трека спрашивает подтверждение: исходный файл не трогаем")
+        lb.click("#dc-ok")
+        lb.wait_for_function("document.querySelectorAll('#tracks .row').length === 0")
+        gone = lb.evaluate("(k) => fetch('/api/favorites').then(r => r.json()).then(d => !d.items.some(t => `${t.source}:${t.id}` === k))", local_key)
+        check(gone and "Добавить файлы" in lb.text_content("#empty"), "локальный трек удалён из Wave и из «Нравится»")
+        lb.close()
 
         browser.close()
 

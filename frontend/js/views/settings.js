@@ -178,10 +178,10 @@ export function initSettingsView() {
     try { d = await api("/api/library/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: await file.text() }); }
     catch (err) { setMsg(`Импорт не выполнен: ${err.message}`); return; }
     const im = d.imported, sk = d.skipped;
-    setMsg(`Импорт выполнен: треков в избранном ${im.tracks}, альбомов ${im.albums}, исполнителей ${im.artists}, плейлистов ${im.playlists}`
+    const msg = `Импорт выполнен: треков в избранном ${im.tracks}, альбомов ${im.albums}, исполнителей ${im.artists}, плейлистов ${im.playlists}`
       + ` (треков в них ${im.playlist_tracks}), настроек ${im.settings}.`
       + (sk.existing || sk.duplicate_playlists ? ` Уже было: ${sk.existing + sk.duplicate_playlists}.` : "")
-      + (sk.missing_local ? ` Локальных файлов нет на этом компьютере: ${sk.missing_local}.` : ""));
+      + (sk.missing_local ? ` Локальных файлов нет на этом компьютере: ${sk.missing_local}.` : "");
     try {
       const fav = await api("/api/favorites");
       state.fav = new Set(fav.items.map(trackKey));
@@ -191,6 +191,7 @@ export function initSettingsView() {
     loadLibrary();
     await showSettings();                                  // настройки из файла — на экран и в интерфейс (тема — там же)
     applyImportedUi(state.settings);
+    setMsg(msg);                                           // после showSettings: она сбрасывает строку сообщения
   });
   $("#set-name").addEventListener("change", (e) => {
     const name = [...e.target.value.trim()].slice(0, 24).join("");

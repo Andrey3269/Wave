@@ -422,8 +422,10 @@ def apply_import(doc: ExportIn, settings: dict[str, str]) -> dict:
                 imported[kind + "s"] += cur.rowcount
                 skipped["existing"] += 1 - cur.rowcount
         existing = {}
-        for p in db.execute("SELECT id, name FROM playlists"):
-            keys = tuple(r[0] for r in db.execute("SELECT key FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", (p[0],)))
+        for p in db.execute("SELECT id, name FROM playlists").fetchall():
+            # как в экспорте: только читаемые треки — иначе плейлист со строкой, которую GET пропускает, считался бы другим
+            rows = db.execute("SELECT key, data FROM playlist_tracks WHERE playlist_id = ? ORDER BY position", (p[0],)).fetchall()
+            keys = tuple(r[0] for r in rows if snapshot.read_snapshot(r[1], "playlist_tracks", r[0]) is not None)
             existing.setdefault(p[1], set()).add(keys)
         for p in reversed(doc.playlists):            # в файле — новые сверху; создаём в исходном порядке
             entries = [e for e in p.tracks if _keep(e.track, local_ids)]
