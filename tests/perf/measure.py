@@ -78,15 +78,21 @@ def rss_mb(pid: int) -> float | None:
                         ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
                         ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
-        h = ctypes.windll.kernel32.OpenProcess(0x0410, False, pid)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)    # явные типы: HANDLE на x64 — 64 бита
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.K32GetProcessMemoryInfo.restype = wintypes.BOOL
+        k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        h = k32.OpenProcess(0x0410, False, pid)
         if not h:
             return None
         try:
             pmc = PMC(cb=ctypes.sizeof(PMC))
-            if ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb):
+            if k32.K32GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb):
                 return round(pmc.WorkingSetSize / 1048576, 1)
         finally:
-            ctypes.windll.kernel32.CloseHandle(h)
+            k32.CloseHandle(h)
     return None
 
 

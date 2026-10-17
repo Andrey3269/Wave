@@ -216,6 +216,37 @@ ABOUT_SCHEMA = 1
 _ready: dict = {}
 
 
+_WIN: tuple | None = None
+
+
+def _win_api():
+    """
+    kernel32 и GetProcessMemoryInfo со ЯВНЫМИ типами аргументов (S16, найдено Windows CI): без них ctypes передаёт
+    псевдодескриптор процесса (HANDLE, 64 бита) как 32-битный int, и вызов на x64 возвращает ошибку. Свой экземпляр
+    WinDLL, а не общий ctypes.windll: прототипы других модулей (jsruntime — Job Object) не меняются.
+    """
+    global _WIN
+    if _WIN is None:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetCurrentProcess.argtypes = []
+        k32.GetProcessTimes.restype = wintypes.BOOL
+        k32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        k32.GetSystemTimeAsFileTime.restype = None
+        k32.GetSystemTimeAsFileTime.argtypes = [ctypes.POINTER(wintypes.FILETIME)]
+        try:
+            get_info = k32.K32GetProcessMemoryInfo                  # Windows 7+: в kernel32
+        except AttributeError:
+            get_info = ctypes.WinDLL("psapi", use_last_error=True).GetProcessMemoryInfo
+        get_info.restype = wintypes.BOOL
+        get_info.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        _WIN = (k32, get_info)
+    return _WIN
+
+
 def process_uptime() -> float | None:
     """Секунды с момента создания процесса (Linux: /proc, Windows: GetProcessTimes). Иначе None."""
     try:
@@ -227,8 +258,8 @@ def process_uptime() -> float | None:
             import ctypes
             from ctypes import wintypes
 
+            k32, _psapi = _win_api()
             ft = [wintypes.FILETIME() for _ in range(4)]
-            k32 = ctypes.windll.kernel32
             if not k32.GetProcessTimes(k32.GetCurrentProcess(), *[ctypes.byref(f) for f in ft]):
                 return None
             now = wintypes.FILETIME()
@@ -257,8 +288,8 @@ def process_rss_mb() -> float | None:
                                                    "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
                                                    "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
             pmc = PMC(cb=ctypes.sizeof(PMC))
-            k32 = ctypes.windll.kernel32
-            if ctypes.windll.psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+            k32, get_info = _win_api()
+            if get_info(k32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
                 return round(pmc.WorkingSetSize / 1048576, 1)
     except (OSError, ValueError, AttributeError):
         return None
